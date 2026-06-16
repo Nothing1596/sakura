@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -67,6 +69,12 @@ from app.config.character_loader import (
     save_character_theme,
 )
 from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
+from app.backchannel.audio_cache import BackchannelAudioCache, voice_fingerprint
+from app.backchannel.classifier import RuleClassifier
+from app.backchannel.controller import BackchannelController
+from app.backchannel.manifest import BackchannelManifestError, load_backchannel_manifest
+from app.backchannel.models import BackchannelManifest
+from app.backchannel.resolver import BackchannelChoice
 from app.agent.runtime_events import (
     APP_CLOSED,
     APP_STARTED,
@@ -95,7 +103,7 @@ from app.plugins.manager import (
     PLUGIN_EVENT_USER_MESSAGE,
 )
 from app.ui.state import PetUiState, PetUiStateStore
-from app.config.settings_service import BubbleSettings, StartupSettings
+from app.config.settings_service import BackchannelSettings, BubbleSettings, StartupSettings
 from app.platforms.launch_at_login import (
     LaunchAtLoginError,
     set_launch_at_login_enabled,
@@ -152,6 +160,7 @@ from app.voice.factory import create_tts_provider
 from app.voice.tts_settings import DEFAULT_GPT_SOVITS_API_URL, GPTSoVITSTTSSettings, TTSConfigError
 from app.voice.tts import (
     NullTTSProvider,
+    TTSPreparedAudio,
     TTSProvider,
 )
 from app.storage.visual_observation import (
@@ -238,6 +247,7 @@ PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER = SCREEN_AWARENESS_CONTEXT_HISTORY_MARKE
 REPLY_HISTORY_PANEL_WIDTH = 34
 REPLY_HISTORY_PANEL_HEIGHT = 70
 REPLY_HISTORY_BUTTON_SIZE = 30
+BACKCHANNEL_AUDIO_PREPARE_LIMIT = 2
 REPLY_HISTORY_PREVIOUS_SYMBOL = "▲"
 REPLY_HISTORY_NEXT_SYMBOL = "▼"
 
@@ -456,6 +466,7 @@ class PetWindow(QWidget):
         self.mcp_settings = context.mcp_settings
         self.debug_log_settings = context.debug_log_settings
         self.startup_settings = context.startup_settings
+        self.backchannel_settings = self.settings_service.load_backchannel_settings()
         self.theme_settings = merge_theme_with_character(
             self.settings_service.load_theme_settings(),
             self.character_profile,
@@ -807,6 +818,17 @@ class PetWindow(QWidget):
             delay_seconds=self.bubble_settings.auto_hide_delay_seconds,
             parent=self,
         )
+        self.backchannel_manifest: BackchannelManifest | None = None
+        self._backchannel_audio_cache: BackchannelAudioCache | None = None
+        self._backchannel_prepared_audio: dict[tuple[str, str, str], TTSPreparedAudio] = {}
+        self._active_backchannel_audio: TTSPreparedAudio | None = None
+        self.backchannel_controller = BackchannelController(
+            RuleClassifier(),
+            self._display_backchannel,
+            settings=self.backchannel_settings,
+            parent=self,
+        )
+        self._load_backchannel_manifest_for(self.character_profile)
         self._sync_plugin_chat_ui_widgets()
 
         self._apply_theme_settings(self.theme_settings)
@@ -1252,6 +1274,329 @@ class PetWindow(QWidget):
                 delay_seconds=settings.auto_hide_delay_seconds,
             )
 
+    def _apply_backchannel_settings(self, settings: BackchannelSettings) -> None:
+        """应用本地接话配置，并在需要语音时准备缺失音频。"""
+        self.backchannel_settings = settings.normalized()
+        controller = getattr(self, "backchannel_controller", None)
+        if controller is not None:
+            controller.set_settings(self.backchannel_settings)
+        if not self._backchannel_tts_wanted():
+            self._discard_backchannel_audio_cache()
+            return
+        self._prepare_backchannel_audio_cache()
+
+    def _cancel_backchannel(self) -> None:
+        controller = getattr(self, "backchannel_controller", None)
+        if controller is not None:
+            controller.cancel()
+        self._discard_active_backchannel_audio()
+        self._discard_unready_backchannel_audio()
+
+    def _discard_unready_backchannel_audio(self) -> None:
+        prepared = getattr(self, "_backchannel_prepared_audio", None)
+        if not prepared:
+            return
+        provider = getattr(self, "tts_provider", None)
+        discard_prepared = getattr(provider, "discard_prepared", None)
+        for key in list(prepared.keys()):
+            handle = prepared[key]
+            if handle.audio_path is not None and not handle.failed:
+                continue
+            prepared.pop(key, None)
+            if callable(discard_prepared):
+                try:
+                    discard_prepared(handle)
+                except Exception as exc:  # noqa: BLE001
+                    debug_log("Backchannel", "让位丢弃接话预生成失败", {"error": str(exc)})
+
+    def _load_backchannel_manifest_for(self, profile: CharacterProfile) -> None:
+        """加载当前角色的接话清单；缺失或非法时角色级 opt-out。"""
+        controller = getattr(self, "backchannel_controller", None)
+        if controller is None:
+            return
+        self._discard_backchannel_audio_cache()
+        self.backchannel_manifest = None
+        self._backchannel_audio_cache = None
+        path = profile.backchannel_manifest_path
+        if path is None:
+            controller.set_manifest(None)
+            return
+        try:
+            manifest = load_backchannel_manifest(path, profile=profile)
+        except BackchannelManifestError as exc:
+            debug_log("Backchannel", "接话清单加载失败，功能停用", {"error": str(exc)})
+            controller.set_manifest(None)
+            return
+        self.backchannel_manifest = manifest if manifest else None
+        self._backchannel_audio_cache = BackchannelAudioCache(
+            self.base_dir / "data" / "backchannels" / profile.id / "audio",
+            voice_fingerprint(profile.voice),
+        )
+        controller.set_manifest(self.backchannel_manifest)
+        self._prepare_backchannel_audio_cache()
+
+    def _display_backchannel(self, choice: BackchannelChoice) -> None:
+        """显示临时接话；不写入历史、上下文或回复分段队列。"""
+        segment = ChatSegment(
+            ja=choice.variant.ja,
+            zh=choice.variant.zh,
+            tone=choice.template.tone,
+            portrait=choice.variant.portrait or choice.template.portrait,
+        )
+        controller = getattr(self, "bubble_auto_hide", None)
+        if controller is not None:
+            controller.notify_speaking()
+        self.portrait_controller.apply_for_segment(segment)
+        self.subtitle_controller.set_speech(
+            segment.display_text(self.subtitle_language),
+            pulse=True,
+        )
+        self._play_backchannel_audio(choice)
+        self._log_interaction_stage("backchannel_shown", {"template": choice.template.id})
+
+    def _backchannel_tts_wanted(self) -> bool:
+        settings = getattr(self, "backchannel_settings", BackchannelSettings()).normalized()
+        if not settings.active or not settings.tts_enabled:
+            return False
+        provider = getattr(self, "tts_provider", None)
+        return provider is not None and not isinstance(provider, NullTTSProvider)
+
+    def _backchannel_tts_active(self) -> bool:
+        if not self._backchannel_tts_wanted():
+            return False
+        return bool(getattr(self.tts_provider, "service_ready", True))
+
+    def _tts_provider_has_queued_work(self) -> bool:
+        provider = getattr(self, "tts_provider", None)
+        if provider is None:
+            return False
+        if bool(getattr(provider, "_request_running", False)):
+            return True
+        if getattr(provider, "_pending_requests", None):
+            return True
+        if getattr(provider, "_pending_audio", None):
+            return True
+        return getattr(provider, "_current_audio", None) is not None
+
+    def _backchannel_audio_key(self, choice: BackchannelChoice) -> tuple[str, str, str]:
+        return (choice.template.id, choice.template.tone, choice.variant.ja)
+
+    def _prepare_backchannel_audio_cache(self) -> None:
+        if not self._backchannel_tts_active():
+            return
+        manifest = getattr(self, "backchannel_manifest", None)
+        if manifest is None:
+            return
+        prepared = getattr(self, "_backchannel_prepared_audio", None)
+        if prepared is None:
+            prepared = {}
+            self._backchannel_prepared_audio = prepared
+        cache = getattr(self, "_backchannel_audio_cache", None)
+        if cache is not None:
+            discard_prepared = getattr(self.tts_provider, "discard_prepared", None)
+            for key in list(prepared.keys()):
+                handle = prepared[key]
+                if handle.audio_path is None or handle.failed:
+                    continue
+                if cache.store(key[1], key[2], handle.audio_path) is None:
+                    continue
+                prepared.pop(key, None)
+                if callable(discard_prepared):
+                    try:
+                        discard_prepared(handle)
+                    except Exception as exc:  # noqa: BLE001
+                        debug_log("Backchannel", "落盘后丢弃合成句柄失败", {"error": str(exc)})
+        if self._tts_provider_has_queued_work():
+            debug_log("Backchannel", "TTS 队列忙，跳过本轮接话音频预生成")
+            return
+        queued = 0
+        missing_audio = 0
+        for template in manifest.templates:
+            for variant in template.variants:
+                if self._backchannel_variant_audio_available(manifest, variant.audio):
+                    continue
+                if cache is not None and cache.lookup(template.tone, variant.ja) is not None:
+                    continue
+                missing_audio += 1
+                key = (template.id, template.tone, variant.ja)
+                if key in prepared or queued >= BACKCHANNEL_AUDIO_PREPARE_LIMIT:
+                    continue
+                try:
+                    prepared[key] = self.tts_provider.prepare(variant.ja, template.tone)
+                    queued += 1
+                except Exception as exc:  # noqa: BLE001
+                    debug_log(
+                        "Backchannel",
+                        "接话音频预生成请求失败",
+                        {
+                            "template": template.id,
+                            "text": variant.ja,
+                            "tone": template.tone,
+                            "error": str(exc),
+                        },
+                    )
+        if missing_audio:
+            debug_log(
+                "Backchannel",
+                "接话清单存在缺失音频，已提交运行期预生成",
+                {"missing_audio": missing_audio, "queued": queued},
+            )
+
+    def _backchannel_variant_audio_available(
+        self,
+        manifest: BackchannelManifest,
+        audio: str | None,
+    ) -> bool:
+        return self._resolve_backchannel_audio_path(manifest, audio) is not None
+
+    def _resolve_backchannel_audio_path(
+        self,
+        manifest: BackchannelManifest | None,
+        audio: str | None,
+    ) -> Path | None:
+        if not audio:
+            return None
+        path = Path(audio)
+        if not path.is_absolute() and manifest is not None and manifest.source_path is not None:
+            path = manifest.source_path.parent / path
+        return path if path.exists() else None
+
+    def _copy_backchannel_audio_for_playback(self, source: Path) -> Path | None:
+        suffix = source.suffix or ".wav"
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                prefix="sakura_backchannel_",
+                suffix=suffix,
+                delete=False,
+            ) as temp_file:
+                temp_path = Path(temp_file.name)
+            shutil.copyfile(source, temp_path)
+            return temp_path
+        except Exception as exc:  # noqa: BLE001
+            debug_log(
+                "Backchannel",
+                "接话预置音频复制失败",
+                {"audio_path": str(source), "error": str(exc)},
+            )
+            try:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return None
+
+    def _play_backchannel_audio(self, choice: BackchannelChoice) -> None:
+        if not self._backchannel_tts_wanted():
+            return
+        manifest = getattr(self, "backchannel_manifest", None)
+        source_audio = self._resolve_backchannel_audio_path(manifest, choice.variant.audio)
+        if source_audio is not None:
+            playable_audio = self._copy_backchannel_audio_for_playback(source_audio)
+            if playable_audio is not None:
+                self._request_backchannel_audio_playback(
+                    choice,
+                    TTSPreparedAudio(
+                        text=choice.variant.ja,
+                        tone=choice.template.tone,
+                        audio_path=playable_audio,
+                    ),
+                )
+                return
+
+        cache = getattr(self, "_backchannel_audio_cache", None)
+        if cache is not None:
+            cached_audio = cache.lookup(choice.template.tone, choice.variant.ja)
+            if cached_audio is not None:
+                playable_audio = self._copy_backchannel_audio_for_playback(cached_audio)
+                if playable_audio is not None:
+                    self._request_backchannel_audio_playback(
+                        choice,
+                        TTSPreparedAudio(
+                            text=choice.variant.ja,
+                            tone=choice.template.tone,
+                            audio_path=playable_audio,
+                        ),
+                    )
+                    return
+
+        prepared = getattr(self, "_backchannel_prepared_audio", {})
+        key = self._backchannel_audio_key(choice)
+        handle = prepared.get(key)
+        if handle is None or handle.audio_path is None or handle.failed:
+            debug_log(
+                "Backchannel",
+                "接话音频尚未预生成完成，本次仅显示字幕",
+                {"template": choice.template.id, "text": choice.variant.ja},
+            )
+            return
+        prepared.pop(key, None)
+        if cache is not None and handle.audio_path is not None:
+            cache.store(choice.template.tone, choice.variant.ja, handle.audio_path)
+        self._request_backchannel_audio_playback(choice, handle)
+
+    def _request_backchannel_audio_playback(
+        self,
+        choice: BackchannelChoice,
+        handle: TTSPreparedAudio,
+    ) -> None:
+        self._active_backchannel_audio = handle
+        try:
+            self.tts_provider.speak_prepared(
+                handle,
+                on_finished=lambda h=handle: self._handle_backchannel_audio_finished(h),
+            )
+            self._log_interaction_stage(
+                "backchannel_tts_requested",
+                {"template": choice.template.id, "tone": choice.template.tone},
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._active_backchannel_audio = None
+            debug_log(
+                "Backchannel",
+                "接话音频播放请求失败",
+                {"template": choice.template.id, "error": str(exc)},
+            )
+            discard_prepared = getattr(self.tts_provider, "discard_prepared", None)
+            if callable(discard_prepared):
+                try:
+                    discard_prepared(handle)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _handle_backchannel_audio_finished(self, handle: TTSPreparedAudio) -> None:
+        if getattr(self, "_active_backchannel_audio", None) is handle:
+            self._active_backchannel_audio = None
+
+    def _discard_active_backchannel_audio(self) -> None:
+        handle = getattr(self, "_active_backchannel_audio", None)
+        if handle is None:
+            return
+        self._active_backchannel_audio = None
+        discard_prepared = getattr(self.tts_provider, "discard_prepared", None)
+        if not callable(discard_prepared):
+            return
+        try:
+            discard_prepared(handle)
+        except Exception as exc:  # noqa: BLE001
+            debug_log("Backchannel", "取消接话音频失败", {"error": str(exc)})
+
+    def _discard_backchannel_audio_cache(self) -> None:
+        self._discard_active_backchannel_audio()
+        prepared = getattr(self, "_backchannel_prepared_audio", None)
+        if not prepared:
+            return
+        provider = getattr(self, "tts_provider", None)
+        discard_prepared = getattr(provider, "discard_prepared", None)
+        for handle in prepared.values():
+            if not callable(discard_prepared):
+                continue
+            try:
+                discard_prepared(handle)
+            except Exception as exc:  # noqa: BLE001
+                debug_log("Backchannel", "丢弃接话预生成音频失败", {"error": str(exc)})
+        prepared.clear()
+
     def _drag_anchor_from_event(
         self,
         event: QMouseEvent,
@@ -1276,6 +1621,10 @@ class PetWindow(QWidget):
         self._schedule_native_topmost_sync()
 
     def _apply_reply_segment(self, segment: ChatSegment) -> None:
+        # 正式回复开始：放弃尚未触发或正在播放的临时接话。
+        cancel_backchannel = getattr(self, "_cancel_backchannel", None)
+        if callable(cancel_backchannel):
+            cancel_backchannel()
         # 同轮回复内各段高度延续：不在此重置，避免"段间先缩后扩"产生闪现。
         # 高度重置由 _collapse_auto_fit_bubble_height 在 cancel_reply_flow 前统一处理。
         self.portrait_controller.apply_for_segment(segment)
@@ -1904,6 +2253,7 @@ class PetWindow(QWidget):
             controller = getattr(self, "bubble_auto_hide", None)
             if controller is not None:
                 controller.notify_settled()
+            self._prepare_backchannel_audio_cache()
 
     def _mark_user_activity(self) -> None:
         self.last_user_activity_at = time.perf_counter()
@@ -2146,6 +2496,9 @@ class PetWindow(QWidget):
                 *visual_observation_jobs,
             ]
         self._log_interaction_stage("user_message_recorded")
+        backchannel = getattr(self, "backchannel_controller", None)
+        if backchannel is not None:
+            backchannel.schedule(text)
         self._start_chat_worker(request_messages)
 
     def _show_waiting_reply_placeholder(self) -> None:
@@ -2676,6 +3029,9 @@ class PetWindow(QWidget):
         self._consume_agent_result(result)
 
     def _consume_agent_result(self, result: AgentResult, record_history: bool = True) -> None:
+        cancel_backchannel = getattr(self, "_cancel_backchannel", None)
+        if callable(cancel_backchannel):
+            cancel_backchannel()
         self.messages = _without_transient_progress_messages(self.messages)
         reply = result.reply
         self._log_interaction_stage(
@@ -3263,6 +3619,7 @@ class PetWindow(QWidget):
         self.messages = _without_transient_progress_messages(self.messages)
         if getattr(self, "_shutdown_in_progress", False):
             return
+        self._cancel_backchannel()
         self._log_interaction_stage("worker_error", {"message": message})
         self.ui_state.fail("worker_error")
         if self.messages and self.messages[-1]["role"] == "user":
@@ -3539,6 +3896,7 @@ class PetWindow(QWidget):
         self._connect_tts_error_signal(services.tts_provider)
         self._warm_up_tts_playback(services.tts_provider)
         self._start_tts_ready_warmup(services.tts_provider)
+        self._prepare_backchannel_audio_cache()
         self.tool_registry = services.tool_registry
         self.free_access_enabled = self.tool_registry.free_access_enabled
         self.agent_runtime.tools = services.tool_registry
@@ -3707,6 +4065,7 @@ class PetWindow(QWidget):
         worker = TTSReadyWarmupWorker(provider)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
+        worker.succeeded.connect(self._handle_tts_ready_warmup_succeeded)
         worker.failed.connect(self._handle_tts_ready_warmup_failed)
         worker.finished.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
@@ -3715,6 +4074,11 @@ class PetWindow(QWidget):
         self.tts_ready_warmup_thread = thread
         self.tts_ready_warmup_worker = worker
         thread.start()
+
+    @Slot(str)
+    def _handle_tts_ready_warmup_succeeded(self, message: str) -> None:
+        _ = message
+        self._prepare_backchannel_audio_cache()
 
     @Slot(str)
     def _handle_tts_ready_warmup_failed(self, message: str) -> None:
@@ -4094,6 +4458,7 @@ class PetWindow(QWidget):
             theme_settings=getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS),
             startup_settings=getattr(self, "startup_settings", StartupSettings()),
             bubble_settings=getattr(self, "bubble_settings", BubbleSettings()),
+            backchannel_settings=getattr(self, "backchannel_settings", BackchannelSettings()),
             on_layout_preview=self._preview_layout,
         )
         self.settings_dialog = dialog
@@ -4172,6 +4537,11 @@ class PetWindow(QWidget):
             "result_bubble_settings",
             getattr(self, "bubble_settings", BubbleSettings()),
         )
+        result_backchannel_settings = getattr(
+            dialog,
+            "result_backchannel_settings",
+            getattr(self, "backchannel_settings", BackchannelSettings()),
+        )
         result_screen_awareness_settings = getattr(
             dialog,
             "result_screen_awareness_settings",
@@ -4206,6 +4576,8 @@ class PetWindow(QWidget):
             or dialog.result_debug_log_settings is None
             or result_startup_settings is None
             or not isinstance(result_startup_settings, StartupSettings)
+            or result_backchannel_settings is None
+            or not isinstance(result_backchannel_settings, BackchannelSettings)
             or dialog.result_portrait_scale_percent is None
             or result_theme_settings is None
             or result_subtitle_typing_interval_ms is None
@@ -4279,6 +4651,13 @@ class PetWindow(QWidget):
                 },
             )
             self.settings_service.save_bubble_settings(result_bubble_settings)
+            save_backchannel_settings = getattr(
+                self.settings_service,
+                "save_backchannel_settings",
+                None,
+            )
+            if callable(save_backchannel_settings):
+                save_backchannel_settings(result_backchannel_settings)
         except (CharacterConfigError, OSError) as exc:
             show_themed_critical(self, "保存失败", f"无法保存设置：{exc}")
             return
@@ -4321,6 +4700,13 @@ class PetWindow(QWidget):
             self.tts_provider,
             new_tts_provider,
         )
+        discard_backchannel_audio_cache = getattr(
+            self,
+            "_discard_backchannel_audio_cache",
+            None,
+        )
+        if callable(discard_backchannel_audio_cache):
+            discard_backchannel_audio_cache()
         self._retire_tts_provider(
             self.tts_provider,
             keep_local_service=keep_local_tts_service,
@@ -4335,6 +4721,11 @@ class PetWindow(QWidget):
         if callable(start_tts_ready_warmup):
             start_tts_ready_warmup(new_tts_provider)
         self._apply_character(selected_profile)
+        apply_backchannel_settings = getattr(self, "_apply_backchannel_settings", None)
+        if callable(apply_backchannel_settings):
+            apply_backchannel_settings(result_backchannel_settings)
+        else:
+            self.backchannel_settings = result_backchannel_settings
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         message = "设置已保存，后续聊天和朗读将使用新配置。"
@@ -5046,6 +5437,7 @@ class PetWindow(QWidget):
             self.history_window.set_history_store(self.history_store, profile.display_name)
 
         self._load_reply_history_from_store()
+        self._load_backchannel_manifest_for(profile)
         if profile.id != previous_character_id:
             self.messages = []
             self._collapse_auto_fit_bubble_height()

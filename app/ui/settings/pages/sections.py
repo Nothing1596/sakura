@@ -40,8 +40,11 @@ from app.agent.screen_awareness import (
 )
 from app.config.character_loader import CharacterProfile, CharacterRegistry
 from app.config.settings_service import (
+    BACKCHANNEL_MAX_DELAY_MS,
+    BACKCHANNEL_MIN_DELAY_MS,
     BUBBLE_AUTO_HIDE_MAX_DELAY_SECONDS,
     BUBBLE_AUTO_HIDE_MIN_DELAY_SECONDS,
+    BackchannelSettings,
     BubbleSettings,
     DebugLogSettings,
     StartupSettings,
@@ -748,6 +751,7 @@ class SystemSettingsPage:
         debug_settings: DebugLogSettings,
         startup_settings: StartupSettings,
         bubble_settings: BubbleSettings,
+        backchannel_settings: BackchannelSettings,
     ) -> QWidget:
         owner = self.dialog
         tab = QWidget(owner)
@@ -800,6 +804,35 @@ class SystemSettingsPage:
         )
         owner.bubble_auto_hide_check.toggled.connect(owner._sync_bubble_auto_hide_controls)
 
+        normalized_backchannel = backchannel_settings.normalized()
+        owner.backchannel_enabled_check = QCheckBox("启用本地快速接话", tab)
+        owner.backchannel_enabled_check.setChecked(normalized_backchannel.enabled)
+        owner.backchannel_enabled_check.setToolTip(
+            "用户发消息后，主回复返回前先显示一句角色化过渡反应。"
+        )
+        owner.backchannel_tts_enabled_check = QCheckBox("接话语音（缺失时用当前 TTS 合成）", tab)
+        owner.backchannel_tts_enabled_check.setChecked(normalized_backchannel.tts_enabled)
+        owner.backchannel_tts_enabled_check.setToolTip(
+            "需要同时启用全局 TTS；保存后会预生成当前角色缺失的接话语音。"
+        )
+        owner.backchannel_delay_spin = _NoWheelSpinBox(tab)
+        owner.backchannel_delay_spin.setRange(BACKCHANNEL_MIN_DELAY_MS, BACKCHANNEL_MAX_DELAY_MS)
+        owner.backchannel_delay_spin.setSuffix(" 毫秒")
+        owner.backchannel_delay_spin.setValue(normalized_backchannel.delay_ms)
+        owner.backchannel_probability_spin = _NoWheelDoubleSpinBox(tab)
+        owner.backchannel_probability_spin.setRange(0.0, 1.0)
+        owner.backchannel_probability_spin.setSingleStep(0.05)
+        owner.backchannel_probability_spin.setDecimals(2)
+        owner.backchannel_probability_spin.setValue(normalized_backchannel.probability)
+        owner.backchannel_enabled_check.toggled.connect(owner._sync_backchannel_controls)
+        tts_enabled_check = getattr(owner, "tts_enabled_check", None)
+        if tts_enabled_check is not None:
+            tts_enabled_check.toggled.connect(
+                lambda _checked: owner._sync_backchannel_controls(
+                    owner.backchannel_enabled_check.isChecked()
+                )
+            )
+
         startup_form = QFormLayout()
         startup_form.setContentsMargins(16, 12, 16, 12)
         startup_form.setSpacing(12)
@@ -821,6 +854,14 @@ class SystemSettingsPage:
         bubble_form.addRow("", owner.bubble_auto_hide_check)
         bubble_form.addRow("气泡无操作时长", owner.bubble_auto_hide_delay_spin)
         owner._system_form_layout = bubble_form
+        backchannel_form = QFormLayout()
+        backchannel_form.setContentsMargins(16, 12, 16, 12)
+        backchannel_form.setSpacing(12)
+        backchannel_form.addRow("", owner.backchannel_enabled_check)
+        backchannel_form.addRow("", owner.backchannel_tts_enabled_check)
+        backchannel_form.addRow("接话延迟", owner.backchannel_delay_spin)
+        backchannel_form.addRow("接话触发概率", owner.backchannel_probability_spin)
+        owner._backchannel_form_layout = backchannel_form
 
         layout = QVBoxLayout()
         layout.setContentsMargins(16, 18, 16, 16)
@@ -830,12 +871,14 @@ class SystemSettingsPage:
             ("调试日志", debug_form),
             ("字幕与回复", subtitle_form),
             ("气泡", bubble_form),
+            ("接话", backchannel_form),
         ):
             group = QGroupBox(title, tab)
             group.setLayout(group_form)
             layout.addWidget(group)
         layout.addStretch(1)
         owner._sync_bubble_auto_hide_controls(owner.bubble_auto_hide_check.isChecked())
+        owner._sync_backchannel_controls(owner.backchannel_enabled_check.isChecked())
         tab.setLayout(layout)
         return tab
 

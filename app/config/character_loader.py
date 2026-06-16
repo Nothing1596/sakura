@@ -43,6 +43,8 @@ class CharacterProfile:
     default_portrait_path: Path
     expression_portraits: dict[str, Path] = field(default_factory=dict)
     voice: CharacterVoice | None = None
+    # 可选接话清单。只解析路径，不在角色加载阶段校验存在，避免一份坏清单拖垮角色包。
+    backchannel_manifest_path: Path | None = None
     reply_tones: list[str] = field(default_factory=lambda: [*DEFAULT_TONES])
     theme_settings: ThemeSettings | None = None
     theme_source: CharacterThemeSource = THEME_SOURCE_COMPAT_DEFAULT
@@ -145,6 +147,10 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
     reply_data = raw_data.get("reply")
     reply_tones = _load_reply_tones(reply_data)
     voice = _load_voice(package_dir, raw_data.get("voice"), manifest_path)
+    backchannel_text = _optional_text(raw_data, "backchannel", "")
+    backchannel_manifest_path = (
+        _resolve_package_path(package_dir, backchannel_text) if backchannel_text.strip() else None
+    )
     theme_settings, theme_source, _missing_theme = character_theme_from_mapping(raw_data.get("theme"))
 
     return CharacterProfile(
@@ -156,6 +162,7 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
         default_portrait_path=default_portrait,
         expression_portraits=expression_portraits,
         voice=voice,
+        backchannel_manifest_path=backchannel_manifest_path,
         reply_tones=reply_tones,
         theme_settings=theme_settings,
         theme_source=theme_source,
