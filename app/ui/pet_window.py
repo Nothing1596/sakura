@@ -1410,7 +1410,13 @@ class PetWindow(QWidget):
     def _backchannel_tts_active(self) -> bool:
         if not self._backchannel_tts_wanted():
             return False
-        return bool(getattr(self.tts_provider, "service_ready", True))
+        if getattr(self, "tts_ready_warmup_thread", None) is not None:
+            return False
+        provider = getattr(self, "tts_provider", None)
+        service_ready = getattr(provider, "service_ready", None)
+        if service_ready is None:
+            return True
+        return bool(service_ready)
 
     def _tts_provider_has_queued_work(self) -> bool:
         provider = getattr(self, "tts_provider", None)

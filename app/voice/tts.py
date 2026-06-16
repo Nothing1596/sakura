@@ -254,6 +254,11 @@ class _AttachedLocalProcess:
 
 
 class TTSProvider(Protocol):
+    @property
+    def service_ready(self) -> bool:
+        """本地 TTS 服务是否已探测/预热完成。"""
+        ...
+
     def speak(
         self,
         text: str,
@@ -288,6 +293,10 @@ class TTSProvider(Protocol):
 
 
 class NullTTSProvider:
+    @property
+    def service_ready(self) -> bool:
+        return False
+
     def speak(
         self,
         text: str,
@@ -414,6 +423,12 @@ class GPTSoVITSTTSProvider(QObject):
         self._finished.connect(self._run_callback)
         if adopt_existing_service:
             self._adopt_existing_configured_service()
+
+    @property
+    def service_ready(self) -> bool:
+        if _provider_is_closed(self):
+            return False
+        return bool(self._service_checked or self._service_state == TTSServiceState.READY)
 
     def speak(
         self,

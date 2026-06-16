@@ -1710,6 +1710,52 @@ def test_pet_window_unlocks_after_deferred_services_are_applied(monkeypatch) -> 
     app.processEvents()
 
 
+def test_backchannel_tts_active_waits_for_ready_provider() -> None:
+    pytest.importorskip("PySide6.QtWidgets")
+
+    from app.ui.pet_window import PetWindow
+
+    class ProviderStub:
+        def __init__(self, ready: bool) -> None:
+            self.service_ready = ready
+
+    class MinimalWindow:
+        _backchannel_tts_active = PetWindow._backchannel_tts_active
+
+        def _backchannel_tts_wanted(self) -> bool:
+            return True
+
+    window = MinimalWindow()
+    window.tts_ready_warmup_thread = None
+    window.tts_provider = ProviderStub(False)
+
+    assert window._backchannel_tts_active() is False
+
+    window.tts_provider = ProviderStub(True)
+    assert window._backchannel_tts_active() is True
+
+    window.tts_ready_warmup_thread = object()
+    assert window._backchannel_tts_active() is False
+
+
+def test_backchannel_tts_active_keeps_custom_provider_without_ready_flag() -> None:
+    pytest.importorskip("PySide6.QtWidgets")
+
+    from app.ui.pet_window import PetWindow
+
+    class MinimalWindow:
+        _backchannel_tts_active = PetWindow._backchannel_tts_active
+
+        def _backchannel_tts_wanted(self) -> bool:
+            return True
+
+    window = MinimalWindow()
+    window.tts_ready_warmup_thread = None
+    window.tts_provider = object()
+
+    assert window._backchannel_tts_active() is True
+
+
 def test_shutdown_closes_late_deferred_services() -> None:
     from app.ui.pet_window import PetWindow
 

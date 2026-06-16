@@ -75,6 +75,7 @@ if importlib.util.find_spec("PySide6") is None:
 from app.voice.tts import (
     GenieTTSProvider,
     GPTSoVITSTTSProvider,
+    TTSServiceState,
     TTSPreparedAudio,
     _build_gpt_sovits_start_command,
     _build_genie_endpoint_url,
@@ -172,6 +173,22 @@ def test_tts_provider_can_skip_constructor_service_adoption(monkeypatch) -> None
     GPTSoVITSTTSProvider(_minimal_tts_settings())
 
     assert calls == ["GPTSoVITSTTSProvider"]
+
+
+def test_tts_provider_service_ready_reflects_ready_state() -> None:
+    provider = GPTSoVITSTTSProvider(_minimal_tts_settings(), adopt_existing_service=False)
+
+    assert provider.service_ready is False
+
+    provider._service_checked = True
+    assert provider.service_ready is True
+
+    provider._service_checked = False
+    provider._service_state = TTSServiceState.READY
+    assert provider.service_ready is True
+
+    provider.close()
+    assert provider.service_ready is False
 
 
 def test_tts_provider_close_clears_queue_and_blocks_late_requests() -> None:
