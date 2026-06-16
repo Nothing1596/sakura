@@ -53,6 +53,16 @@ _INTENT_PRIORITY = (
 _EXCLAMATION_RUN = re.compile(r"[!！]{2,}")
 _QUESTION_MARKS = re.compile(r"[?？]")
 _CODE_FENCE = "```"
+_HTTP_STATUS_RE = re.compile(r"(?<!\d)[45]\d{2}(?!\d)")
+_HTTP_ERROR_CUES = (
+    "http", "HTTP", "接口", "请求", "报错", "错误", "异常", "状态",
+    "服务器", "网关", "响应", "超时", "返回码", "code",
+)
+_HIGH_PRECISION_ERROR_KEYWORDS = (
+    "报错", "出错", "错误", "bug", "Bug", "BUG", "error", "Error",
+    "Traceback", "traceback", "exception", "Exception", "闪退",
+    "失败", "跑不起来", "运行不了", "无法运行", "无法打开",
+)
 
 # 社交礼仪句(greeting 家族):高度程式化的封闭集,会话分析中的相邻对首件。
 # 仅对短输入短路(长句里"我回来了,帮我查…"应让任务意图按正常计分胜出)。
@@ -110,6 +120,49 @@ class RuleClassifier:
             _BASE_CONFIDENCE + _CONFIDENCE_STEP * max(0, hits - 1),
         )
         return BackchannelLabel(intent=intent, emotion=emotion, confidence=confidence)
+
+    def classify_high_precision(self, text: str) -> BackchannelLabel | None:
+        """只返回闭集/结构化高精度信号，供 hybrid 模式做前置快路径。"""
+        content = (text or "").strip()
+        if not content:
+            return None
+        greeting = self._classify_greeting(content)
+        if greeting is not None:
+            return greeting
+        for intent, hits in (
+            ("error", self._high_precision_error_score(content)),
+            ("complaint", self._keyword_hits("complaint", content)),
+        ):
+            if hits:
+                confidence = min(
+                    _MAX_CONFIDENCE,
+                    _BASE_CONFIDENCE + _CONFIDENCE_STEP * max(0, hits - 1),
+                )
+                return BackchannelLabel(
+                    intent=intent,
+                    emotion=self._classify_emotion(content, intent),
+                    confidence=confidence,
+                )
+        return None
+
+    def classify_emotion_for_intent(self, text: str, intent: str) -> str:
+        return self._classify_emotion((text or "").strip(), intent)
+
+    def _keyword_hits(self, intent: str, content: str) -> int:
+        return sum(1 for keyword in _INTENT_KEYWORDS[intent] if keyword in content)
+
+    def _http_status_error(self, content: str) -> bool:
+        if not _HTTP_STATUS_RE.search(content):
+            return False
+        return any(cue in content for cue in _HTTP_ERROR_CUES)
+
+    def _high_precision_error_score(self, content: str) -> int:
+        hits = sum(1 for keyword in _HIGH_PRECISION_ERROR_KEYWORDS if keyword in content)
+        if _CODE_FENCE in content or '  File "' in content:
+            hits += 2
+        if self._http_status_error(content):
+            hits += 1
+        return hits
 
     def _classify_by_emotion_only(self, content: str) -> BackchannelLabel | None:
         """意图无关键词但情绪信号过阈值时,由情绪反推意图。

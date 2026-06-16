@@ -74,8 +74,11 @@ class BubbleSettings:
 BACKCHANNEL_MIN_DELAY_MS = 100
 BACKCHANNEL_MAX_DELAY_MS = 5000
 BACKCHANNEL_DEFAULT_DELAY_MS = 600
-BACKCHANNEL_MODES = ("off", "rules")
+BACKCHANNEL_MODES = ("off", "rules", "hybrid")
 BACKCHANNEL_DEFAULT_MODE = "rules"
+BACKCHANNEL_MIN_TIMEOUT_MS = 0
+BACKCHANNEL_MAX_TIMEOUT_MS = 2000
+BACKCHANNEL_DEFAULT_TIMEOUT_MS = 400
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,7 @@ class BackchannelSettings:
     delay_ms: int = BACKCHANNEL_DEFAULT_DELAY_MS
     probability: float = 1.0
     tts_enabled: bool = False
+    timeout_ms: int = BACKCHANNEL_DEFAULT_TIMEOUT_MS
 
     @property
     def active(self) -> bool:
@@ -99,12 +103,17 @@ class BackchannelSettings:
             min(BACKCHANNEL_MAX_DELAY_MS, int(self.delay_ms)),
         )
         probability = max(0.0, min(1.0, float(self.probability)))
+        timeout = max(
+            BACKCHANNEL_MIN_TIMEOUT_MS,
+            min(BACKCHANNEL_MAX_TIMEOUT_MS, int(self.timeout_ms)),
+        )
         return BackchannelSettings(
             enabled=bool(self.enabled),
             mode=mode,
             delay_ms=delay,
             probability=probability,
             tts_enabled=bool(self.tts_enabled),
+            timeout_ms=timeout,
         )
 
 
@@ -436,6 +445,7 @@ class AppSettingsService:
             delay_ms=_int_value(section.get("delay_ms"), BACKCHANNEL_DEFAULT_DELAY_MS),
             probability=_float_value(section.get("probability"), 1.0),
             tts_enabled=_bool_value(section.get("tts_enabled"), False),
+            timeout_ms=_int_value(section.get("timeout_ms"), BACKCHANNEL_DEFAULT_TIMEOUT_MS),
         ).normalized()
 
     def save_backchannel_settings(self, settings: BackchannelSettings) -> None:
@@ -447,6 +457,7 @@ class AppSettingsService:
             "delay_ms": int(normalized.delay_ms),
             "probability": float(normalized.probability),
             "tts_enabled": bool(normalized.tts_enabled),
+            "timeout_ms": int(normalized.timeout_ms),
         }
         save_yaml_mapping(self.system_config_path, data)
 

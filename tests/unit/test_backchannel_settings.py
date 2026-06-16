@@ -26,17 +26,20 @@ def test_save_load_round_trip(tmp_path: Path) -> None:
     service.save_backchannel_settings(
         BackchannelSettings(
             enabled=True,
-            mode="rules",
+            mode="hybrid",
             delay_ms=900,
             probability=0.6,
             tts_enabled=True,
+            timeout_ms=1200,
         )
     )
     loaded = service.load_backchannel_settings()
     assert loaded.enabled is True
+    assert loaded.mode == "hybrid"
     assert loaded.delay_ms == 900
     assert loaded.probability == 0.6
     assert loaded.tts_enabled is True
+    assert loaded.timeout_ms == 1200
     assert loaded.active is True
 
 
@@ -51,15 +54,17 @@ def test_save_preserves_other_sections(tmp_path: Path) -> None:
 
 def test_normalized_clamps_values() -> None:
     settings = BackchannelSettings(
-        enabled=True, mode="hybrid", delay_ms=999999, probability=3.0
+        enabled=True, mode="hybrid", delay_ms=999999, probability=3.0, timeout_ms=999999
     ).normalized()
-    # v1 仅实现 off/rules,非法 mode 回退默认
-    assert settings.mode == "rules"
+    assert settings.mode == "hybrid"
     assert settings.delay_ms == 5000
     assert settings.probability == 1.0
-    low = BackchannelSettings(delay_ms=1, probability=-0.5).normalized()
+    assert settings.timeout_ms == 2000
+    low = BackchannelSettings(mode="missing", delay_ms=1, probability=-0.5, timeout_ms=-1).normalized()
+    assert low.mode == "rules"
     assert low.delay_ms == 100
     assert low.probability == 0.0
+    assert low.timeout_ms == 0
 
 
 def test_mode_off_is_inactive() -> None:

@@ -72,8 +72,10 @@ from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
 from app.backchannel.audio_cache import BackchannelAudioCache, voice_fingerprint
 from app.backchannel.classifier import RuleClassifier
 from app.backchannel.controller import BackchannelController
+from app.backchannel.eval_log import BackchannelEvalLogger
+from app.backchannel.hybrid_classifier import HybridBackchannelClassifier
 from app.backchannel.manifest import BackchannelManifestError, load_backchannel_manifest
-from app.backchannel.models import BackchannelManifest
+from app.backchannel.models import BackchannelLabel, BackchannelManifest
 from app.backchannel.resolver import BackchannelChoice
 from app.agent.runtime_events import (
     APP_CLOSED,
@@ -822,10 +824,15 @@ class PetWindow(QWidget):
         self._backchannel_audio_cache: BackchannelAudioCache | None = None
         self._backchannel_prepared_audio: dict[tuple[str, str, str], TTSPreparedAudio] = {}
         self._active_backchannel_audio: TTSPreparedAudio | None = None
+        self.backchannel_eval_logger = BackchannelEvalLogger(
+            self.base_dir,
+            enabled=self.debug_log_settings.enabled,
+        )
         self.backchannel_controller = BackchannelController(
-            RuleClassifier(),
+            self._create_backchannel_classifier(self.backchannel_settings),
             self._display_backchannel,
             settings=self.backchannel_settings,
+            on_classified=self._log_backchannel_classification,
             parent=self,
         )
         self._load_backchannel_manifest_for(self.character_profile)
@@ -1279,11 +1286,50 @@ class PetWindow(QWidget):
         self.backchannel_settings = settings.normalized()
         controller = getattr(self, "backchannel_controller", None)
         if controller is not None:
+            set_classifier = getattr(controller, "set_classifier", None)
+            if callable(set_classifier):
+                set_classifier(self._create_backchannel_classifier(self.backchannel_settings))
             controller.set_settings(self.backchannel_settings)
         if not self._backchannel_tts_wanted():
             self._discard_backchannel_audio_cache()
             return
         self._prepare_backchannel_audio_cache()
+
+    def _create_backchannel_classifier(
+        self,
+        settings: BackchannelSettings,
+    ) -> RuleClassifier | HybridBackchannelClassifier:
+        normalized = settings.normalized()
+        if normalized.mode != "hybrid":
+            return RuleClassifier()
+
+        classifier = HybridBackchannelClassifier.from_model_cache(self.base_dir)
+
+        from PySide6.QtCore import QRunnable, QThreadPool
+
+        class _BackchannelPrewarmRunnable(QRunnable):
+            def __init__(self, target: HybridBackchannelClassifier) -> None:
+                super().__init__()
+                self._target = target
+
+            def run(self) -> None:
+                try:
+                    self._target.preload()
+                except Exception as exc:  # noqa: BLE001
+                    debug_log("Backchannel", "后台预加载接话模型失败", {"error": str(exc)})
+
+        QThreadPool.globalInstance().start(_BackchannelPrewarmRunnable(classifier))
+        return classifier
+
+    def _log_backchannel_classification(
+        self,
+        text: str,
+        label: BackchannelLabel | None,
+        choice: BackchannelChoice | None,
+    ) -> None:
+        logger = getattr(self, "backchannel_eval_logger", None)
+        if logger is not None:
+            logger.log(text, label, choice, mode=self.backchannel_settings.normalized().mode)
 
     def _cancel_backchannel(self) -> None:
         controller = getattr(self, "backchannel_controller", None)
@@ -4687,6 +4733,9 @@ class PetWindow(QWidget):
         mcp_restart_required = dialog.result_mcp_settings != self.mcp_settings
         self.mcp_settings = dialog.result_mcp_settings
         self.debug_log_settings = dialog.result_debug_log_settings
+        eval_logger = getattr(self, "backchannel_eval_logger", None)
+        if eval_logger is not None:
+            eval_logger.set_enabled(self.debug_log_settings.enabled)
         self.startup_settings = result_startup_settings
         sync_screen_awareness_timer = getattr(self, "_sync_screen_awareness_timer", None)
         if callable(sync_screen_awareness_timer):

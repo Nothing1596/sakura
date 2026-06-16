@@ -481,10 +481,17 @@ class SettingsDialog(QDialog):
         self._set_form_widgets_enabled(
             getattr(self, "_backchannel_form_layout", None),
             (
+                self.backchannel_mode_combo,
                 self.backchannel_delay_spin,
                 self.backchannel_probability_spin,
             ),
             enabled,
+        )
+        mode = str(self.backchannel_mode_combo.currentData() or "rules")
+        self._set_form_widgets_enabled(
+            getattr(self, "_backchannel_form_layout", None),
+            (self.backchannel_timeout_spin,),
+            enabled and mode == "hybrid",
         )
         tts_check = getattr(self, "tts_enabled_check", None)
         tts_on = tts_check.isChecked() if tts_check is not None else True
@@ -1407,11 +1414,11 @@ class SettingsDialog(QDialog):
             ),
             "backchannel_settings": BackchannelSettings(
                 enabled=self.backchannel_enabled_check.isChecked(),
-                # mode 不暴露在设置页，保留配置文件中的手工值。
-                mode=self.backchannel_settings.mode,
+                mode=str(self.backchannel_mode_combo.currentData() or "rules"),
                 delay_ms=self.backchannel_delay_spin.value(),
                 probability=self.backchannel_probability_spin.value(),
                 tts_enabled=self.backchannel_tts_enabled_check.isChecked(),
+                timeout_ms=self.backchannel_timeout_spin.value(),
             ),
         }
 

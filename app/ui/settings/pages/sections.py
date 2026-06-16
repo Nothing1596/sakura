@@ -41,7 +41,9 @@ from app.agent.screen_awareness import (
 from app.config.character_loader import CharacterProfile, CharacterRegistry
 from app.config.settings_service import (
     BACKCHANNEL_MAX_DELAY_MS,
+    BACKCHANNEL_MAX_TIMEOUT_MS,
     BACKCHANNEL_MIN_DELAY_MS,
+    BACKCHANNEL_MIN_TIMEOUT_MS,
     BUBBLE_AUTO_HIDE_MAX_DELAY_SECONDS,
     BUBBLE_AUTO_HIDE_MIN_DELAY_SECONDS,
     BackchannelSettings,
@@ -810,6 +812,14 @@ class SystemSettingsPage:
         owner.backchannel_enabled_check.setToolTip(
             "用户发消息后，主回复返回前先显示一句角色化过渡反应。"
         )
+        owner.backchannel_mode_combo = _NoWheelComboBox(tab)
+        owner.backchannel_mode_combo.addItem("规则模式", "rules")
+        owner.backchannel_mode_combo.addItem("模型增强", "hybrid")
+        owner.backchannel_mode_combo.setToolTip(
+            "模型增强会先用高精度规则；规则无命中时由本地 probe 分类，失败或低置信自动兜底。"
+        )
+        mode_index = owner.backchannel_mode_combo.findData(normalized_backchannel.mode)
+        owner.backchannel_mode_combo.setCurrentIndex(max(0, mode_index))
         owner.backchannel_tts_enabled_check = QCheckBox("接话语音（缺失时用当前 TTS 合成）", tab)
         owner.backchannel_tts_enabled_check.setChecked(normalized_backchannel.tts_enabled)
         owner.backchannel_tts_enabled_check.setToolTip(
@@ -824,7 +834,17 @@ class SystemSettingsPage:
         owner.backchannel_probability_spin.setSingleStep(0.05)
         owner.backchannel_probability_spin.setDecimals(2)
         owner.backchannel_probability_spin.setValue(normalized_backchannel.probability)
+        owner.backchannel_timeout_spin = _NoWheelSpinBox(tab)
+        owner.backchannel_timeout_spin.setRange(BACKCHANNEL_MIN_TIMEOUT_MS, BACKCHANNEL_MAX_TIMEOUT_MS)
+        owner.backchannel_timeout_spin.setSuffix(" 毫秒")
+        owner.backchannel_timeout_spin.setValue(normalized_backchannel.timeout_ms)
+        owner.backchannel_timeout_spin.setToolTip("仅模型增强模式生效；超时后按无标签落兜底。")
         owner.backchannel_enabled_check.toggled.connect(owner._sync_backchannel_controls)
+        owner.backchannel_mode_combo.currentIndexChanged.connect(
+            lambda _index: owner._sync_backchannel_controls(
+                owner.backchannel_enabled_check.isChecked()
+            )
+        )
         tts_enabled_check = getattr(owner, "tts_enabled_check", None)
         if tts_enabled_check is not None:
             tts_enabled_check.toggled.connect(
@@ -858,9 +878,11 @@ class SystemSettingsPage:
         backchannel_form.setContentsMargins(16, 12, 16, 12)
         backchannel_form.setSpacing(12)
         backchannel_form.addRow("", owner.backchannel_enabled_check)
+        backchannel_form.addRow("接话模式", owner.backchannel_mode_combo)
         backchannel_form.addRow("", owner.backchannel_tts_enabled_check)
         backchannel_form.addRow("接话延迟", owner.backchannel_delay_spin)
         backchannel_form.addRow("接话触发概率", owner.backchannel_probability_spin)
+        backchannel_form.addRow("模型分类超时", owner.backchannel_timeout_spin)
         owner._backchannel_form_layout = backchannel_form
 
         layout = QVBoxLayout()
