@@ -8,7 +8,7 @@ Sakura 采用比较直接的运行时结构：UI 负责收集用户输入、截�
 
 `AgentRuntime` 直接使用 OpenAI 兼容接口的原生 `tool_calls` 协议。模型可以在同一轮对话里决定是否调用工具，工具结果会以 tool role 回填给模型，再由模型产出最终角色回复。这样不再需要额外的路由拆分模块，链路更短，也更容易保证提醒、主动关怀、工具确认后的回复都进入同一套字幕和语音播放流程。
 
-最终回复统一按分段 JSON 组织：每段包含日文原文、中文字幕、语气和立绘标识。UI 只消费这份结构，同步驱动字幕、表情切换和 TTS 播放；如果模型输出格式不合格，运行时会尝试一次格式修复，避免坏 JSON 直接进入界面。
+最终回复统一按分段 JSON 组织：每段包含日文原文、中文字幕、语气和立绘标识。启用桌宠状态后，回复 JSON 还会在 `segments` 同级携带 `pet_state_delta`，用于更新跨轮次心情状态。UI 只消费解析后的结构，同步驱动字幕、表情切换、TTS 播放和桌宠状态落盘；如果模型输出格式不合格，运行时会尝试一次格式修复，避免坏 JSON 直接进入界面。
 
 ## 启动流程
 
@@ -39,8 +39,9 @@ flowchart LR
     N --> S["AgentRuntime<br/>原生 tool_calls 循环"]
     S --> T["ToolRegistry"]
     T --> U["内置工具 + MCP 工具 + 插件工具"]
-    S --> V["ChatReply<br/>分段 JSON 回复"]
+    S --> V["ChatReply<br/>segments + pet_state_delta"]
     V --> L
+    L --> X["PetStateStore<br/>跨轮次状态"]
     L --> W["字幕 / 立绘 / TTS"]
 ```
 
@@ -85,10 +86,15 @@ flowchart LR
 │   │   └── yaml_config.py              # YAML 通用工具
 │   ├── llm/                            # LLM 客户端
 │   │   ├── api_client.py               # OpenAI 兼容客户端
-│   │   ├── chat_reply.py               # 分段回复解析
+│   │   ├── chat_reply.py               # 分段回复和 pet_state_delta 解析
 │   │   ├── context_trimming.py         # 上下文修剪
 │   │   ├── prompt_templates.py         # 提示词模板
 │   │   └── prompts/                    # 提示词块/渲染
+│   ├── pet_state/                      # 桌宠跨轮次状态
+│   │   ├── models.py                   # 状态结构 / delta 校验 / display 派生
+│   │   ├── store.py                    # PetStateStore / 持久化 / signal
+│   │   ├── tools.py                    # pet_state_get / pet_state_update
+│   │   └── prompting.py                # pet_state 上下文注入
 │   ├── plugins/                        # 插件系统（原生）
 │   │   ├── models.py                   # PluginManifest / PluginSpec / Contribution
 │   │   ├── base.py                     # PluginBase / PluginContext
@@ -118,6 +124,7 @@ flowchart LR
 │   ├── config/                         # YAML 配置（api.yaml / system_config.yaml 等）
 │   ├── chat_history/                   # 聊天记录
 │   ├── memory/                         # 长期记忆
+│   ├── pet_state/                      # 每角色桌宠状态 JSON
 │   └── visual_observations/            # 视觉观察记录
 ├── tests/                              # pytest 测试
 │   ├── unit/                           # 单元测试（配置 / LLM / 工具 / 运行时等）
@@ -125,6 +132,7 @@ flowchart LR
 │   └── ui/                             # UI 测试
 ├── docs/                               # 文档
 │   ├── TECHNICAL_README.md             # 技术讲解 README
+│   ├── PET_STATE_IMPLEMENTATION_PLAN.md # 桌宠状态开发文档
 │   └── SAKURA_PLUGIN_SDK.md            # 插件开发指南
 └── tools/mcp/                          # MCP Server 运行时
 ```
