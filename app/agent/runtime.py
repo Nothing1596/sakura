@@ -985,15 +985,15 @@ class AgentRuntime:
 - 屏幕：理解当前画面用 observe_screen（仅启用时可用）。
 - 桌面控制：窗口、鼠标、键盘和系统界面操作用 windows__*。
 - 提醒与记忆：add_reminder、memory_search、memory_remember、memory_forget
-- 桌宠状态：读取当前心情/状态用 pet_state_get；长期心情变化用 pet_state_update。
+- 桌宠状态：普通回复通过最终 JSON 的 pet_state_delta 提交状态建议；显式读取或手动修正时才使用 pet_state_get / pet_state_update。
 
 工具要求：
 - 只调用 API tools 列表中真实存在的工具；工具能帮助完成请求时优先发起原生 tool_calls。
 - 可以在 assistant content 中写一句可直接说给用户听的短句；不要提前给最终结论。
 - 不要臆造工具名；只能使用 API tools 列表中的工具。
 - 高风险或 requires_confirmation 工具会在用户确认后执行；你可以发起 tool_call，但正文要简短说明为什么需要确认。
-- 用户询问 Sakura 当前心情、状态、感觉如何、是否开心/难过/累等桌宠状态时，必须先调用 pet_state_get，再根据工具结果回答。
-- 本轮互动会改变跨轮次心情时，必须在最终回复前调用 pet_state_update；若只是询问当前状态且状态不变，只调用 pet_state_get，不要为了形式调用 pet_state_update。
+- 宿主已经注入桌宠状态快照时，直接据此回答，不要重复调用 pet_state_get。
+- 普通回复不要调用 pet_state_update；状态建议写入最终 JSON 的 pet_state_delta。只有用户明确要求调试或手动修正状态时才调用 pet_state_update。
 - pet_state_update 只能提交 mood、affect、evidence，不要提交 display；display 是宿主派生字段。
 - 用户明确要求浏览器可见过程或网页操作时，用 playwright_*，不要用后台 web__ 替代。
 - 浏览器外的桌面点击、输入、窗口操作才用 windows__*；操作前先用 windows__Snapshot / windows__Screenshot 获取真实状态。

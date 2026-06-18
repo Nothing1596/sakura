@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -19,8 +20,8 @@ from app.storage.atomic import atomic_write_text
 class PetStateStore(QObject):
     """本地桌宠状态存储。
 
-    Store 由宿主持有，模型只能通过工具提交 delta；前端通过 state_changed
-    接收已校验、已持久化后的快照。
+    Store 由宿主持有，结构化回复和兼容工具都通过本对象提交 delta；前端通过
+    state_changed 接收已校验、已持久化后的快照。
     """
 
     state_changed = Signal(object)
@@ -46,6 +47,33 @@ class PetStateStore(QObject):
             raise ValueError("pet_state_update.force_fields 必须是字符串数组。")
         forced = bool(arguments.get("forced", False))
         force_reason = str(arguments.get("force_reason") or "")
+        return self._submit_delta(
+            delta,
+            forced=forced,
+            force_fields=force_fields,
+            force_reason=force_reason,
+        )
+
+    def update_from_reply(self, delta: dict[str, Any]) -> dict[str, Any]:
+        """提交结构化回复中的原始 delta，并补充默认触发来源。"""
+        if not isinstance(delta, dict):
+            raise ValueError("pet_state_delta 必须是 JSON object。")
+        submitted_delta = deepcopy(delta)
+        if "evidence" not in submitted_delta:
+            submitted_delta["evidence"] = {"last_trigger": "assistant_reply"}
+        elif isinstance(submitted_delta["evidence"], dict):
+            evidence = submitted_delta["evidence"]
+            evidence.setdefault("last_trigger", "assistant_reply")
+        return self._submit_delta(submitted_delta)
+
+    def _submit_delta(
+        self,
+        delta: dict[str, Any],
+        *,
+        forced: bool = False,
+        force_fields: list[str] | None = None,
+        force_reason: str = "",
+    ) -> dict[str, Any]:
         with self._lock:
             next_record, decision = apply_pet_state_delta(
                 self._record,
@@ -54,9 +82,9 @@ class PetStateStore(QObject):
                 force_fields=force_fields,
                 force_reason=force_reason,
             )
+            snapshot = next_record.to_dict()
+            self._save_record_locked(next_record)
             self._record = next_record
-            snapshot = self._record.to_dict()
-            self._save_locked()
         self.state_changed.emit(snapshot)
         return {
             "state": snapshot["state"],
@@ -78,9 +106,9 @@ class PetStateStore(QObject):
         except ValueError:
             return default_pet_state_record()
 
-    def _save_locked(self) -> None:
+    def _save_record_locked(self, record: PetStateRecord) -> None:
         atomic_write_text(
             self.path,
-            json.dumps(self._record.to_dict(), ensure_ascii=False, indent=2) + "\n",
+            json.dumps(record.to_dict(), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )

@@ -209,16 +209,26 @@ def apply_pet_state_delta(
         evidence, evidence_revisions = _apply_evidence_delta(evidence, evidence_delta)
         revised_fields.extend(evidence_revisions)
 
-    next_state = PetState(
+    candidate_state = PetState(
         mood=mood,
         affect=affect,
         evidence=evidence,
         display=display_for_mood(mood),
-        updated_at=_now_iso() if delta else state.updated_at,
+        updated_at=state.updated_at,
     )
     before_state = state.to_dict()
-    after_state = next_state.to_dict()
-    changed = before_state != after_state
+    changed = before_state != candidate_state.to_dict()
+    next_state = (
+        PetState(
+            mood=candidate_state.mood,
+            affect=candidate_state.affect,
+            evidence=candidate_state.evidence,
+            display=candidate_state.display,
+            updated_at=_now_iso(),
+        )
+        if changed
+        else state
+    )
     submitted_at = _now_iso()
     model_delta = {
         "submitted_at": submitted_at,

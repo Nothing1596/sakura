@@ -8847,6 +8847,73 @@ def test_consume_agent_result_applies_structured_pet_state_delta(tmp_path) -> No
     assert snapshot["last_model_delta"]["delta"]["mood"] == "happy"
 
 
+def test_consume_agent_result_rejects_unknown_pet_state_delta_fields(tmp_path) -> None:
+    from app.agent import AgentResult
+    from app.llm.chat_reply import ChatReply
+    from app.pet_state.store import PetStateStore
+    from app.ui.pet_window import PetWindow
+
+    class MinimalConsumeWindow:
+        _consume_agent_result = PetWindow._consume_agent_result
+        _apply_reply_pet_state_delta = PetWindow._apply_reply_pet_state_delta
+
+    window = MinimalConsumeWindow()
+    window.messages = []
+    window.pet_state_store = PetStateStore(tmp_path / "pet_state.json")
+    window._log_interaction_stage = lambda *_args, **_kwargs: None
+    window._record_assistant_reply_history = lambda *_args, **_kwargs: None
+    window._show_reply_segments = lambda _segments: None
+    window._apply_pending_action_from_result = lambda _result: None
+    result = AgentResult(
+        reply=ChatReply(
+            [ChatSegment("元気だよ。", "中性", "我很好。", "站立待机")],
+            pet_state_delta={"display": {"label": "由模型指定"}},
+        )
+    )
+
+    window._consume_agent_result(result)
+
+    snapshot = window.pet_state_store.snapshot()
+    assert snapshot["state"]["mood"] == "neutral"
+    assert snapshot["last_model_delta"] is None
+
+
+def test_consume_agent_result_skips_reply_delta_after_successful_update_tool(tmp_path) -> None:
+    from app.agent import AgentAction, AgentResult
+    from app.llm.chat_reply import ChatReply
+    from app.pet_state.store import PetStateStore
+    from app.ui.pet_window import PetWindow
+
+    class MinimalConsumeWindow:
+        _consume_agent_result = PetWindow._consume_agent_result
+        _apply_reply_pet_state_delta = PetWindow._apply_reply_pet_state_delta
+
+    window = MinimalConsumeWindow()
+    window.messages = []
+    window.pet_state_store = PetStateStore(tmp_path / "pet_state.json")
+    window.pet_state_store.update_from_tool({"delta": {"mood": "happy"}})
+    window._log_interaction_stage = lambda *_args, **_kwargs: None
+    window._record_assistant_reply_history = lambda *_args, **_kwargs: None
+    window._show_reply_segments = lambda _segments: None
+    window._apply_pending_action_from_result = lambda _result: None
+    result = AgentResult(
+        reply=ChatReply(
+            [ChatSegment("元気だよ。", "中性", "我很好。", "站立待机")],
+            pet_state_delta={"mood": "sad"},
+        ),
+        actions=[
+            AgentAction(
+                type="tool_call",
+                payload={"tool_name": "pet_state_update", "success": True},
+            )
+        ],
+    )
+
+    window._consume_agent_result(result)
+
+    assert window.pet_state_store.snapshot()["state"]["mood"] == "happy"
+
+
 def test_event_with_pet_state_context_adds_reply_contract(tmp_path) -> None:
     from app.agent import AgentEvent
     from app.pet_state.store import PetStateStore

@@ -567,5 +567,4 @@ class BackchannelPlugin(PluginBase):
 4. 需要弹气泡、朗读、请求主动回复 → 用 `context.services`。
 5. 配置与状态分别用 `get_config()` / `save_config()` 与 `data_dir` 持久化。
 
-参考最小示例：`plugins/emotion_state_example/`（订阅事件 + 注入「当前桌宠状态」上下文）。
-
+参考最小示例：`plugins/emotion_state_example/`（默认禁用；订阅事件 + 注入演示状态上下文）。正式桌宠状态由宿主内置 `pet_state` 能力提供，避免同时注入两套状态。

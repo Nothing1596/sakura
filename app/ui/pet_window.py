@@ -1782,19 +1782,15 @@ class PetWindow(QWidget):
         if normalized.mode == "hybrid":
             classifier = HybridBackchannelClassifier.from_model_cache(self.base_dir)
             # 在后台线程异步预加载，避免阻塞 GUI 线程
-            from PySide6.QtCore import QRunnable, QThreadPool
-            class PrewarmRunnable(QRunnable):
-                def __init__(self, classifier: HybridBackchannelClassifier) -> None:
-                    super().__init__()
-                    self._classifier = classifier
-
-                def run(self) -> None:
-                    try:
-                        self._classifier.preload()
-                    except Exception as exc:
-                        from app.core.debug_log import debug_log
-                        debug_log("Backchannel", "后台预加载模型失败", {"error": str(exc)})
-            QThreadPool.globalInstance().start(PrewarmRunnable(classifier))
+            import threading
+            def run_preload() -> None:
+                try:
+                    classifier.preload()
+                except Exception as exc:
+                    from app.core.debug_log import debug_log
+                    debug_log("Backchannel", "后台预加载模型失败", {"error": str(exc)})
+            thread = threading.Thread(target=run_preload, daemon=True)
+            thread.start()
             return classifier
         return RuleClassifier()
 
@@ -3274,7 +3270,7 @@ class PetWindow(QWidget):
         reply = result.reply
         apply_pet_state_delta = getattr(self, "_apply_reply_pet_state_delta", None)
         if callable(apply_pet_state_delta):
-            apply_pet_state_delta(reply)
+            apply_pet_state_delta(reply, result.actions)
         self.messages.append({"role": "assistant", "content": reply.text})
         self._record_assistant_reply_history(reply, _debug=result._debug)
         self._log_interaction_stage("assistant_message_recorded")
@@ -3724,21 +3720,31 @@ class PetWindow(QWidget):
         if record_history:
             apply_pet_state_delta = getattr(self, "_apply_reply_pet_state_delta", None)
             if callable(apply_pet_state_delta):
-                apply_pet_state_delta(reply)
+                apply_pet_state_delta(reply, result.actions)
             self.messages.append({"role": "assistant", "content": reply.text})
             self._record_assistant_reply_history(reply, _debug=result._debug)
         self._show_reply_segments(reply.segments)
         self._apply_pending_action_from_result(result)
 
-    def _apply_reply_pet_state_delta(self, reply: ChatReply) -> None:
+    def _apply_reply_pet_state_delta(
+        self,
+        reply: ChatReply,
+        actions: list[Any] | None = None,
+    ) -> None:
         delta = getattr(reply, "pet_state_delta", None)
         if not isinstance(delta, dict) or not delta:
+            return
+        if _has_successful_pet_state_update_action(actions):
+            debug_log(
+                "PetState",
+                "本轮已通过兼容工具更新桌宠状态，跳过最终回复 delta",
+            )
             return
         store = getattr(self, "pet_state_store", None)
         if store is None:
             return
         try:
-            result = store.update_from_tool({"delta": _normalize_reply_pet_state_delta(delta)})
+            result = store.update_from_reply(delta)
         except (OSError, ValueError) as exc:
             debug_log(
                 "PetState",
@@ -6509,28 +6515,16 @@ def _format_pet_state_snapshot_for_ui(snapshot: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
-def _normalize_reply_pet_state_delta(delta: dict[str, Any]) -> dict[str, Any]:
-    normalized: dict[str, Any] = {}
-    if "mood" in delta:
-        normalized["mood"] = delta.get("mood")
-    affect = delta.get("affect")
-    if isinstance(affect, dict):
-        normalized["affect"] = {
-            key: affect.get(key)
-            for key in ("valence", "arousal", "confidence")
-            if key in affect
-        }
-    evidence = delta.get("evidence")
-    if isinstance(evidence, dict):
-        normalized["evidence"] = {
-            key: evidence.get(key)
-            for key in ("last_user_signal", "last_trigger", "reason")
-            if key in evidence
-        }
-    else:
-        normalized["evidence"] = {}
-    normalized["evidence"].setdefault("last_trigger", "assistant_reply")
-    return normalized
+def _has_successful_pet_state_update_action(actions: list[Any] | None) -> bool:
+    for action in actions or []:
+        if getattr(action, "type", "") != "tool_call":
+            continue
+        payload = getattr(action, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("tool_name") == "pet_state_update" and payload.get("success") is True:
+            return True
+    return False
 
 
 def _display_value(value: object, fallback: str = "暂无") -> str:

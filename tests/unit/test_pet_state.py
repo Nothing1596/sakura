@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +11,19 @@ from app.agent.tools import ToolRegistry
 from app.pet_state.prompting import build_pet_state_context_message
 from app.pet_state.store import PetStateStore
 from app.pet_state.tools import create_pet_state_tools
+
+
+def test_pet_state_modules_import_in_clean_process() -> None:
+    root = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(
+        [sys.executable, "-c", "import app.pet_state.store; import app.pet_state.tools"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_pet_state_store_updates_clamps_and_persists(tmp_path) -> None:
@@ -55,6 +71,75 @@ def test_pet_state_update_rejects_readonly_display(tmp_path) -> None:
         )
 
 
+def test_pet_state_reply_rejects_unknown_fields_without_sanitizing(tmp_path) -> None:
+    store = PetStateStore(tmp_path / "pet_state.json")
+
+    with pytest.raises(ValueError, match="display, unexpected"):
+        store.update_from_reply(
+            {
+                "display": {"label": "由模型指定"},
+                "unexpected": True,
+            }
+        )
+
+    assert store.snapshot()["last_model_delta"] is None
+
+
+def test_pet_state_reply_adds_default_trigger(tmp_path) -> None:
+    store = PetStateStore(tmp_path / "pet_state.json")
+
+    store.update_from_reply(
+        {
+            "mood": "happy",
+            "evidence": {"reason": "回复表达了积极情绪"},
+        }
+    )
+
+    snapshot = store.snapshot()
+    assert snapshot["state"]["evidence"]["last_trigger"] == "assistant_reply"
+    assert snapshot["last_model_delta"]["delta"]["evidence"]["last_trigger"] == "assistant_reply"
+
+
+def test_pet_state_reply_rejects_explicit_null_evidence(tmp_path) -> None:
+    store = PetStateStore(tmp_path / "pet_state.json")
+
+    with pytest.raises(ValueError, match="evidence"):
+        store.update_from_reply({"mood": "happy", "evidence": None})
+
+    assert store.snapshot()["last_model_delta"] is None
+
+
+def test_pet_state_identical_delta_is_noop_without_refreshing_state_time(tmp_path) -> None:
+    store = PetStateStore(tmp_path / "pet_state.json")
+    delta = {
+        "mood": "happy",
+        "affect": {"valence": 0.4},
+        "evidence": {"last_trigger": "assistant_reply", "reason": "状态稳定"},
+    }
+    store.update_from_reply(delta)
+    updated_at = store.snapshot()["state"]["updated_at"]
+
+    result = store.update_from_reply(delta)
+
+    assert result["harness_decision"]["status"] == "noop"
+    assert store.snapshot()["state"]["updated_at"] == updated_at
+
+
+def test_pet_state_persist_failure_keeps_previous_in_memory_state(tmp_path, monkeypatch) -> None:
+    store = PetStateStore(tmp_path / "pet_state.json")
+    before = store.snapshot()
+
+    def fail_save(_record) -> None:  # type: ignore[no-untyped-def]
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "_save_record_locked", fail_save)
+
+    with pytest.raises(OSError, match="disk full"):
+        store.update_from_reply({"mood": "sad"})
+
+    assert store.snapshot() == before
+
+
 def test_pet_state_tools_read_and_update(tmp_path) -> None:
     store = PetStateStore(tmp_path / "pet_state.json")
     registry = ToolRegistry(create_pet_state_tools(store))
@@ -92,5 +177,6 @@ def test_pet_state_context_keeps_display_readonly_boundary(tmp_path) -> None:
     assert "pet_state_get" in content
     assert "pet_state_delta" in content
     assert "必须" in content
-    assert "当前心情" in content
+    assert "当前状态快照已经由宿主提供" in content
     assert "不要写 display" in content
+    assert "普通回复不要调用 pet_state_update" in content

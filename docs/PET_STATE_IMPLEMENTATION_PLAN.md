@@ -1,6 +1,6 @@
 # 桌宠状态 Pet State 开发文档
 
-本文记录 Sakura 桌宠状态模块的当前 MVP 实现、开发边界和后续路线。当前实现已经从“依赖模型主动调用 `pet_state_update` 工具”调整为“结构化回复每次携带 `pet_state_delta`，本地自动校验、落盘并同步 UI”。
+本文记录 Sakura 桌宠状态模块的当前 MVP 实现、开发边界和后续路线。该模块定性为**宿主内置能力 + 内置工具**，不是外部插件。当前实现已经从“依赖模型主动调用 `pet_state_update` 工具”调整为“结构化回复每次携带 `pet_state_delta`，本地自动校验、落盘并同步 UI”。
 
 ## 目标
 
@@ -25,16 +25,16 @@ PetStateStore.snapshot()
   -> ChatReply 解析并保留 pet_state_delta
   -> AgentRuntime / API 层发现缺失 pet_state_delta 时触发一次结构修复
   -> PetWindow 收到 AgentResult 后应用 reply.pet_state_delta
-  -> PetStateStore.update_from_tool() 校验、钳制、审计、落盘
+  -> PetStateStore.update_from_reply() 校验、钳制、审计、落盘
   -> state_changed signal 更新右键状态气泡
 ```
 
 工具路径仍然保留：
 
 - `pet_state_get`: 读取当前状态和最近审计。
-- `pet_state_update`: 兼容旧工具调用、调试或模型主动修正。
+- `pet_state_update`: 仅用于显式调试、手动修正或兼容旧工具调用。
 
-但普通回复的状态更新以顶层 `pet_state_delta` 为准。
+普通回复的状态更新以顶层 `pet_state_delta` 为准，不要求也不鼓励先调用 `pet_state_update`。如果同一轮已经成功执行兼容更新工具，宿主会跳过最终回复中的 delta，避免重复裁决和落盘。
 
 ## 回复 JSON 合约
 
@@ -167,7 +167,9 @@ PetStateStore.snapshot()
 
 - `PetStateStore(QObject)` 是本地状态权威。
 - `snapshot()` 返回当前完整记录。
-- `update_from_tool(arguments)` 接受 `{"delta": ...}`，调用模型层校验后落盘。
+- `update_from_reply(delta)` 接受结构化回复中的原始 delta，保留未知字段供 schema / harness 拒绝。
+- `update_from_tool(arguments)` 接受 `{"delta": ...}`，作为显式调试和兼容入口。
+- 两个入口最终复用同一提交函数，先成功落盘，再替换内存状态并发送 signal。
 - 写入成功后发出 `state_changed` signal。
 - 读取失败或文件损坏时回退默认状态。
 
@@ -185,6 +187,7 @@ PetStateStore.snapshot()
   - `tone` / `portrait` 是当前回复段表现。
   - 最终 JSON 必须包含 `pet_state_delta`。
   - `pet_state_delta` 不允许写 `display`。
+  - 普通回复不调用 `pet_state_update`，避免工具路径和最终回复路径双写。
 
 ### `app/llm/chat_reply.py`
 
@@ -311,17 +314,24 @@ Schema：
 注意：
 
 - 普通回复不依赖这个工具更新状态。
-- 工具入口和结构化回复入口最终都复用 `PetStateStore.update_from_tool()`。
+- 工具入口和结构化回复入口最终都复用 Store 内部的同一提交事务。
 - `forced` 只记录请求，不绕过 schema、范围、长度和只读字段校验。
 
 ## 插件边界
 
-当前 MVP 是宿主能力，不是外部插件：
+当前 MVP 定性为宿主内置能力，不是外部插件：
 
 - `PetStateStore` 由 `AppContext` 持有。
 - 工具注册由内置工具系统完成。
 - UI 更新依赖 Qt signal。
 - 状态上下文由 `PetWindow` 主动注入模型请求。
+
+不采用纯插件的原因：
+
+- 当前插件 SDK 可以注册工具、动态上下文和私有存储，但不能扩展 `ChatReply` 顶层协议并消费 `pet_state_delta`。
+- 插件 SDK 没有托盘菜单、独立状态气泡和置顶生命周期贡献点。
+- 状态写入需要与宿主回复消费、角色切换、原子落盘和 Qt signal 保持同一事务边界。
+- 若为此增加多组宿主扩展点，复杂度高于直接保留内置能力。
 
 未来插件 SDK 可以扩展：
 
@@ -345,6 +355,7 @@ Schema：
 - `tests/unit/test_pet_state.py`
   - store 更新、钳制、持久化。
   - `display` 只读保护。
+  - 干净进程导入、未知字段拒绝、重复 delta noop、落盘失败回滚。
   - `pet_state_get/update` 工具路径。
   - pet state context 包含 `pet_state_delta` 契约。
 - `tests/unit/test_api_client.py`
@@ -358,6 +369,7 @@ Schema：
   - 状态气泡持久化显示/解除。
   - 状态气泡置顶跟随主窗口。
   - 结构化 `pet_state_delta` 应用到 store。
+  - 兼容更新工具与最终 delta 的同轮去重。
   - 主动事件注入 `pet_state_context`。
 - `tests/unit/test_bootstrap.py`
   - `AppContext` 创建 pet state store。
@@ -374,10 +386,10 @@ Schema：
 当前开发目录验证结果：
 
 ```text
-1059 passed, 1 warning
+1132 passed, 1 skipped
 ```
 
-warning 是既有的 `sdk.tool_registry` 废弃导入提示。
+skip 是 CI 条件下跳过需要真实音频设备的 `AudioSinkPlayer` 测试。
 
 ## 后续路线
 

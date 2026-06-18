@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.agent.tools import Tool
 from app.pet_state.store import PetStateStore
+
+if TYPE_CHECKING:
+    from app.agent.tools import Tool
 
 
 PET_STATE_TOOL_GROUP = "pet_state"
 
 
 def create_pet_state_tools(store: PetStateStore) -> list[Tool]:
+    from app.agent.tools import Tool
+
     return [
         Tool(
             name="pet_state_get",
@@ -26,8 +30,9 @@ def create_pet_state_tools(store: PetStateStore) -> list[Tool]:
         Tool(
             name="pet_state_update",
             description=(
-                "提交 Sakura 跨轮次桌宠状态的局部修改建议。只允许修改 mood、affect、evidence；"
-                "当本轮互动明显影响长期心情时，在最终回复前调用。不要传 display，display 由宿主根据状态派生。"
+                "显式调试或手动修正 Sakura 跨轮次桌宠状态。普通回复不要调用；"
+                "普通回复应在最终 JSON 中提交 pet_state_delta。只允许修改 mood、affect、evidence；"
+                "不要传 display，display 由宿主根据状态派生。"
             ),
             parameters=_pet_state_update_schema(),
             handler=store.update_from_tool,

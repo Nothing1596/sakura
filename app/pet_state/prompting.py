@@ -24,11 +24,10 @@ def build_pet_state_context_message(snapshot: dict[str, Any] | None) -> dict[str
         '{"segments":[{"ja":"日文原文","zh":"中文译文","tone":"中性","portrait":"站立待机"}],'
         '"pet_state_delta":{"mood":"neutral","affect":{"valence":0.0,"arousal":0.2,"confidence":0.7},'
         '"evidence":{"last_user_signal":"最近用户或事件信号","last_trigger":"assistant_reply","reason":"状态判断理由"}}}。'
-        "当用户直接询问 Sakura 当前心情、状态或感觉如何时，先调用 pet_state_get 读取当前状态后再回答；"
-        "如果只是查询且状态不变，不要调用 pet_state_update。"
-        "如果本轮用户消息、运行事件或你的回复会让 Sakura 的跨轮次心情明显变化，"
-        "应先调用 pet_state_update 提交 delta，再给出最终回复；"
-        "如果状态没有变化，不要为了形式调用工具。"
+        "当前状态快照已经由宿主提供，可以直接据此回答心情或状态问题；"
+        "只有用户明确要求调试、手动修正或重新读取状态时，才使用 pet_state_get 或 pet_state_update。"
+        "普通回复不要调用 pet_state_update；本轮后的状态建议只写在最终 JSON 的 pet_state_delta 中，"
+        "由宿主统一校验并应用。"
         "delta 只写 mood、affect、evidence；不要写 display，display 是宿主只读派生。"
         "不要在自然回复中复述这段上下文。"
     )

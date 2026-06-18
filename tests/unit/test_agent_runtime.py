@@ -111,8 +111,8 @@ class TestToolSystemPrompt:
 
         assert "pet_state_get" in prompt
         assert "pet_state_update" in prompt
-        assert "当前心情" in prompt
-        assert "必须先调用 pet_state_get" in prompt
+        assert "普通回复不要调用 pet_state_update" in prompt
+        assert "手动修正" in prompt
         assert "不要提交 display" in prompt
 
 

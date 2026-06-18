@@ -959,7 +959,7 @@ class GPTSoVITSTTSProvider(QObject):
             log_path.parent.mkdir(parents=True, exist_ok=True)
             kwargs: dict[str, object] = {
                 "cwd": str(work_dir),
-                "env": _local_tts_subprocess_env(),
+                "env": _local_tts_subprocess_env(python_exe),
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.STDOUT,
                 "text": True,
@@ -2372,10 +2372,17 @@ def _build_gpt_sovits_start_command(
     return cmd
 
 
-def _local_tts_subprocess_env() -> dict[str, str]:
+def _local_tts_subprocess_env(python_exe: Path | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env.pop("PYTHONUTF8", None)
     env["PYTHONIOENCODING"] = "utf-8"
+    if python_exe is not None:
+        bin_dir = str(python_exe.parent)
+        path = env.get("PATH", "")
+        if path:
+            env["PATH"] = f"{bin_dir}{os.pathsep}{path}"
+        else:
+            env["PATH"] = bin_dir
     return env
 
 

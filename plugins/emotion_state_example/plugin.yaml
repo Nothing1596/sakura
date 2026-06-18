@@ -4,7 +4,7 @@ name: Emotion State Example
 description: 演示事件订阅与动态上下文注入的最小示例插件。
 version: 0.1.0
 entry: plugin:EmotionStateExamplePlugin
-enabled: true
+enabled: false
 priority: 90
 permissions:
   - context_provider

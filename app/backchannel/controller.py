@@ -3,7 +3,8 @@ from __future__ import annotations
 import random
 from typing import TYPE_CHECKING, Callable, Protocol
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
+import threading
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.backchannel.models import BackchannelLabel, BackchannelManifest
 from app.backchannel.resolver import BackchannelChoice, TemplateResolver
@@ -27,29 +28,7 @@ class _ClassifySignals(QObject):
     done = Signal(int, object)
 
 
-class _ClassifyRunnable(QRunnable):
-    """在 QThreadPool 线程跑一次 classify,结果带 token 回传主线程。"""
 
-    def __init__(
-        self,
-        classifier: BackchannelClassifier,
-        text: str,
-        token: int,
-        signals: _ClassifySignals,
-    ) -> None:
-        super().__init__()
-        self._classifier = classifier
-        self._text = text
-        self._token = token
-        self._signals = signals
-
-    def run(self) -> None:  # noqa: D401
-        try:
-            label = self._classifier.classify(self._text)
-        except Exception as exc:  # noqa: BLE001
-            debug_log("Backchannel", "后台分类异常,本轮按无标签处理", {"error": str(exc)})
-            label = None
-        self._signals.done.emit(self._token, label)
 
 
 class BackchannelController(QObject):
@@ -166,8 +145,16 @@ class BackchannelController(QObject):
         timeout_ms = self._settings.timeout_ms
         if timeout_ms > 0:
             self._classify_timeout_timer.start(timeout_ms)
-        runnable = _ClassifyRunnable(self._classifier, text, token, self._classify_signals)
-        QThreadPool.globalInstance().start(runnable)
+        def run_classification() -> None:
+            try:
+                label = self._classifier.classify(text)
+            except Exception as exc:  # noqa: BLE001
+                debug_log("Backchannel", "后台分类异常,本轮按无标签处理", {"error": str(exc)})
+                label = None
+            self._classify_signals.done.emit(token, label)
+
+        thread = threading.Thread(target=run_classification, daemon=True)
+        thread.start()
 
     def _on_classify_done(self, token: int, label: object) -> None:
         if token != self._inflight_token:
