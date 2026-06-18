@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import types
 import urllib.error
@@ -892,6 +893,19 @@ def test_local_tts_subprocess_env_uses_utf8_stdio_without_forcing_interpreter(
 
     assert "PYTHONUTF8" not in env
     assert env["PYTHONIOENCODING"] == "utf-8"
+
+
+def test_local_tts_subprocess_env_prepends_runtime_bin(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("PATH", os.pathsep.join(("/usr/local/bin", "/usr/bin")))
+    python_exe = tmp_path / "runtime" / "bin" / "python"
+
+    env = _local_tts_subprocess_env(python_exe)
+
+    assert env["PATH"].split(os.pathsep) == [
+        str(python_exe.parent),
+        "/usr/local/bin",
+        "/usr/bin",
+    ]
 
 
 def test_local_tts_output_reader_writes_file_and_gui_log() -> None:

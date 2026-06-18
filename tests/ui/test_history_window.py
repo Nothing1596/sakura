@@ -198,7 +198,7 @@ def test_entry_view_model_ignores_tone_and_portrait_metadata() -> None:
     assert view.meta_text == "桜 · 2026-05-30 16:20:30"
 
 
-def test_history_window_keeps_meta_outside_message_bubble() -> None:
+def test_history_window_keeps_meta_outside_message_bubble(qtbot) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QFrame", "QLabel")):
@@ -224,6 +224,7 @@ def test_history_window_keeps_meta_outside_message_bubble() -> None:
     store = StaticHistoryStore()
 
     window = HistoryWindow(store)  # type: ignore[arg-type]
+    qtbot.addWidget(window)
     app.processEvents()
 
     meta_labels = window.findChildren(QLabel, "entryMeta")
@@ -239,11 +240,8 @@ def test_history_window_keeps_meta_outside_message_bubble() -> None:
         assert not any(meta.parent() is bubble for meta in meta_labels)
         assert bubble.findChild(QLabel, "entryText") is not None or bubble.findChild(QLabel, "systemText") is not None
 
-    window.deleteLater()
-    app.processEvents()
 
-
-def test_history_window_groups_consecutive_role_meta() -> None:
+def test_history_window_groups_consecutive_role_meta(qtbot) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QFrame", "QLabel")):
@@ -269,6 +267,7 @@ def test_history_window_groups_consecutive_role_meta() -> None:
             ]
 
     window = HistoryWindow(StaticHistoryStore())  # type: ignore[arg-type]
+    qtbot.addWidget(window)
     app.processEvents()
 
     meta_texts = [label.text() for label in window.findChildren(QLabel, "entryMeta")]
@@ -277,11 +276,8 @@ def test_history_window_groups_consecutive_role_meta() -> None:
     assert meta_texts.count("桜 · 2026-05-30 16:20:30") == 1
     assert meta_texts.count("你 · 2026-05-30 16:20:30") == 2
 
-    window.deleteLater()
-    app.processEvents()
 
-
-def test_history_window_hides_stale_content_before_reopen_refresh() -> None:
+def test_history_window_hides_stale_content_before_reopen_refresh(qtbot) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel")):
@@ -307,6 +303,7 @@ def test_history_window_hides_stale_content_before_reopen_refresh() -> None:
 
     store = MutableHistoryStore()
     window = HistoryWindow(store)  # type: ignore[arg-type]
+    qtbot.addWidget(window)
     app.processEvents()
     assert "旧内容" in label_texts()
 
@@ -322,12 +319,8 @@ def test_history_window_hides_stale_content_before_reopen_refresh() -> None:
     assert "新内容" in texts_after_refresh
     assert "旧内容" not in texts_after_refresh
 
-    window.close()
-    window.deleteLater()
-    app.processEvents()
 
-
-def test_history_window_keeps_loading_visible_until_batched_render_finishes() -> None:
+def test_history_window_keeps_loading_visible_until_batched_render_finishes(qtbot) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel")):
@@ -346,6 +339,7 @@ def test_history_window_keeps_loading_visible_until_batched_render_finishes() ->
             return [_entry("user", f"历史内容 {index}") for index in range(41)]
 
     window = HistoryWindow(LargeHistoryStore())  # type: ignore[arg-type]
+    qtbot.addWidget(window)
     window.refresh()
 
     texts_before_second_batch = [label.text() for label in window.findChildren(QLabel)]
@@ -361,12 +355,8 @@ def test_history_window_keeps_loading_visible_until_batched_render_finishes() ->
     assert "历史内容 40" in texts_after_render
     assert "正在读取历史记录..." not in texts_after_render
 
-    window.close()
-    window.deleteLater()
-    app.processEvents()
 
-
-def test_history_window_scrolls_to_bottom_after_batched_layout_settles() -> None:
+def test_history_window_scrolls_to_bottom_after_batched_layout_settles(qtbot) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel")):
@@ -394,6 +384,7 @@ def test_history_window_scrolls_to_bottom_after_batched_layout_settles() -> None
             return entries
 
     window = HistoryWindow(TallHistoryStore())  # type: ignore[arg-type]
+    qtbot.addWidget(window)
     window.resize(620, 680)
     window.show()
 
@@ -408,7 +399,3 @@ def test_history_window_scrolls_to_bottom_after_batched_layout_settles() -> None
         lambda: scrollbar.maximum() > 0 and scrollbar.value() == scrollbar.maximum(),
         timeout=2.0,
     )
-
-    window.close()
-    window.deleteLater()
-    app.processEvents()

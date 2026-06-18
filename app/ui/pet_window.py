@@ -1446,6 +1446,16 @@ class PetWindow(QWidget):
         subtitle_controller = getattr(self, "subtitle_controller", None)
         if subtitle_controller is not None:
             subtitle_controller.cancel_reply_flow()
+        backchannel_controller = getattr(self, "backchannel_controller", None)
+        shutdown_backchannel = getattr(backchannel_controller, "shutdown", None)
+        if callable(shutdown_backchannel) and not shutdown_backchannel(
+            THREAD_SHUTDOWN_WAIT_MS / 1000
+        ):
+            debug_log(
+                "PetWindow",
+                "接话分类线程未在退出等待时间内结束，将在后台自然完成",
+                {"wait_ms": THREAD_SHUTDOWN_WAIT_MS},
+            )
         self._shutdown_qthread("worker_thread", "worker")
         self._shutdown_qthread("memory_curation_thread", "memory_curation_worker")
         self._shutdown_qthread("deferred_startup_thread", "deferred_startup_worker")
@@ -1780,18 +1790,9 @@ class PetWindow(QWidget):
     ) -> RuleClassifier | HybridBackchannelClassifier:
         normalized = settings.normalized()
         if normalized.mode == "hybrid":
-            classifier = HybridBackchannelClassifier.from_model_cache(self.base_dir)
-            # 在后台线程异步预加载，避免阻塞 GUI 线程
-            import threading
-            def run_preload() -> None:
-                try:
-                    classifier.preload()
-                except Exception as exc:
-                    from app.core.debug_log import debug_log
-                    debug_log("Backchannel", "后台预加载模型失败", {"error": str(exc)})
-            thread = threading.Thread(target=run_preload, daemon=True)
-            thread.start()
-            return classifier
+            # 首次分类仍由 BackchannelController 的受控后台线程冷加载；不额外启动
+            # 无法纳入关闭生命周期的预热线程。
+            return HybridBackchannelClassifier.from_model_cache(self.base_dir)
         return RuleClassifier()
 
     def _log_backchannel_classification(
