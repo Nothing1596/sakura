@@ -223,24 +223,28 @@ def test_history_window_keeps_meta_outside_message_bubble() -> None:
 
     store = StaticHistoryStore()
 
-    window = HistoryWindow(store)  # type: ignore[arg-type]
-    app.processEvents()
+    try:
+        window = HistoryWindow(store)  # type: ignore[arg-type]
+        app.processEvents()
 
-    meta_labels = window.findChildren(QLabel, "entryMeta")
-    bubbles = [
-        *window.findChildren(QFrame, "userBubble"),
-        *window.findChildren(QFrame, "assistantBubble"),
-        *window.findChildren(QFrame, "systemBubble"),
-    ]
+        meta_labels = window.findChildren(QLabel, "entryMeta")
+        bubbles = [
+            *window.findChildren(QFrame, "userBubble"),
+            *window.findChildren(QFrame, "assistantBubble"),
+            *window.findChildren(QFrame, "systemBubble"),
+        ]
 
-    assert len(meta_labels) == 3
-    assert len(bubbles) == 3
-    for bubble in bubbles:
-        assert not any(meta.parent() is bubble for meta in meta_labels)
-        assert bubble.findChild(QLabel, "entryText") is not None or bubble.findChild(QLabel, "systemText") is not None
+        assert len(meta_labels) == 3
+        assert len(bubbles) == 3
+        for bubble in bubbles:
+            assert not any(meta.parent() is bubble for meta in meta_labels)
+            assert bubble.findChild(QLabel, "entryText") is not None or bubble.findChild(QLabel, "systemText") is not None
 
-    window.deleteLater()
-    app.processEvents()
+        window.deleteLater()
+    finally:
+        app.processEvents()
+        import time
+        time.sleep(0.1)  # Give Qt time to clean up
 
 
 def test_history_window_groups_consecutive_role_meta() -> None:
