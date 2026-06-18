@@ -108,10 +108,12 @@ class PetStateRecord:
     state: PetState = field(default_factory=PetState)
     last_model_delta: dict[str, Any] | None = None
     last_harness_decision: dict[str, Any] | None = None
+    harness_version: int = 2
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "state": self.state.to_dict(),
+            "harness_version": self.harness_version,
             "last_model_delta": deepcopy(self.last_model_delta),
             "last_harness_decision": deepcopy(self.last_harness_decision),
         }
@@ -133,10 +135,12 @@ def pet_state_record_from_dict(data: dict[str, Any]) -> PetStateRecord:
     state = pet_state_from_dict(raw_state if isinstance(raw_state, dict) else {})
     last_model_delta = data.get("last_model_delta")
     last_harness_decision = data.get("last_harness_decision")
+    harness_version = _coerce_harness_version(data.get("harness_version"), last_harness_decision)
     return PetStateRecord(
         state=state,
         last_model_delta=deepcopy(last_model_delta) if isinstance(last_model_delta, dict) else None,
         last_harness_decision=deepcopy(last_harness_decision) if isinstance(last_harness_decision, dict) else None,
+        harness_version=harness_version,
     )
 
 
@@ -216,14 +220,26 @@ def apply_pet_state_delta(
         display=display_for_mood(mood),
         updated_at=state.updated_at,
     )
+    short_force_reason = _short_text(force_reason, _TEXT_LIMITS["force_reason"]) if force_reason else ""
+    from app.pet_state.harness import evaluate_pet_state_delta
+
+    reviewed_state, decision = evaluate_pet_state_delta(
+        current=state,
+        candidate=candidate_state,
+        submitted_delta=delta,
+        schema_revised_fields=revised_fields,
+        forced=bool(forced),
+        force_fields=force_fields,
+        force_reason=short_force_reason,
+    )
     before_state = state.to_dict()
-    changed = before_state != candidate_state.to_dict()
+    changed = before_state != reviewed_state.to_dict()
     next_state = (
         PetState(
-            mood=candidate_state.mood,
-            affect=candidate_state.affect,
-            evidence=candidate_state.evidence,
-            display=candidate_state.display,
+            mood=reviewed_state.mood,
+            affect=reviewed_state.affect,
+            evidence=reviewed_state.evidence,
+            display=reviewed_state.display,
             updated_at=_now_iso(),
         )
         if changed
@@ -236,18 +252,14 @@ def apply_pet_state_delta(
         "forced": bool(forced),
         "force_fields": force_fields,
     }
-    if force_reason:
-        model_delta["force_reason"] = _short_text(force_reason, _TEXT_LIMITS["force_reason"])
-    decision = _build_phase1_decision(
-        changed=changed,
-        forced=bool(forced),
-        revised_fields=revised_fields,
-    )
+    if short_force_reason:
+        model_delta["force_reason"] = short_force_reason
     return (
         PetStateRecord(
             state=next_state,
             last_model_delta=model_delta,
             last_harness_decision=decision,
+            harness_version=int(decision.get("harness_version", record.harness_version)),
         ),
         decision,
     )
@@ -305,33 +317,6 @@ def _apply_evidence_delta(
     return PetStateEvidence(**values), revised
 
 
-def _build_phase1_decision(
-    *,
-    changed: bool,
-    forced: bool,
-    revised_fields: list[str],
-) -> dict[str, Any]:
-    unique_revised = sorted(set(revised_fields))
-    if not changed and not unique_revised:
-        status = "noop"
-        reason = "delta 没有造成状态变化。"
-    elif forced:
-        status = "model_forced"
-        reason = "Phase 1 记录 forced 请求；仅执行 schema、范围和长度校验。"
-    elif unique_revised:
-        status = "revised"
-        reason = "Phase 1 已按 schema 范围或长度限制修正部分字段。"
-    else:
-        status = "applied"
-        reason = "Phase 1 已通过 schema 校验并应用。"
-    return {
-        "status": status,
-        "reason": reason,
-        "revised_fields": unique_revised,
-        "rejected_fields": [],
-    }
-
-
 def _coerce_mood(value: Any) -> str:
     mood = str(value or "").strip().lower()
     if mood not in PET_STATE_MOODS:
@@ -361,6 +346,16 @@ def _normalize_force_fields(value: list[str] | None) -> list[str]:
         if name:
             fields.append(name)
     return sorted(set(fields))
+
+
+def _coerce_harness_version(value: Any, decision: Any) -> int:
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(decision, dict):
+        decision_version = decision.get("harness_version")
+        if isinstance(decision_version, int) and decision_version > 0:
+            return decision_version
+    return 1
 
 
 def _require_number(value: Any, field_name: str) -> float:

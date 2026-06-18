@@ -1,6 +1,6 @@
 # 桌宠状态 Pet State 开发文档
 
-本文记录 Sakura 桌宠状态模块的当前 MVP 实现、开发边界和后续路线。该模块定性为**宿主内置能力 + 内置工具**，不是外部插件。当前实现已经从“依赖模型主动调用 `pet_state_update` 工具”调整为“结构化回复每次携带 `pet_state_delta`，本地自动校验、落盘并同步 UI”。
+本文记录 Sakura 桌宠状态模块的当前实现、开发边界和后续路线。该模块定性为**宿主内置能力 + 内置工具**，不是外部插件。当前实现已经从“依赖模型主动调用 `pet_state_update` 工具”调整为“结构化回复每次携带 `pet_state_delta`，本地自动校验、经过 Phase 2 harness 裁决、落盘并同步 UI”。
 
 ## 目标
 
@@ -10,9 +10,9 @@
 
 - `ChatSegment.tone` / `ChatSegment.portrait` 继续表示本轮每段回复的即时表现。
 - `pet_state` 表示跨轮次稳定状态，不直接替代分段语气或立绘。
-- 模型可以提出状态变化，但最终写入必须经过本地 schema、范围、长度和只读字段校验。
+- 模型可以提出状态变化，但最终写入必须经过本地 schema、范围、长度、只读字段校验和确定性 harness 裁决。
 - 前端只展示本地确认后的状态快照，不直接信任模型原始输出。
-- 角色特异状态机和复杂 harness 放到后续阶段，不阻塞基础链路。
+- 角色特异状态机放到后续阶段，不阻塞基础链路。
 
 ## 当前 MVP 链路
 
@@ -25,7 +25,7 @@ PetStateStore.snapshot()
   -> ChatReply 解析并保留 pet_state_delta
   -> AgentRuntime / API 层发现缺失 pet_state_delta 时触发一次结构修复
   -> PetWindow 收到 AgentResult 后应用 reply.pet_state_delta
-  -> PetStateStore.update_from_reply() 校验、钳制、审计、落盘
+  -> PetStateStore.update_from_reply() 校验、Phase 2 harness 裁决、审计、落盘
   -> state_changed signal 更新右键状态气泡
 ```
 
@@ -107,6 +107,7 @@ PetStateStore.snapshot()
     },
     "updated_at": "2026-06-18T12:00:00+08:00"
   },
+  "harness_version": 2,
   "last_model_delta": null,
   "last_harness_decision": null
 }
@@ -139,9 +140,13 @@ PetStateStore.snapshot()
   },
   "last_harness_decision": {
     "status": "applied",
-    "reason": "Phase 1 已通过 schema 校验并应用。",
+    "reason": "Phase 2 harness 已通过本地规则并应用。",
+    "harness_version": 2,
     "revised_fields": [],
-    "rejected_fields": []
+    "rejected_fields": [],
+    "forced_requested": false,
+    "forced_fields": [],
+    "rules": []
   }
 }
 ```
@@ -150,9 +155,11 @@ PetStateStore.snapshot()
 
 - `applied`: 完全接受。
 - `revised`: 接受但修正部分字段，例如数值钳制。
-- `rejected`: 预留，当前 MVP 尚未做复杂拒绝。
-- `model_forced`: 模型使用 `forced` 请求，当前 MVP 只记录且仍校验。
+- `rejected`: 没有任何可应用字段，或提交只包含被 harness 拒绝的字段。
 - `noop`: delta 没有造成状态变化。
+
+`forced` 请求通过 `last_model_delta.forced`、`last_model_delta.force_fields` 以及
+`last_harness_decision.forced_requested` / `forced_fields` 审计，不再覆盖 `status`。
 
 ## 模块职责
 
@@ -162,6 +169,14 @@ PetStateStore.snapshot()
 - 实现 `apply_pet_state_delta()`。
 - 负责 mood 枚举、数值范围、文本长度、只读字段边界。
 - 根据 mood 派生 `display.label` 和 `display.idle_expression_hint`。
+- 将 schema-valid candidate 提交给 Phase 2 harness，并把 v2 decision 写入记录。
+
+### `app/pet_state/harness.py`
+
+- 定义 `PetStateHarnessPolicy` 和 `HARNESS_VERSION = 2`。
+- 按固定顺序执行弱证据降置信、单轮 affect 限幅、极端 mood 跳变拒绝、mood / affect 明显矛盾拒绝、forced 审计。
+- 只接收已通过 schema 的 `PetState` candidate，不做 I/O，不调用模型，不持有 UI 或 Store 状态。
+- 返回 reviewed state 与字段级 rule trace。
 
 ### `app/pet_state/store.py`
 
@@ -315,7 +330,7 @@ Schema：
 
 - 普通回复不依赖这个工具更新状态。
 - 工具入口和结构化回复入口最终都复用 Store 内部的同一提交事务。
-- `forced` 只记录请求，不绕过 schema、范围、长度和只读字段校验。
+- `forced` 只记录请求，不绕过 schema、范围、长度、只读字段校验或 Phase 2 harness。
 
 ## 插件边界
 
@@ -354,6 +369,9 @@ Schema：
 
 - `tests/unit/test_pet_state.py`
   - store 更新、钳制、持久化。
+  - Phase 2 harness：affect 单轮限幅、弱 evidence 降置信、极端 mood 跳转拒绝、mood / affect 明显矛盾拒绝。
+  - forced 请求审计，不覆盖最终裁决状态。
+  - 旧 Phase 1 状态文件兼容读取，首次更新后写入 v2 decision。
   - `display` 只读保护。
   - 干净进程导入、未知字段拒绝、重复 delta noop、落盘失败回滚。
   - `pet_state_get/update` 工具路径。
@@ -386,17 +404,14 @@ Schema：
 当前开发目录验证结果：
 
 ```text
-1132 passed, 1 skipped
+1138 passed, 1 skipped
 ```
 
 skip 是 CI 条件下跳过需要真实音频设备的 `AudioSinkPlayer` 测试。
 
 ## 后续路线
 
-### Phase 2: 标准 Harness
-
-> 方案记录于 2026-06-18。实现入口以 `fix/macos-crash-and-tts` 审查通过为前置门槛；
-> 门槛未通过时只保留本节方案，不开始 Phase 2 代码改动。
+### Phase 2: 标准 Harness（已实现）
 
 目标是把当前 MVP 的 schema / 数值钳制扩展为**确定性、可审计、可测试**的通用状态裁决。
 Harness 只负责审核模型提交，不调用第二个模型，也不改变 `ChatReply.pet_state_delta`
@@ -431,7 +446,7 @@ Harness 只负责审核模型提交，不调用第二个模型，也不改变 `C
 ```text
 raw pet_state_delta
   -> 现有 schema / 类型 / 只读字段校验
-  -> PetStateHarness.evaluate(current_state, submission, policy)
+  -> evaluate_pet_state_delta(current, candidate, submitted_delta, policy)
   -> 字段级 applied / revised / rejected 结果
   -> 生成 candidate PetState + HarnessDecision
   -> PetStateStore 原子落盘
@@ -465,10 +480,9 @@ raw pet_state_delta
    `revised`；没有任何可应用字段为 `rejected`；存在 forced 请求时通过单独字段记录，不再用
    `model_forced` 覆盖裁决结果。
 
-### Phase 2.4 Policy 与待确认参数
+### Phase 2.4 Policy 参数
 
-所有产品阈值集中在不可变 `PetStateHarnessPolicy`，规则实现中禁止散落魔法数字。第一版候选值如下，
-在开始实现前需结合场景表与用户确认定稿：
+所有产品阈值集中在不可变 `PetStateHarnessPolicy`，规则实现中禁止散落魔法数字。当前默认值如下：
 
 | 参数 | 候选默认值 | 作用 |
 |---|---:|---|
@@ -489,17 +503,22 @@ policy。真实样本显示误修正率偏高或偏低后，再讨论是否增�
 {
   "harness_version": 2,
   "status": "revised",
-  "reason": "状态建议经过 2 条规则修正。",
+  "reason": "Phase 2 harness 已按本地规则修正或部分拒绝状态字段。",
   "revised_fields": ["affect.valence", "affect.confidence"],
   "rejected_fields": ["mood"],
   "forced_requested": false,
+  "forced_fields": [],
   "rules": [
     {
-      "rule_id": "affect.step_limit",
+      "id": "affect_step_limit",
       "outcome": "revised",
       "fields": ["affect.valence"],
-      "submitted": 0.9,
-      "applied": 0.35
+      "reason": "单轮 affect 变化超过本地阈值，已限制步长。",
+      "detail": {
+        "requested": 0.9,
+        "applied": 0.35,
+        "max_step": 0.35
+      }
     }
   ]
 }
@@ -508,14 +527,14 @@ policy。真实样本显示误修正率偏高或偏低后，再讨论是否增�
 审计中不复制完整对话文本，只记录现有长度限制内的 evidence 和必要的字段前后值，避免状态文件
 持续膨胀或额外保存敏感内容。
 
-### Phase 2.6 实施顺序与验收
+### Phase 2.6 已完成实施与验收
 
-1. 先补场景化失败测试，覆盖正向、边界、矛盾、forced、旧记录迁移和落盘失败回滚。
-2. 新增 policy / decision 数据结构和旧 JSON 兼容读取。
-3. 实现纯 Harness 并接入 Store 的统一提交事务。
-4. 更新状态气泡，使其能展示简化后的 revised / rejected 原因；UI 不解释规则算法。
-5. 更新本文件与 `TECHNICAL_README.md` 的实际实现状态。
-6. 运行 `tests/unit/test_pet_state.py`、API/runtime/UI 相关测试，再运行全量 `pytest -q`。
+1. 已补场景化测试，覆盖正向、边界、矛盾、forced、旧记录迁移和落盘失败回滚。
+2. 已新增 policy / decision 数据结构和旧 JSON 兼容读取。
+3. 已实现纯 Harness 并接入 Store 的统一提交事务。
+4. 状态气泡继续展示简化后的 revised / rejected 字段和说明；UI 不解释规则算法。
+5. 已更新本文件与 `TECHNICAL_README.md` 的实际实现状态。
+6. 每次提交前运行 `tests/unit/test_pet_state.py`、API/runtime/UI 相关测试，再运行全量 `pytest -q`。
 
 最低验收场景：
 

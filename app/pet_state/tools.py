@@ -96,7 +96,7 @@ def _pet_state_update_schema() -> dict[str, Any]:
             },
             "forced": {
                 "type": "boolean",
-                "description": "请求覆盖 harness 建议；Phase 1 仅记录，不绕过 schema 校验。",
+                "description": "请求覆盖 harness 建议；Phase 2 仅审计，不绕过本地裁决。",
             },
             "force_fields": {
                 "type": "array",

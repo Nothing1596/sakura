@@ -8739,7 +8739,7 @@ def test_consume_agent_result_applies_structured_pet_state_delta(tmp_path) -> No
             [segment],
             pet_state_delta={
                 "mood": "happy",
-                "affect": {"valence": 0.5, "arousal": 0.35, "confidence": 0.8},
+                "affect": {"valence": 0.3, "arousal": 0.35, "confidence": 0.8},
                 "evidence": {
                     "last_user_signal": "用户询问心情",
                     "reason": "回复表达状态良好",
@@ -8752,7 +8752,7 @@ def test_consume_agent_result_applies_structured_pet_state_delta(tmp_path) -> No
 
     snapshot = window.pet_state_store.snapshot()
     assert snapshot["state"]["mood"] == "happy"
-    assert snapshot["state"]["affect"]["valence"] == 0.5
+    assert snapshot["state"]["affect"]["valence"] == 0.3
     assert snapshot["state"]["evidence"]["last_trigger"] == "assistant_reply"
     assert snapshot["last_model_delta"]["delta"]["mood"] == "happy"
 

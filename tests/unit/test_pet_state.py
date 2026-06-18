@@ -48,12 +48,14 @@ def test_pet_state_store_updates_clamps_and_persists(tmp_path) -> None:
     assert result["accepted"] is True
     assert result["harness_decision"]["status"] == "revised"
     assert result["harness_decision"]["revised_fields"] == ["affect.arousal", "affect.valence"]
+    assert result["harness_decision"]["harness_version"] == 2
     assert state["mood"] == "happy"
-    assert state["affect"]["valence"] == 1.0
+    assert state["affect"]["valence"] == 0.35
     assert state["affect"]["arousal"] == 0.0
     assert state["display"] == {"label": "开心", "idle_expression_hint": "微笑"}
 
     persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["harness_version"] == 2
     assert persisted["state"]["mood"] == "happy"
     assert PetStateStore(path).snapshot()["state"]["display"]["label"] == "开心"
 
@@ -113,8 +115,12 @@ def test_pet_state_identical_delta_is_noop_without_refreshing_state_time(tmp_pat
     store = PetStateStore(tmp_path / "pet_state.json")
     delta = {
         "mood": "happy",
-        "affect": {"valence": 0.4},
-        "evidence": {"last_trigger": "assistant_reply", "reason": "状态稳定"},
+        "affect": {"valence": 0.2},
+        "evidence": {
+            "last_user_signal": "稳定",
+            "last_trigger": "assistant_reply",
+            "reason": "状态稳定没有新的变化",
+        },
     }
     store.update_from_reply(delta)
     updated_at = store.snapshot()["state"]["updated_at"]
@@ -123,6 +129,104 @@ def test_pet_state_identical_delta_is_noop_without_refreshing_state_time(tmp_pat
 
     assert result["harness_decision"]["status"] == "noop"
     assert store.snapshot()["state"]["updated_at"] == updated_at
+
+
+def test_pet_state_harness_caps_confidence_for_weak_evidence(tmp_path) -> None:
+    store = PetStateStore(tmp_path / "pet_state.json")
+
+    result = store.update_from_reply(
+        {
+            "affect": {"confidence": 0.9},
+            "evidence": {"reason": "短"},
+        }
+    )
+
+    assert result["harness_decision"]["status"] == "revised"
+    assert result["harness_decision"]["revised_fields"] == ["affect.confidence"]
+    assert result["state"]["affect"]["confidence"] == 0.45
+
+
+def test_pet_state_harness_rejects_extreme_mood_without_evidence(tmp_path) -> None:
+    store = PetStateStore(tmp_path / "pet_state.json")
+    store.update_from_reply(
+        {
+            "mood": "happy",
+            "affect": {"valence": 0.35},
+            "evidence": {"last_user_signal": "赞", "reason": "用户表达了积极反馈"},
+        }
+    )
+
+    result = store.update_from_reply(
+        {
+            "mood": "sad",
+            "evidence": {"reason": "短"},
+        }
+    )
+
+    assert result["harness_decision"]["status"] == "revised"
+    assert result["harness_decision"]["rejected_fields"] == ["mood"]
+    assert result["state"]["mood"] == "happy"
+
+
+def test_pet_state_harness_rejects_mood_affect_contradiction(tmp_path) -> None:
+    store = PetStateStore(tmp_path / "pet_state.json")
+
+    result = store.update_from_reply(
+        {
+            "mood": "happy",
+            "affect": {"valence": -0.3},
+            "evidence": {
+                "last_user_signal": "强烈负面",
+                "reason": "用户明确表达低落但模型误判为开心",
+            },
+        }
+    )
+
+    assert result["harness_decision"]["rejected_fields"] == ["mood"]
+    assert result["state"]["mood"] == "neutral"
+    assert result["state"]["affect"]["valence"] == -0.3
+
+
+def test_pet_state_loads_phase1_record_and_writes_v2_decision(tmp_path) -> None:
+    path = tmp_path / "pet_state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "state": {
+                    "mood": "neutral",
+                    "affect": {"valence": 0.0, "arousal": 0.2, "confidence": 0.7},
+                    "evidence": {
+                        "last_user_signal": "",
+                        "last_trigger": "startup",
+                        "reason": "默认初始状态。",
+                    },
+                    "display": {"label": "平静", "idle_expression_hint": "站立待机"},
+                    "updated_at": "2026-06-18T12:00:00+08:00",
+                },
+                "last_model_delta": None,
+                "last_harness_decision": {
+                    "status": "applied",
+                    "reason": "Phase 1 已通过 schema 校验并应用。",
+                    "revised_fields": [],
+                    "rejected_fields": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = PetStateStore(path)
+
+    assert store.snapshot()["harness_version"] == 1
+
+    result = store.update_from_reply(
+        {
+            "mood": "curious",
+            "evidence": {"last_user_signal": "?", "reason": "用户提出了新的探索问题"},
+        }
+    )
+
+    assert result["harness_decision"]["harness_version"] == 2
+    assert json.loads(path.read_text(encoding="utf-8"))["harness_version"] == 2
 
 
 def test_pet_state_persist_failure_keeps_previous_in_memory_state(tmp_path, monkeypatch) -> None:
@@ -157,7 +261,9 @@ def test_pet_state_tools_read_and_update(tmp_path) -> None:
         },
     )
     assert update_result.success
-    assert update_result.content["harness_decision"]["status"] == "model_forced"
+    assert update_result.content["harness_decision"]["status"] == "revised"
+    assert update_result.content["harness_decision"]["forced_requested"] is True
+    assert update_result.content["harness_decision"]["forced_fields"] == ["mood"]
 
     get_result = registry.execute("pet_state_get", {})
     assert get_result.success

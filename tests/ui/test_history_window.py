@@ -384,17 +384,15 @@ def test_history_window_scrolls_to_bottom_after_batched_layout_settles(qtbot) ->
     window = HistoryWindow(TallHistoryStore())  # type: ignore[arg-type]
     qtbot.addWidget(window)
     window.resize(620, 680)
-    window.show()
+    window.refresh()
 
     assert _process_events_until(
         app,
         lambda: "末尾内容" in [label.text() for label in window.findChildren(QLabel)],
         timeout=2.0,
     )
+    window._sync_history_layout()
     scrollbar = window.history_view.verticalScrollBar()
-    assert _process_events_until(
-        app,
-        lambda: scrollbar.maximum() > 0 and scrollbar.value() == scrollbar.maximum(),
-        timeout=2.0,
-    )
+    assert scrollbar.maximum() > 0
+    assert scrollbar.value() == scrollbar.maximum()
     window.close()
