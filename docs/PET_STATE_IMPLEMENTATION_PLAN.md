@@ -395,15 +395,147 @@ skip 是 CI 条件下跳过需要真实音频设备的 `AudioSinkPlayer` 测试�
 
 ### Phase 2: 标准 Harness
 
-目标是把当前 MVP 的 schema / 钳制规则扩展为更完整的通用状态裁决。
+> 方案记录于 2026-06-18。实现入口以 `fix/macos-crash-and-tts` 审查通过为前置门槛；
+> 门槛未通过时只保留本节方案，不开始 Phase 2 代码改动。
 
-建议规则：
+目标是把当前 MVP 的 schema / 数值钳制扩展为**确定性、可审计、可测试**的通用状态裁决。
+Harness 只负责审核模型提交，不调用第二个模型，也不改变 `ChatReply.pet_state_delta`
+和 `PetStateStore` 的对外接口。
 
-- 单次 `valence` / `arousal` 变化限幅。
-- 证据为空时降低 `confidence`。
-- 极端 mood 跳转需要明确 evidence。
-- 低质量 reason 降级或标记 revised。
-- 对 `forced` 做字段级审计，而不是只记录请求。
+### Phase 2.1 设计依据
+
+- Russell 的环形情感模型将 affect 组织为 valence / arousal 连续维度，支持继续以当前
+  `PetAffect` 数值作为变化限幅基础，而不是只依赖离散 mood。
+- Marsella 与 Gratch 的情感计算综述强调 appraisal 与状态更新过程；在本项目中对应为：
+  模型提交候选状态，宿主根据当前状态、证据和固定规则完成裁决。
+- NIST AI 600-1 的风险管理思路支持把生成式输出视为不可信候选值，保留确定性边界、
+  可追溯决策和失败降级。
+- JSON Schema 2020-12 继续作为对象字段、类型和未知属性边界的语义参考；项目当前仍使用
+  Python 本地校验，不为了 Phase 2 新增 JSON Schema 运行时依赖。
+
+这些资料只支持状态维度、宿主裁决和可审计边界，不直接给出 Sakura 的阈值。阈值必须由
+场景测试和后续真实交互样本校准，不能把论文中的实验参数直接移植为产品参数。
+
+参考资料：
+
+- James A. Russell, *A Circumplex Model of Affect* (1980), DOI:
+  https://doi.org/10.1037/h0077714
+- Stacy Marsella, Jonathan Gratch, *Computationally Modeling Human Emotion* (2014), DOI:
+  https://doi.org/10.1145/2631912
+- NIST, *Artificial Intelligence Risk Management Framework: Generative Artificial Intelligence Profile*,
+  DOI: https://doi.org/10.6028/NIST.AI.600-1
+- JSON Schema Draft 2020-12 Core: https://json-schema.org/draft/2020-12/json-schema-core
+
+### Phase 2.2 处理链路
+
+```text
+raw pet_state_delta
+  -> 现有 schema / 类型 / 只读字段校验
+  -> PetStateHarness.evaluate(current_state, submission, policy)
+  -> 字段级 applied / revised / rejected 结果
+  -> 生成 candidate PetState + HarnessDecision
+  -> PetStateStore 原子落盘
+  -> 替换内存快照并发送 state_changed
+```
+
+实现边界：
+
+- 新增 `app/pet_state/harness.py`，放置纯函数式裁决和不可变 policy；不把规则继续堆进 UI 或 Store。
+- `PetStateStore` 仍是事务边界，只有落盘成功后才能替换内存状态并发送 signal。
+- `models.py` 保留数据模型和基础 schema 校验；Harness 不接收未通过 schema 的对象。
+- `pet_state_update` 与结构化回复继续复用同一 Harness，不产生两套裁决语义。
+- 持久化记录新增 `harness_version` 和字段级 rule trace；读取旧 JSON 时使用兼容默认值。
+
+### Phase 2.3 规则顺序
+
+规则按固定顺序执行，后续规则只能进一步收紧，不能恢复前序已拒绝字段：
+
+1. **硬边界**：沿用 mood 枚举、数值范围、文本长度、未知字段和只读 `display` 校验；失败时整次提交不落盘。
+2. **证据质量**：`reason` 或 `last_user_signal` 缺失、仅空白或信息不足时，保留可用状态字段，
+   但下调 `confidence` 并记录 `revised_fields`。
+3. **连续维度限幅**：基于当前状态限制单次 `valence` / `arousal` 变化；只修正越界维度，
+   不把整个 delta 一并拒绝。
+4. **极端 mood 跳转**：从明显正向到明显负向（或反向）的离散 mood 跳转必须同时有明确
+   `reason` 和可归因信号；证据不足时保留旧 mood，允许其他通过的字段落地。
+5. **mood / affect 一致性**：只检查明显矛盾，不把角色表达差异编码成通用规则；冲突时优先
+   保留连续 affect，将 mood 修正为旧值或 `neutral`，并留下 rule trace。
+6. **forced 审计**：`forced` 永不绕过 schema 和只读边界。逐个记录 `force_fields` 是否请求、
+   是否有效、最终是 applied / revised / rejected，以及 `force_reason`；未声明字段不享受 forced 语义。
+7. **最终状态**：没有可见状态变化为 `noop`；全部字段通过为 `applied`；部分修正或拒绝为
+   `revised`；没有任何可应用字段为 `rejected`；存在 forced 请求时通过单独字段记录，不再用
+   `model_forced` 覆盖裁决结果。
+
+### Phase 2.4 Policy 与待确认参数
+
+所有产品阈值集中在不可变 `PetStateHarnessPolicy`，规则实现中禁止散落魔法数字。第一版候选值如下，
+在开始实现前需结合场景表与用户确认定稿：
+
+| 参数 | 候选默认值 | 作用 |
+|---|---:|---|
+| `max_valence_step` | `0.35` | 单轮 valence 最大绝对变化 |
+| `max_arousal_step` | `0.30` | 单轮 arousal 最大绝对变化 |
+| `weak_evidence_confidence_cap` | `0.45` | 证据不足时 confidence 上限 |
+| `min_reason_chars` | `8` | reason 的最低有效字符数 |
+| `min_signal_chars` | `2` | last_user_signal 的最低有效字符数 |
+
+首版不把这些参数暴露到普通设置 UI，避免用户配置面扩大；测试和未来角色特异 Harness 可显式注入
+policy。真实样本显示误修正率偏高或偏低后，再讨论是否增加高级设置。
+
+### Phase 2.5 审计结构
+
+`last_harness_decision` 保留现有顶层字段，并新增可选字段：
+
+```json
+{
+  "harness_version": 2,
+  "status": "revised",
+  "reason": "状态建议经过 2 条规则修正。",
+  "revised_fields": ["affect.valence", "affect.confidence"],
+  "rejected_fields": ["mood"],
+  "forced_requested": false,
+  "rules": [
+    {
+      "rule_id": "affect.step_limit",
+      "outcome": "revised",
+      "fields": ["affect.valence"],
+      "submitted": 0.9,
+      "applied": 0.35
+    }
+  ]
+}
+```
+
+审计中不复制完整对话文本，只记录现有长度限制内的 evidence 和必要的字段前后值，避免状态文件
+持续膨胀或额外保存敏感内容。
+
+### Phase 2.6 实施顺序与验收
+
+1. 先补场景化失败测试，覆盖正向、边界、矛盾、forced、旧记录迁移和落盘失败回滚。
+2. 新增 policy / decision 数据结构和旧 JSON 兼容读取。
+3. 实现纯 Harness 并接入 Store 的统一提交事务。
+4. 更新状态气泡，使其能展示简化后的 revised / rejected 原因；UI 不解释规则算法。
+5. 更新本文件与 `TECHNICAL_README.md` 的实际实现状态。
+6. 运行 `tests/unit/test_pet_state.py`、API/runtime/UI 相关测试，再运行全量 `pytest -q`。
+
+最低验收场景：
+
+- 合法小幅变化原样 applied。
+- 大幅 affect 变化只被限幅，不丢失有效 evidence。
+- 弱 evidence 导致 confidence 下调。
+- 极端 mood 跳转证据不足时只拒绝 mood。
+- forced 不能写 `display`、不能绕过范围，并产生字段级 trace。
+- 同一输入、当前状态和 policy 必须得到完全一致的裁决结果。
+- 旧 Phase 1 状态文件可无损加载，首次更新后写成 v2 审计格式。
+- 原子写失败时内存、文件和 signal 均不表现为成功。
+
+### Phase 2.7 风险与后续启示
+
+- **过度限幅**会让状态显得迟钝：阈值必须通过真实场景回放校准，并观察 revised 比例。
+- **低质量 evidence 判断**只做可解释的长度/空白规则，首版不引入额外 LLM 或文本分类器。
+- **mood / affect 映射**存在文化和角色差异：通用 Harness 只拒绝明显矛盾，细粒度规则留给 Phase 3。
+- **forced 语义**如果同时表示“调试覆盖”和“模型强烈建议”会混淆权限；Phase 2 只把它当审计标记，
+  不提升模型权限。
+- 字段级 rule trace 可作为后续校准数据源，但默认不上传、不跨角色聚合。
 
 ### Phase 3: 角色特异状态机
 
