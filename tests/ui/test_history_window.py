@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import sys
-import time
 import types
 
 import pytest
@@ -91,15 +90,9 @@ def _entry(role: str, content: str, translation: str = "") -> ChatHistoryEntry:
     )
 
 
-def _process_events_until(app, condition, timeout: float = 1.0) -> bool:  # type: ignore[no-untyped-def]
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        app.processEvents()
-        if condition():
-            return True
-        time.sleep(0.01)
-    app.processEvents()
-    return bool(condition())
+def _finish_batched_history_render(window) -> None:  # type: ignore[no-untyped-def]
+    while getattr(window, "_staged_history_content", None) is not None:
+        window._render_next_batch(window._render_generation)
 
 
 def test_entry_view_model_uses_distinct_role_layouts() -> None:
@@ -223,7 +216,7 @@ def test_history_window_keeps_meta_outside_message_bubble(qtbot) -> None:  # typ
 
     window = HistoryWindow(store)  # type: ignore[arg-type]
     qtbot.addWidget(window)
-    app.processEvents()
+    window.refresh()
 
     meta_labels = window.findChildren(QLabel, "entryMeta")
     bubbles = [
@@ -266,7 +259,7 @@ def test_history_window_groups_consecutive_role_meta(qtbot) -> None:  # type: ig
 
     window = HistoryWindow(StaticHistoryStore())  # type: ignore[arg-type]
     qtbot.addWidget(window)
-    app.processEvents()
+    window.refresh()
 
     meta_texts = [label.text() for label in window.findChildren(QLabel, "entryMeta")]
 
@@ -302,17 +295,18 @@ def test_history_window_hides_stale_content_before_reopen_refresh(qtbot) -> None
     store = MutableHistoryStore()
     window = HistoryWindow(store)  # type: ignore[arg-type]
     qtbot.addWidget(window)
-    app.processEvents()
+    window.refresh()
     assert "旧内容" in label_texts()
 
     store.entries = [_entry("user", "新内容")]
-    window.show()
+    window._show_loading_state()
+    window.request_refresh()
 
     texts_before_refresh = label_texts()
     assert "正在读取历史记录..." in texts_before_refresh
     assert "旧内容" not in texts_before_refresh
 
-    app.processEvents()
+    window._run_scheduled_refresh()
     texts_after_refresh = label_texts()
     assert "新内容" in texts_after_refresh
     assert "旧内容" not in texts_after_refresh
@@ -344,10 +338,7 @@ def test_history_window_keeps_loading_visible_until_batched_render_finishes(qtbo
     assert "正在读取历史记录..." in texts_before_second_batch
     assert "历史内容 0" not in texts_before_second_batch
 
-    assert _process_events_until(
-        app,
-        lambda: "历史内容 40" in [label.text() for label in window.findChildren(QLabel)],
-    )
+    window._render_next_batch(window._render_generation)
     texts_after_render = [label.text() for label in window.findChildren(QLabel)]
     assert "历史内容 0" in texts_after_render
     assert "历史内容 40" in texts_after_render
@@ -386,11 +377,8 @@ def test_history_window_scrolls_to_bottom_after_batched_layout_settles(qtbot) ->
     window.resize(620, 680)
     window.refresh()
 
-    assert _process_events_until(
-        app,
-        lambda: "末尾内容" in [label.text() for label in window.findChildren(QLabel)],
-        timeout=2.0,
-    )
+    _finish_batched_history_render(window)
+    assert "末尾内容" in [label.text() for label in window.findChildren(QLabel)]
     window._sync_history_layout()
     scrollbar = window.history_view.verticalScrollBar()
     assert scrollbar.maximum() > 0

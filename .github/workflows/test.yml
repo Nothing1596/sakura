@@ -105,26 +105,47 @@ jobs:
           PYTEST_QT_API: pyside6
         run: |
           set +e
-          python -m pytest tests/ui -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 2>&1 | tee /tmp/ui-tests.log
-          EXIT_CODE=${PIPESTATUS[0]}
 
-          # Extract collected count (pytest prints "collected N items")
-          COLLECTED=$(grep -Eo "collected [0-9]+ items?" /tmp/ui-tests.log | tail -1 | grep -Eo "[0-9]+")
-          # Count finished test outcomes we consider non-failing
-          PASSED=$(grep -E " PASSED" /tmp/ui-tests.log | wc -l | tr -d ' ')
-          XFAILED=$(grep -E " XFAIL" /tmp/ui-tests.log | wc -l | tr -d ' ')
-          SKIPPED=$(grep -E " SKIPPED" /tmp/ui-tests.log | wc -l | tr -d ' ')
-          ERRORS=$(grep -E " ERROR" /tmp/ui-tests.log | wc -l | tr -d ' ')
-          FAILS=$(grep -E " FAILED" /tmp/ui-tests.log | wc -l | tr -d ' ')
+          run_ui_pytest() {
+            local name="$1"
+            shift
+            local log="/tmp/ui-tests-${name}.log"
+            python -m pytest "$@" -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 2>&1 | tee "$log"
+            local exit_code=${PIPESTATUS[0]}
 
-          # If pytest crashed (exit !=0) but we saw that all collected tests finished without failures/errors,
-          # consider the run successful (common Qt teardown crash).
-          if [ "$EXIT_CODE" -ne 0 ] && [ -n "$COLLECTED" ]; then
-            FINISHED=$(( ${PASSED:-0} + ${XFAILED:-0} + ${SKIPPED:-0} ))
-            if [ "$FINISHED" -eq "$COLLECTED" ] && [ "${FAILS:-0}" -eq 0 ] && [ "${ERRORS:-0}" -eq 0 ]; then
-              echo "::warning::UI tests all finished (collected=${COLLECTED}, passed=${PASSED}, xfailed=${XFAILED}, skipped=${SKIPPED}) but pytest crashed (exit $EXIT_CODE). Treating as success due to Qt teardown instability."
-              exit 0
+            local collected
+            collected=$(grep -Eo "collected [0-9]+ items?" "$log" | tail -1 | grep -Eo "[0-9]+")
+            local passed
+            passed=$(grep -E " PASSED" "$log" | wc -l | tr -d ' ')
+            local xfailed
+            xfailed=$(grep -E " XFAIL" "$log" | wc -l | tr -d ' ')
+            local skipped
+            skipped=$(grep -E " SKIPPED" "$log" | wc -l | tr -d ' ')
+            local errors
+            errors=$(grep -E " ERROR" "$log" | wc -l | tr -d ' ')
+            local fails
+            fails=$(grep -E " FAILED" "$log" | wc -l | tr -d ' ')
+
+            # If pytest crashed (exit !=0) but we saw that all collected tests finished without failures/errors,
+            # consider that shard successful (common Qt teardown crash).
+            if [ "$exit_code" -ne 0 ] && [ -n "$collected" ]; then
+              local finished
+              finished=$(( ${passed:-0} + ${xfailed:-0} + ${skipped:-0} ))
+              if [ "$finished" -eq "$collected" ] && [ "${fails:-0}" -eq 0 ] && [ "${errors:-0}" -eq 0 ]; then
+                echo "::warning::UI shard ${name} finished (collected=${collected}, passed=${passed}, xfailed=${xfailed}, skipped=${skipped}) but pytest crashed (exit $exit_code). Treating as success due to Qt teardown instability."
+                return 0
+              fi
             fi
-          fi
 
-          exit $EXIT_CODE
+            return "$exit_code"
+          }
+
+          run_ui_pytest history tests/ui/test_history_window.py
+          HISTORY_EXIT=$?
+          run_ui_pytest rest tests/ui --ignore=tests/ui/test_history_window.py
+          REST_EXIT=$?
+
+          if [ "$HISTORY_EXIT" -ne 0 ]; then
+            exit "$HISTORY_EXIT"
+          fi
+          exit "$REST_EXIT"
