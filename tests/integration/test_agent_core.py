@@ -401,11 +401,17 @@ def test_memory_store_returns_failed_response_for_nonblocking_memory_tools() -> 
     store._load_error = "Cannot send a request, as the client has been closed."
 
     result = store.search_memory({"query": "偏好"}, wait=False)
+    update_result = store.update_memory(
+        {"id": "memory-001", "content": "主人喜欢低糖咖啡"},
+        wait=False,
+    )
 
     assert result["status"] == "failed"
     assert "普通聊天仍可继续" in result["message"]
     assert result["memories"] == []
     assert "client has been closed" in result["error"]
+    assert update_result["status"] == "failed"
+    assert "client has been closed" in update_result["error"]
 
 
 def test_memory_store_downgrades_closed_client_during_search() -> None:
@@ -847,6 +853,98 @@ def test_memory_store_create_update_search_and_delete() -> None:
     assert store.list_memories() == []
 
 
+def test_memory_store_forget_missing_id_is_idempotent() -> None:
+    fake = FakeMem0RaisesOnMissingDelete()
+    store = MemoryStore(base_dir=_runtime_root_path("memory_missing_forget"), scope_id="sakura", memory_client=fake)
+
+    result = store.forget_memory({"id": "missing-id"})
+
+    assert result["forgotten"] == {"id": "missing-id", "content": ""}
+    assert result["memory"] == {"id": "missing-id", "content": ""}
+    assert result["already_missing"] is True
+
+
+def test_memory_store_defaults_legacy_records_to_semantic_layer() -> None:
+    fake = FakeMem0()
+    store = MemoryStore(base_dir=_runtime_root_path("memory_legacy_layer"), scope_id="sakura", memory_client=fake)
+    created = store.create_memory({"content": "主人喜欢低糖咖啡"})["memory"]
+
+    assert created["layer"] == "semantic"
+    assert created["metadata"]["layer"] == "semantic"
+    assert created["scope"] == "sakura"
+
+
+def test_memory_store_builds_layered_context_with_core_profile() -> None:
+    fake = FakeMem0()
+    store = MemoryStore(base_dir=_runtime_root_path("memory_context"), scope_id="sakura", memory_client=fake)
+    store.create_memory(
+        {
+            "content": "主人希望默认使用简体中文回答",
+            "layer": "procedural",
+            "category": "preference",
+            "confidence": 0.9,
+        }
+    )
+    store.create_memory(
+        {
+            "content": "Sakura 正在升级记忆系统",
+            "layer": "session",
+            "category": "project",
+        }
+    )
+    store.create_memory(
+        {
+            "content": "主人喜欢低糖咖啡",
+            "layer": "semantic",
+            "category": "preference",
+        }
+    )
+    store.create_memory(
+        {
+            "content": "上次讨论过记忆注入策略",
+            "layer": "episodic",
+            "category": "project",
+        }
+    )
+    store.create_memory(
+        {
+            "content": "主人长期偏好中文沟通",
+            "layer": "core_profile",
+            "category": "profile",
+        }
+    )
+
+    context = store.build_memory_context("", mode="tool")
+
+    assert "【常驻档案】" in context
+    assert "主人长期偏好中文沟通" in context
+    assert "【当前任务记忆】" in context
+    assert "【相关长期事实】" in context
+    assert "【协作规则与偏好】" in context
+    episodic_context = store.build_memory_context("上次", mode="event")
+    assert "【过往事件总结】" in episodic_context
+
+
+def test_memory_store_searches_and_converts_core_profile() -> None:
+    fake = FakeMem0()
+    store = MemoryStore(base_dir=_runtime_root_path("memory_core_profile"), scope_id="sakura", memory_client=fake)
+    created = store.create_memory({"content": "临时普通记忆"})["memory"]
+
+    converted = store.update_memory(
+        {
+            "id": created["id"],
+            "content": "主人长期偏好中文沟通",
+            "layer": "core_profile",
+            "category": "profile",
+        }
+    )["memory"]
+    result = store.search_memory({"layer": "core_profile", "query": "中文"})
+
+    assert converted["id"] == "core_profile:sakura"
+    assert result["memories"] == [converted]
+    assert fake.records == []
+
+
 def test_memory_store_uses_vendored_mem0_path_first() -> None:
     from app.agent.memory import MEM0_VENDOR_ROOT, install_mem0_vendor
 
@@ -866,7 +964,33 @@ def test_builtin_registry_registers_mem0_memory_tools() -> None:
 
     assert descriptions["memory_search"]["group"] == "memory"
     assert descriptions["memory_remember"]["group"] == "memory"
+    assert descriptions["memory_update"]["group"] == "memory"
     assert descriptions["memory_forget"]["group"] == "memory"
+
+
+def test_builtin_memory_update_tool_updates_existing_memory() -> None:
+    fake = FakeMem0()
+    registry = create_builtin_tool_registry(
+        _runtime_root_path("builtin_memory_update_tool"),
+        memory=MemoryStore(memory_client=fake),
+    )
+    remember_result = registry.execute(
+        "memory_remember",
+        {"content": "主人喜欢热咖啡"},
+    )
+    memory_id = remember_result.content["memory"]["id"]
+
+    update_result = registry.execute(
+        "memory_update",
+        {
+            "memory_id": memory_id,
+            "content": "主人喜欢低糖热咖啡",
+        },
+    )
+
+    assert update_result.success
+    assert update_result.content["memory"]["id"] == memory_id
+    assert update_result.content["memory"]["content"] == "主人喜欢低糖热咖啡"
 
 
 def test_tool_registry_requires_confirmation_returns_pending_action() -> None:
@@ -1708,8 +1832,10 @@ def test_agent_runtime_can_continue_tool_loop_after_tool_results() -> None:
     assert [action.payload["tool_name"] for action in result.actions] == ["first_tool", "second_tool"]
     assert len(client.prompts) == 3
     assert not client.final_chat_called
-    assert "这是第 1 步" in client.prompts[0]
-    assert "这是第 2 步" in client.prompts[1]
+    # 步数等易变状态已移出系统提示，改由 api_client 注入 runtime_context；
+    # 因此静态系统提示在多步之间保持一致（利于前缀缓存与角色稳定）。
+    assert "这是第 1 步" not in client.prompts[0]
+    assert client.prompts[0] == client.prompts[1] == client.prompts[2]
 
 
 def test_agent_runtime_stops_tool_loop_at_turn_limit() -> None:
@@ -3479,6 +3605,13 @@ class FakeMem0:
             for record in self.records
             if user_id is None or record.get("user_id") == user_id
         ]
+
+
+class FakeMem0RaisesOnMissingDelete(FakeMem0):
+    def delete(self, memory_id):  # type: ignore[no-untyped-def]
+        if self.get(memory_id) is None:
+            raise ValueError(f"Memory with id {memory_id} not found")
+        return super().delete(memory_id)
 
 
 class ClosableClient:

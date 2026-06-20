@@ -20,6 +20,7 @@ from app.config.character_loader import (
 from app.storage.chat_history import ChatHistoryStore
 from app.agent.runtime_events import RuntimeEventLog
 from app.core.debug_log import debug_log
+from app.core.resource_manager import ResourceRegistry
 from app.voice.factory import create_tts_provider
 from app.voice.tts import (
     NullTTSProvider,
@@ -122,10 +123,12 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     character_profile = startup_state.character_profile
     system_prompt = startup_state.system_prompt
     api_client = OpenAICompatibleClient(settings)
+    resource_registry = ResourceRegistry()
     memory_store = MemoryStore(
         base_dir=base_dir,
         api_settings=settings,
         scope_id=character_profile.id,
+        resource_registry=resource_registry,
     )
     memory_store.preload(wait=False)
     reminder_store = ReminderStore(StoragePaths(base_dir).reminders_store())
@@ -138,8 +141,9 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     )
     extension_registry = ExtensionRegistry()
     extension_registry.apply_tools(tool_registry)
-    plugin_manager = PluginManager(base_dir=base_dir)
+    plugin_manager = PluginManager(base_dir=base_dir, resource_registry=resource_registry)
     mcp_settings = settings_service.load_mcp_runtime_settings()
+    runtime_loop_settings = settings_service.load_runtime_loop_settings()
     agent_runtime = AgentRuntime(
         api_client=api_client,
         system_prompt=system_prompt,
@@ -147,6 +151,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         reply_portraits=character_profile.portrait_choices,
         tools=tool_registry,
         memory=memory_store,
+        runtime_loop_settings=runtime_loop_settings,
     )
     history_store = create_history_store(base_dir, character_profile)
     runtime_event_log = create_runtime_event_log(base_dir, character_profile)
@@ -157,7 +162,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     memory_curation_state = MemoryCurationState(
         StoragePaths(base_dir).memory_curation_state()
     )
-    memory_curator = MemoryCurator(api_client, memory_store)
+    memory_curator = MemoryCurator(api_client, memory_store, system_prompt=system_prompt)
     screen_awareness_settings = settings_service.load_screen_awareness_settings()
 
     debug_log(
@@ -169,6 +174,11 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             "plugins_deferred": True,
             "tts_deferred": True,
             "auto_memory": memory_curation_settings.enabled,
+            "tool_loop": {
+                "max_agent_steps_per_turn": runtime_loop_settings.max_agent_steps_per_turn,
+                "max_tool_calls_per_step": runtime_loop_settings.max_tool_calls_per_step,
+                "max_tool_calls_per_turn": runtime_loop_settings.max_tool_calls_per_turn,
+            },
         },
     )
 
@@ -193,6 +203,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             pet_state_store=pet_state_store,
             runtime_event_log=runtime_event_log,
         ),
+        resource_registry=resource_registry,
         features=FeatureServices(
             settings_service=settings_service,
             extension_registry=extension_registry,
@@ -259,7 +270,7 @@ def build_deferred_services(
         tool_registry.set_free_access_enabled(context.tool_registry.free_access_enabled)
         extension_registry = ExtensionRegistry()
         extension_registry.apply_tools(tool_registry)
-        plugin_manager = PluginManager(base_dir=base_dir)
+        plugin_manager = PluginManager(base_dir=base_dir, resource_registry=context.resource_registry)
         try:
             check_cancelled(cancel_checker)
             plugin_manager.load_from_config(tool_registry)
@@ -278,6 +289,7 @@ def build_deferred_services(
             base_dir,
             tool_registry,
             runtime_settings=mcp_settings,
+            resource_registry=context.resource_registry,
         )
         check_cancelled(cancel_checker)
     except OperationCancelled:

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import random
-import threading
-import time
 from typing import TYPE_CHECKING, Callable, Protocol
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -13,6 +11,7 @@ from app.core.debug_log import debug_log
 
 if TYPE_CHECKING:
     from app.config.settings_service import BackchannelSettings
+    from app.core.resource_manager import ResourceManager
 
 DisplayCallback = Callable[[BackchannelChoice], None]
 # 分类完成回调:用于评测日志,记录 (输入文本, 标签, 选中模板)。
@@ -50,6 +49,7 @@ class BackchannelController(QObject):
         display: DisplayCallback,
         *,
         settings: "BackchannelSettings",
+        resource_manager: "ResourceManager",
         rng: random.Random | None = None,
         on_classified: ClassifiedCallback | None = None,
         parent: QObject | None = None,
@@ -78,9 +78,11 @@ class BackchannelController(QObject):
         self._classify_timeout_timer = QTimer(self)
         self._classify_timeout_timer.setSingleShot(True)
         self._classify_timeout_timer.timeout.connect(self._on_classify_timeout)
-        self._classify_threads: set[threading.Thread] = set()
-        self._classify_threads_lock = threading.Lock()
         self._shutdown = False
+        self._thread_group = resource_manager.track_thread_group(
+            cancel=self._begin_shutdown,
+            label="backchannel",
+        )
 
     # --- 对外接口 -----------------------------------------------------------
     def set_manifest(self, manifest: BackchannelManifest | None) -> None:
@@ -130,23 +132,13 @@ class BackchannelController(QObject):
         返回值表示线程是否已全部退出。超时后线程仍保持非 daemon，会自然完成，
         但不再向已关闭的控制器投递结果。
         """
+        timeout_ms = None if timeout is None else max(0, int(timeout * 1000))
+        return self._thread_group.stop(timeout_ms)
+
+    def _begin_shutdown(self) -> None:
+        """进入终态并立即失效所有待处理或在飞分类结果。"""
         self._shutdown = True
         self.cancel()
-        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
-        while True:
-            with self._classify_threads_lock:
-                threads = tuple(self._classify_threads)
-            if not threads:
-                return True
-            for thread in threads:
-                remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-                thread.join(remaining)
-            with self._classify_threads_lock:
-                alive = any(thread.is_alive() for thread in self._classify_threads)
-            if not alive:
-                return True
-            if deadline is not None and time.monotonic() >= deadline:
-                return False
 
     @property
     def is_pending(self) -> bool:
@@ -176,29 +168,24 @@ class BackchannelController(QObject):
 
         def run_classification() -> None:
             try:
+                label = self._classifier.classify(text)
+            except Exception as exc:  # noqa: BLE001
+                debug_log("Backchannel", "后台分类异常,本轮按无标签处理", {"error": str(exc)})
+                label = None
+            if not self._shutdown:
                 try:
-                    label = self._classifier.classify(text)
-                except Exception as exc:  # noqa: BLE001
-                    debug_log("Backchannel", "后台分类异常,本轮按无标签处理", {"error": str(exc)})
-                    label = None
-                if not self._shutdown:
-                    try:
-                        self._classify_signals.done.emit(token, label)
-                    except RuntimeError:
-                        # QObject 可能已随宿主窗口销毁；关闭阶段不再投递结果。
-                        pass
-            finally:
-                current = threading.current_thread()
-                with self._classify_threads_lock:
-                    self._classify_threads.discard(current)
+                    self._classify_signals.done.emit(token, label)
+                except RuntimeError:
+                    # QObject 可能已随宿主窗口销毁；关闭阶段不再投递结果。
+                    pass
 
-        thread = threading.Thread(
-            target=run_classification,
+        thread = self._thread_group.spawn(
+            run_classification,
             name=f"sakura-backchannel-{token}",
         )
-        with self._classify_threads_lock:
-            self._classify_threads.add(thread)
-        thread.start()
+        if thread is None:
+            # 关闭与派发窄竞态：线程组进入终态后不保留 pending token。
+            self.cancel()
 
     def _on_classify_done(self, token: int, label: object) -> None:
         if token != self._inflight_token:

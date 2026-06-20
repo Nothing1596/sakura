@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHeaderView,
     QHBoxLayout,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTextEdit,
@@ -30,7 +32,15 @@ from PySide6.QtWidgets import (
 )
 
 from app.agent.mcp import MCPRuntimeSettings, WINDOWS_MCP_EXPERIMENTAL_TEXT
-from app.agent.memory import MemoryStore
+from app.agent.runtime_limits import (
+    MAX_CONFIGURABLE_AGENT_STEPS_PER_TURN,
+    MAX_CONFIGURABLE_TOOL_CALLS_PER_STEP,
+    MAX_CONFIGURABLE_TOOL_CALLS_PER_TURN,
+    MIN_AGENT_STEPS_PER_TURN,
+    MIN_TOOL_CALLS_PER_STEP,
+    RuntimeLoopSettings,
+)
+from app.agent.memory import MEMORY_LAYER_LABELS, MEMORY_LAYERS, MemoryStore
 from app.backchannel.model_cache import (
     BACKCHANNEL_MODEL_CACHE_NAME,
     DEFAULT_BACKCHANNEL_EMBEDDING_MODEL,
@@ -82,6 +92,8 @@ from app.ui.portrait_controller import (
 )
 from app.ui.settings.widgets import (
     ModelComboBox,
+    _FitContentScrollArea,
+    _GripSplitter,
     _NoWheelComboBox,
     _NoWheelDoubleSpinBox,
     _NoWheelSlider,
@@ -665,10 +677,12 @@ class ToolsSettingsPage:
     def build(
         self,
         settings: MCPRuntimeSettings,
+        runtime_loop_settings: RuntimeLoopSettings,
         tools_tab_contributions: list[ToolsTabContribution],
     ) -> QWidget:
         owner = self.dialog
         tab = QWidget(owner)
+        runtime_loop_settings = runtime_loop_settings.normalized()
         owner.windows_mcp_enabled_check = QCheckBox("启用 Windows MCP 桌面控制（实验性）", tab)
         owner.windows_mcp_enabled_check.setChecked(settings.windows_enabled)
         owner.windows_mcp_enabled_check.setToolTip(WINDOWS_MCP_EXPERIMENTAL_TEXT)
@@ -685,6 +699,7 @@ class ToolsSettingsPage:
         form_layout.setSpacing(12)
         form_layout.addRow("", owner.windows_mcp_enabled_check)
         form_layout.addRow("生效方式", restart_hint)
+        form_layout.addRow("", self._build_runtime_loop_group(runtime_loop_settings, tab))
         for contribution in sorted(tools_tab_contributions, key=lambda item: item.order):
             try:
                 widget = contribution.build(None)
@@ -694,6 +709,66 @@ class ToolsSettingsPage:
             form_layout.addRow(contribution.title, widget)
         tab.setLayout(form_layout)
         return tab
+
+    def _build_runtime_loop_group(
+        self,
+        settings: RuntimeLoopSettings,
+        parent: QWidget,
+    ) -> QGroupBox:
+        owner = self.dialog
+        group = QGroupBox("工具循环", parent)
+
+        owner.agent_steps_per_turn_spin = _NoWheelSpinBox(group)
+        owner.agent_steps_per_turn_spin.setRange(
+            MIN_AGENT_STEPS_PER_TURN,
+            MAX_CONFIGURABLE_AGENT_STEPS_PER_TURN,
+        )
+        owner.agent_steps_per_turn_spin.setSuffix(" 步")
+        owner.agent_steps_per_turn_spin.setValue(settings.max_agent_steps_per_turn)
+        owner.agent_steps_per_turn_spin.setToolTip(
+            "每轮对话中，模型最多连续规划和执行工具的轮数。"
+        )
+
+        owner.tool_calls_per_step_spin = _NoWheelSpinBox(group)
+        owner.tool_calls_per_step_spin.setRange(
+            MIN_TOOL_CALLS_PER_STEP,
+            MAX_CONFIGURABLE_TOOL_CALLS_PER_STEP,
+        )
+        owner.tool_calls_per_step_spin.setSuffix(" 个")
+        owner.tool_calls_per_step_spin.setValue(settings.max_tool_calls_per_step)
+        owner.tool_calls_per_step_spin.setToolTip(
+            "单次规划返回多个工具调用时，本步骤最多执行的数量。"
+        )
+
+        owner.tool_calls_per_turn_spin = _NoWheelSpinBox(group)
+        owner.tool_calls_per_turn_spin.setRange(
+            settings.max_tool_calls_per_step,
+            MAX_CONFIGURABLE_TOOL_CALLS_PER_TURN,
+        )
+        owner.tool_calls_per_turn_spin.setSuffix(" 个")
+        owner.tool_calls_per_turn_spin.setValue(settings.max_tool_calls_per_turn)
+        owner.tool_calls_per_turn_spin.setToolTip(
+            "一轮用户消息内最多执行的工具调用总数。"
+        )
+        owner.tool_calls_per_step_spin.valueChanged.connect(
+            owner.tool_calls_per_turn_spin.setMinimum
+        )
+
+        hint = QLabel(
+            "数值越大，复杂任务可连续推进得更久，但也会增加响应时间和接口消耗。",
+            group,
+        )
+        hint.setWordWrap(True)
+
+        layout = QFormLayout()
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(12)
+        layout.addRow("循环步数", owner.agent_steps_per_turn_spin)
+        layout.addRow("每步工具数", owner.tool_calls_per_step_spin)
+        layout.addRow("整轮工具数", owner.tool_calls_per_turn_spin)
+        layout.addRow("说明", hint)
+        group.setLayout(layout)
+        return group
 
 
 class PluginSettingsPage:
@@ -1019,9 +1094,31 @@ class MemorySettingsPage:
         tab.setObjectName("settingsNavPage")
         _ = memory_store
 
+        # 自动整理设置（需求3）：自动整理始终开启，这里只暴露触发频率（轮数）。
+        from app.agent.memory_curator import MemoryCurationSettings
+
+        curation_settings = (
+            getattr(owner, "memory_curation_settings", None) or MemoryCurationSettings()
+        )
+        owner.memory_trigger_turns_spin = _NoWheelSpinBox(tab)
+        owner.memory_trigger_turns_spin.setRange(1, 50)
+        owner.memory_trigger_turns_spin.setSuffix(" 轮对话")
+        owner.memory_trigger_turns_spin.setValue(int(curation_settings.trigger_turns))
+        curation_form = QFormLayout()
+        curation_form.setContentsMargins(16, 12, 16, 12)
+        curation_form.setSpacing(12)
+        curation_form.addRow("自动整理频率", owner.memory_trigger_turns_spin)
+        owner.memory_curation_group = QGroupBox("自动整理", tab)
+        owner.memory_curation_group.setLayout(curation_form)
+
         owner.memory_search_edit = QLineEdit(tab)
         owner.memory_search_edit.setPlaceholderText("搜索记忆内容或 ID")
         owner.memory_search_edit.textChanged.connect(owner._refresh_memory_table)
+        owner.memory_layer_filter_combo = _NoWheelComboBox(tab)
+        owner.memory_layer_filter_combo.addItem("全部层级", "")
+        for layer in MEMORY_LAYERS:
+            owner.memory_layer_filter_combo.addItem(MEMORY_LAYER_LABELS.get(layer, layer), layer)
+        owner.memory_layer_filter_combo.currentIndexChanged.connect(owner._refresh_memory_table)
         owner.memory_refresh_button = QPushButton("刷新", tab)
         owner.memory_refresh_button.clicked.connect(owner._load_memory_entries)
         owner.memory_download_model_button = QPushButton("在线安装记忆模型", tab)
@@ -1037,7 +1134,9 @@ class MemorySettingsPage:
         owner.memory_status_label = QLabel(MEMORY_READING_TEXT, tab)
 
         owner.memory_table = QTableWidget(0, 4, tab)
-        owner.memory_table.setHorizontalHeaderLabels(["", "内容", "更新时间", "ID"])
+        owner.memory_table.setHorizontalHeaderLabels(
+            ["", "内容", "层级", "更新时间"]
+        )
         owner.memory_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         owner.memory_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         owner.memory_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -1050,9 +1149,8 @@ class MemorySettingsPage:
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         owner.memory_table.setColumnWidth(0, 56)
-        owner.memory_table.setColumnWidth(3, 82)
         owner.memory_select_all_check = QCheckBox(header)
         owner.memory_select_all_check.setToolTip("全选当前结果")
         owner.memory_select_all_check.stateChanged.connect(
@@ -1078,12 +1176,34 @@ class MemorySettingsPage:
         owner.memory_new_button.toggled.connect(owner._toggle_memory_new_editor)
         owner.memory_content_edit = QTextEdit(tab)
         owner.memory_content_edit.setPlaceholderText("新增长期记忆内容")
-        owner.memory_content_edit.setFixedHeight(84)
+        owner.memory_content_edit.setFixedHeight(88)
+        owner.memory_content_edit.setMinimumHeight(88)
+        owner.memory_content_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        owner.memory_content_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        owner.memory_layer_combo = _NoWheelComboBox(tab)
+        for layer in MEMORY_LAYERS:
+            owner.memory_layer_combo.addItem(MEMORY_LAYER_LABELS.get(layer, layer), layer)
+        owner.memory_category_edit = QLineEdit(tab)
+        owner.memory_category_edit.setPlaceholderText("如 preference / project / workflow")
+        owner.memory_source_edit = QLineEdit(tab)
+        owner.memory_source_edit.setPlaceholderText("manual")
+        owner.memory_importance_spin = _NoWheelDoubleSpinBox(tab)
+        owner.memory_importance_spin.setRange(0.0, 1.0)
+        owner.memory_importance_spin.setSingleStep(0.05)
+        owner.memory_importance_spin.setDecimals(2)
+        owner.memory_confidence_spin = _NoWheelDoubleSpinBox(tab)
+        owner.memory_confidence_spin.setRange(0.0, 1.0)
+        owner.memory_confidence_spin.setSingleStep(0.05)
+        owner.memory_confidence_spin.setDecimals(2)
         owner.memory_save_button = QPushButton("保存", tab)
         owner.memory_save_button.clicked.connect(owner._save_memory_entry)
 
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(owner.memory_search_edit, 1)
+        filter_layout.addWidget(owner.memory_layer_filter_combo)
         filter_layout.addWidget(owner.memory_download_model_button)
         filter_layout.addWidget(owner.memory_import_model_button)
         filter_layout.addWidget(owner.memory_refresh_button)
@@ -1096,28 +1216,80 @@ class MemorySettingsPage:
         selection_layout.addWidget(owner.memory_clear_selection_button)
         selection_layout.addWidget(owner.memory_delete_button)
 
-        owner.memory_editor_container = QWidget(tab)
-        editor_layout = QFormLayout()
-        editor_layout.setContentsMargins(0, 0, 0, 0)
-        editor_layout.setSpacing(8)
+        # 编辑区滚动面板：sizeHint 贴合表单实际高度（见 _FitContentScrollArea），配合
+        # Maximum 纵向策略 —— 空间充足时正好占满表单高度、不留空白，多余纵向空间留给上方
+        # 记忆表格（stretch=1）；窗口压矮时面板收缩并内部滚动，而不是把各行压成重叠。
+        # 不再用 setFixedHeight 锁死高度，避免 QSS padding 注入后行高被压缩导致输入框重叠。
+        owner.memory_editor_container = _FitContentScrollArea(tab)
+        owner.memory_editor_container.setObjectName("memoryEditorPanel")
+        owner.memory_editor_container.setWidgetResizable(True)
+        owner.memory_editor_container.setFrameShape(QFrame.Shape.NoFrame)
+        owner.memory_editor_container.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        owner.memory_editor_container.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        owner.memory_editor_container.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum,
+        )
+        owner.memory_editor_content = QWidget(owner.memory_editor_container)
+        owner.memory_editor_content.setObjectName("memoryEditorContent")
+        owner.memory_editor_form = QWidget(owner.memory_editor_content)
+        owner.memory_editor_form.setObjectName("memoryEditorForm")
+        editor_layout = QFormLayout(owner.memory_editor_form)
+        editor_layout.setContentsMargins(10, 10, 10, 10)
+        editor_layout.setHorizontalSpacing(12)
+        editor_layout.setVerticalSpacing(9)
         editor_layout.addRow("内容", owner.memory_content_edit)
+        editor_layout.addRow("层级", owner.memory_layer_combo)
+        editor_layout.addRow("分类", owner.memory_category_edit)
+        editor_layout.addRow("重要性", owner.memory_importance_spin)
+        editor_layout.addRow("置信度", owner.memory_confidence_spin)
+        editor_layout.addRow("来源", owner.memory_source_edit)
         editor_layout.addRow("", owner.memory_save_button)
-        owner.memory_editor_container.setLayout(editor_layout)
+        editor_content_layout = QVBoxLayout(owner.memory_editor_content)
+        editor_content_layout.setContentsMargins(0, 0, 0, 0)
+        editor_content_layout.setSpacing(0)
+        editor_content_layout.addWidget(owner.memory_editor_form)
+        owner.memory_editor_container.setWidget(owner.memory_editor_content)
         owner.memory_editor_container.setVisible(False)
+
+        # 上窗格只放表格,下窗格放「选择行 + 编辑区」,用竖直 QSplitter 隔开:
+        # 手柄正好落在表格底部、选择行上方,拖动它即可手动加长记忆列表
+        # (编辑区随之收缩并内部滚动),不必只靠拉伸整窗。
+        owner.memory_editor_pane = QWidget(tab)
+        owner.memory_editor_pane.setObjectName("memoryEditorPane")
+        editor_pane_layout = QVBoxLayout(owner.memory_editor_pane)
+        editor_pane_layout.setContentsMargins(0, 0, 0, 0)
+        editor_pane_layout.setSpacing(10)
+        editor_pane_layout.addLayout(selection_layout)
+        editor_pane_layout.addWidget(owner.memory_editor_container)
+
+        owner.memory_list_splitter = _GripSplitter(Qt.Orientation.Vertical, tab)
+        owner.memory_list_splitter.setObjectName("memoryListSplitter")
+        owner.memory_list_splitter.setChildrenCollapsible(False)
+        owner.memory_list_splitter.setHandleWidth(8)
+        owner.memory_list_splitter.addWidget(owner.memory_table)
+        owner.memory_list_splitter.addWidget(owner.memory_editor_pane)
+        owner.memory_list_splitter.setStretchFactor(0, 1)
+        owner.memory_list_splitter.setStretchFactor(1, 0)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(16, 18, 16, 16)
         layout.setSpacing(10)
+        layout.addWidget(owner.memory_curation_group)
         layout.addLayout(filter_layout)
         layout.addLayout(status_layout)
-        layout.addWidget(owner.memory_table, 1)
-        layout.addLayout(selection_layout)
-        layout.addWidget(owner.memory_editor_container)
+        layout.addWidget(owner.memory_list_splitter, 1)
         tab.setLayout(layout)
 
         owner.memory_status_label.setText("打开记忆页时读取长期记忆。")
         owner._show_memory_placeholder("切换到记忆页后读取长期记忆。")
         owner._clear_memory_editor()
+        # 初始收起编辑区:把下窗格高度钉到选择行,空间全归列表、手柄不留可拖出的空白。
+        owner._set_memory_editor_visible(False)
         return tab
 
 

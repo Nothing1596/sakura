@@ -8,6 +8,7 @@ import uuid
 from app.agent.tools import ToolRegistry
 from app.plugins.manager import PluginManager
 from app.plugins.services import PluginInputService, PluginServices
+from app.core.resource_manager import ResourceRegistry
 
 
 def test_set_input_text_without_sink_is_noop() -> None:
@@ -81,6 +82,73 @@ class InputPlugin(PluginBase):
 
     assert results[0].loaded, results[0].error
     assert received == ["来自插件"]
+
+
+def test_plugin_resource_cleanup_runs_from_shared_registry() -> None:
+    registry = ResourceRegistry()
+    services = PluginServices()
+    services.set_resource_registry(registry)
+    calls: list[str] = []
+
+    services.for_plugin("demo").resources.register_cleanup(
+        lambda: calls.append("cleanup"),
+        label="cleanup",
+    )
+
+    registry.stop_all()
+
+    assert calls == ["cleanup"]
+
+
+def test_plugin_manager_shutdown_all_stops_resources_once() -> None:
+    base = _runtime_root("resource_plugin")
+    plugin_dir = base / "plugins" / "resource_plugin"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text(
+        """
+api_version: 1
+id: resource_plugin
+name: Resource Plugin
+entry: plugin:ResourcePlugin
+enabled: true
+permissions:
+  - tool
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (plugin_dir / "plugin.py").write_text(
+        """
+from app.plugins import PluginBase
+
+class ResourcePlugin(PluginBase):
+    plugin_id = "resource_plugin"
+
+    def initialize(self, register, context):
+        self.log_path = context.data_dir / "lifecycle.txt"
+        context.services.resources.register_cleanup(self._cleanup, label="cleanup")
+
+    def _append(self, text):
+        existing = self.log_path.read_text(encoding="utf-8") if self.log_path.exists() else ""
+        self.log_path.write_text(existing + text + "\\n", encoding="utf-8")
+
+    def _cleanup(self):
+        self._append("cleanup")
+
+    def shutdown(self):
+        self._append("shutdown")
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    manager = PluginManager(base)
+    results = manager.load_all(ToolRegistry())
+
+    assert results[0].loaded, results[0].error
+    manager.shutdown_all()
+    manager.shutdown_all()
+
+    log_path = base / "data" / "plugins" / "resource_plugin" / "lifecycle.txt"
+    assert log_path.read_text(encoding="utf-8").splitlines() == ["cleanup", "shutdown"]
 
 
 def _runtime_root(name: str) -> Path:

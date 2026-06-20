@@ -15,6 +15,7 @@ from typing import Any
 from app.agent.tools.registry import Tool
 from app.agent.tools import ToolRegistry
 from app.core.debug_log import debug_log
+from app.core.resource_manager import DEFAULT_THREAD_SHUTDOWN_WAIT_MS, ResourceRegistry
 from app.plugins.base import PluginBase, PluginContext
 from app.plugins.capabilities import PluginCapabilities, PluginCapabilityRegistry
 from app.plugins.discovery import PluginDiscovery
@@ -79,11 +80,16 @@ class PluginManager:
     """发现、加载、校验并收集 Sakura 插件贡献。"""
 
     base_dir: Path
+    resource_registry: ResourceRegistry | None = None
     _loaded: list[PluginLoadResult] = field(default_factory=list)
     _plugins: list[PluginBase] = field(default_factory=list)
     _active_plugins: list[tuple[PluginBase, PluginManifest]] = field(default_factory=list)
     _event_bus: PluginEventBus = field(default_factory=PluginEventBus)
     _services: PluginServices = field(default_factory=PluginServices)
+
+    def __post_init__(self) -> None:
+        self.resource_registry = self.resource_registry or ResourceRegistry()
+        self._services.set_resource_registry(self.resource_registry)
 
     @property
     def event_bus(self) -> PluginEventBus:
@@ -149,7 +155,7 @@ class PluginManager:
                 self.base_dir,
                 manifest,
                 event_bus=self._event_bus,
-                services=self._services,
+                services=self._services.for_plugin(manifest.plugin_id),
             )
             _initialize_plugin(plugin, capability_registry, context)
             all_tool_contributions = list(capability_registry.tools)
@@ -207,6 +213,7 @@ class PluginManager:
                 _shutdown_quietly(plugin)
             # 加载失败时清理可能已注册的事件订阅，避免残留 handler。
             if result.manifest is not None:
+                self._services.resources.stop_plugin(result.manifest.plugin_id)
                 self._event_bus.remove_plugin(result.manifest.plugin_id)
             debug_log(
                 "PluginManager",
@@ -322,8 +329,14 @@ class PluginManager:
         return self.collect_renderers()
 
     def shutdown_all(self) -> None:
-        """逆序关闭所有已加载插件，并清理其事件订阅。"""
-        for plugin, manifest in reversed(self._active_plugins):
+        """逆序关闭所有已加载插件，并清理其事件订阅；可重复调用。"""
+        active_plugins = list(reversed(self._active_plugins))
+        self._active_plugins = []
+        for plugin, manifest in active_plugins:
+            self._services.resources.stop_plugin(
+                manifest.plugin_id,
+                DEFAULT_THREAD_SHUTDOWN_WAIT_MS,
+            )
             _shutdown_quietly(plugin)
             self._event_bus.remove_plugin(manifest.plugin_id)
 
@@ -484,7 +497,7 @@ def _build_plugin_context(
     manifest: PluginManifest,
     *,
     event_bus: PluginEventBus | None = None,
-    services: PluginServices | None = None,
+    services: Any = None,
 ) -> PluginContext:
     plugin_root = manifest.plugin_root or base_dir / "plugins" / manifest.plugin_id
     data_dir = StoragePaths(base_dir).plugin_data_for(manifest.plugin_id)

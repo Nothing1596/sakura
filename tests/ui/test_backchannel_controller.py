@@ -16,6 +16,7 @@ from app.backchannel.models import (  # noqa: E402
 )
 from app.backchannel.resolver import BackchannelChoice  # noqa: E402
 from app.config.settings_service import BackchannelSettings  # noqa: E402
+from app.core.resource_manager import ResourceManager, ResourceState  # noqa: E402
 
 
 def _qt_app_or_skip():  # type: ignore[no-untyped-def]
@@ -56,6 +57,7 @@ def _make(
         RuleClassifier(),
         displayed.append,
         settings=BackchannelSettings(enabled=enabled, probability=probability),
+        resource_manager=ResourceManager(),
         rng=random.Random(7),
     )
     if manifest is not None:
@@ -179,11 +181,14 @@ def _make_async(
     *,
     timeout_ms: int = 400,
     on_classified=None,  # type: ignore[no-untyped-def]
+    resource_manager: ResourceManager | None = None,
 ) -> BackchannelController:
+    manager = resource_manager if resource_manager is not None else ResourceManager()
     controller = BackchannelController(
         classifier,  # type: ignore[arg-type]
         displayed.append,
         settings=BackchannelSettings(enabled=True, mode="hybrid", timeout_ms=timeout_ms),
+        resource_manager=manager,
         rng=random.Random(7),
         on_classified=on_classified,
     )
@@ -247,19 +252,26 @@ def test_background_classify_thread_is_managed_and_shutdown_waits() -> None:
             release.wait(2)
             return None
 
-    controller = _make_async(displayed, _BlockingClassifier())
+    manager = ResourceManager()
+    controller = _make_async(displayed, _BlockingClassifier(), resource_manager=manager)
     controller.schedule("随便什么")
     controller._on_timeout()
     assert started.wait(1)
 
-    with controller._classify_threads_lock:
-        threads = tuple(controller._classify_threads)
+    group = controller._thread_group
+    with group._threads_lock:
+        threads = tuple(group._threads)
     assert len(threads) == 1
     assert threads[0].daemon is False
+    assert group.is_running() is True
     assert controller.shutdown(timeout=0) is False
+    assert group.state is ResourceState.STOPPING
+    assert threads[0] in manager._lingering_threads
 
     release.set()
     assert controller.shutdown(timeout=1) is True
+    assert group.state is ResourceState.STOPPED
+    assert group.is_running() is False
     controller.schedule("关闭后不再调度")
     assert not controller.is_pending
     assert displayed == []

@@ -30,6 +30,40 @@ def cleanup_qt_objects_after_test() -> Iterable[None]:
 
 
 @pytest.fixture(autouse=True)
+def cleanup_tts_providers_before_qt(
+    cleanup_qt_objects_after_test: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterable[None]:
+    """保持真实 TTS Provider 存活，并在 Qt 对象清理前统一关闭。"""
+    _ = cleanup_qt_objects_after_test
+    try:
+        from app.voice.tts import GPTSoVITSTTSProvider
+    except Exception:
+        yield
+        return
+
+    providers: list[Any] = []
+    original_init = GPTSoVITSTTSProvider.__init__
+
+    def _tracked_init(provider: Any, *args: object, **kwargs: object) -> None:
+        original_init(provider, *args, **kwargs)
+        providers.append(provider)
+
+    monkeypatch.setattr(GPTSoVITSTTSProvider, "__init__", _tracked_init)
+    yield
+
+    for provider in reversed(providers):
+        try:
+            is_closed = getattr(provider, "_is_closed", None)
+            if callable(is_closed) and is_closed():
+                continue
+            provider.close()
+        except RuntimeError:
+            # 测试主动删除过底层 QObject 时，Python wrapper 可能已失效。
+            continue
+
+
+@pytest.fixture(autouse=True)
 def block_memory_store_background_load(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
@@ -84,16 +118,23 @@ def _cleanup_qt_objects() -> None:
     for thread in threads:
         _stop_thread(thread, QThread)
 
-    _drain_qt_events(app, QCoreApplication, QEvent)
-
     for widget in _safe_qt_list(QApplication.topLevelWidgets):
         try:
             widget.close()
+        except Exception:  # noqa: BLE001
+            # 部分 UI 测试只构造精简窗口，closeEvent 可能依赖未初始化字段。
+            pass
+        try:
             widget.deleteLater()
         except RuntimeError:
             pass
 
-    _drain_qt_events(app, QCoreApplication, QEvent)
+    # 只处理延迟删除；全局 processEvents 会执行跨测试残留的普通 queued event，
+    # 曾在 Windows/PySide6 中随机触发 0xC0000005。
+    try:
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    except RuntimeError:
+        pass
 
 
 def _collect_threads(obj: Any, qthread_type: type, seen: set[int] | None = None) -> list[Any]:
@@ -154,15 +195,6 @@ def _stop_thread(thread: Any, qthread_type: type) -> None:
     except RuntimeError:
         return
 
-
-def _drain_qt_events(app: Any, qcore_application: type, qevent: type) -> None:
-    for _ in range(3):
-        try:
-            app.processEvents()
-            qcore_application.sendPostedEvents(None, qevent.Type.DeferredDelete)
-            app.processEvents()
-        except RuntimeError:
-            return
 
 
 def _safe_qt_list(factory: Any) -> list[Any]:

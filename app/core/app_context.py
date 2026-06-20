@@ -17,6 +17,7 @@ from app.voice.tts import TTSProvider
 from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
 from app.pet_state.store import PetStateStore
+from app.core.resource_manager import ResourceRegistry
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,7 @@ class AppContext:
     core: CoreServices
     storage: StorageServices
     features: FeatureServices
+    resource_registry: ResourceRegistry
     startup_initializing: bool = False
 
     @property

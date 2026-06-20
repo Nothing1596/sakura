@@ -105,8 +105,11 @@ def test_plugin_manager_loads_playwright_browser_plugin() -> None:
     manager.shutdown_all()
 
 
-def test_plugin_config_manifest_is_read() -> None:
-    specs = PluginDiscovery(Path(__file__).resolve().parents[2]).discover()
+def test_plugin_config_manifest_is_read(tmp_path: Path) -> None:
+    specs = PluginDiscovery(
+        Path(__file__).resolve().parents[2],
+        config_path=tmp_path / "plugins.yaml",
+    ).discover()
 
     playwright = next(spec for spec in specs if spec.plugin_id == "playwright_browser")
     assert playwright.entry == "plugin:PlaywrightBrowserPlugin"

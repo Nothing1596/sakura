@@ -3,12 +3,15 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import threading
 import types
 import urllib.error
 import uuid
 import wave
 from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 if importlib.util.find_spec("PySide6") is None:
     pyside_module = types.ModuleType("PySide6")
@@ -62,7 +65,12 @@ if importlib.util.find_spec("PySide6") is None:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
+    class QThread:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
     qtcore_module.QObject = QObject
+    qtcore_module.QThread = QThread
     qtcore_module.QTimer = QTimer
     qtcore_module.QUrl = QUrl
     qtcore_module.Signal = Signal
@@ -80,6 +88,8 @@ from app.voice.tts import (
     _build_gpt_sovits_start_command,
     _build_genie_endpoint_url,
     _format_gpt_sovits_http_error,
+    _find_running_local_tts_process,
+    _is_restartable_local_tts_service_failure,
     _is_soft_synth_failure,
     _is_voiceable_text,
     _local_tts_subprocess_env,
@@ -90,6 +100,9 @@ from app.voice.tts import (
     _write_genie_audio,
     purge_tts_cache,
 )
+from app.voice.tts_service import GenieServiceSupervisor, TTSServiceSupervisor
+import app.voice.tts_playback as tts_playback
+import app.voice.tts_synthesis as tts_synthesis
 from app.voice.tts_settings import GPTSoVITSTTSSettings, _load_tone_references
 from app.core.gui_log import GUI_LOG_SCOPE_TTS, clear_gui_logs, get_gui_log_buffer
 from app.voice import VoicePlaybackController
@@ -159,6 +172,10 @@ def test_soft_synth_failure_only_for_tts_failed_400() -> None:
     assert _is_soft_synth_failure(400, body)
     # charmap 编码错误是运行时配置问题，需保留提示
     assert not _is_soft_synth_failure(400, "'charmap' codec can't encode character")
+    # Broken pipe 表示本地服务进程自身坏了，需重启服务而不是静默吞掉本段
+    broken_pipe = '{"message":"tts failed","Exception":"[Errno 32] Broken pipe"}'
+    assert _is_restartable_local_tts_service_failure(400, broken_pipe)
+    assert not _is_soft_synth_failure(400, broken_pipe)
     # 其他 400 与非 400 不按单段静默降级
     assert not _is_soft_synth_failure(400, '{"detail":"bad param"}')
     assert not _is_soft_synth_failure(500, '{"message":"tts failed"}')
@@ -192,7 +209,7 @@ def test_tts_provider_can_skip_constructor_service_adoption(monkeypatch) -> None
         calls.append(type(self).__name__)
 
     monkeypatch.setattr(
-        GPTSoVITSTTSProvider,
+        TTSServiceSupervisor,
         "_adopt_existing_configured_service",
         fake_adopt,
     )
@@ -200,39 +217,213 @@ def test_tts_provider_can_skip_constructor_service_adoption(monkeypatch) -> None
     GPTSoVITSTTSProvider(_minimal_tts_settings(), adopt_existing_service=False)
     GPTSoVITSTTSProvider(_minimal_tts_settings())
 
-    assert calls == ["GPTSoVITSTTSProvider"]
+    assert calls == ["TTSServiceSupervisor"]
 
 
 def test_service_ready_property_reflects_probe_state() -> None:
     # 接话音频预生成依赖此公开属性做就绪门控:探测成功前必须为 False。
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings(), adopt_existing_service=False)
     assert provider.service_ready is False
-    provider._service_checked = True
+    provider._supervisor._service_checked = True
     assert provider.service_ready is True
 
 
 def test_tts_provider_close_clears_queue_and_blocks_late_requests() -> None:
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings(), adopt_existing_service=False)
-    provider._pending_requests.append(_TTSRequest(text="queued", tone=None))
+    queue = provider._synthesis_queue
+    queue._pending_requests.append(_TTSRequest(text="queued", tone=None))
 
     provider.close()
 
     assert provider._is_closed()
-    assert provider._pending_requests == []
+    assert queue._pending_requests == []
 
     provider.speak("late request")
 
-    assert provider._pending_requests == []
+    assert queue._pending_requests == []
 
-    provider._pending_requests.append(_TTSRequest(text="stale", tone=None))
-    provider._start_next_request()
+    queue._pending_requests.append(_TTSRequest(text="stale", tone=None))
+    queue._start_next_request()
 
-    assert not provider._request_running
-    assert [request.text for request in provider._pending_requests] == ["stale"]
+    assert not queue._request_running
+    assert [request.text for request in queue._pending_requests] == ["stale"]
+
+
+def test_tts_provider_close_quiesces_before_playback_shutdown(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    provider = GPTSoVITSTTSProvider(_minimal_tts_settings(), adopt_existing_service=False)
+    events: list[str] = []
+
+    monkeypatch.setattr(provider._synthesis_queue, "clear_pending", lambda: events.append("clear"))
+    monkeypatch.setattr(provider._playback, "begin_shutdown", lambda: events.append("begin"))
+
+    def stop_all() -> None:
+        assert provider._is_closed()
+        events.append("stop")
+
+    monkeypatch.setattr(provider._resource_manager, "stop_all", stop_all)
+    monkeypatch.setattr(provider._playback, "shutdown", lambda: events.append("shutdown"))
+
+    provider.close()
+    provider.close()
+
+    assert events == ["clear", "begin", "stop", "shutdown"]
+
+
+def test_tts_synthesis_thread_is_tracked_before_start(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    provider = GPTSoVITSTTSProvider(_minimal_tts_settings(), adopt_existing_service=False)
+    queue = provider._synthesis_queue
+    events: list[str] = []
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon) -> None:  # type: ignore[no-untyped-def]
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self) -> None:
+            events.append("start")
+
+    monkeypatch.setattr(tts_synthesis.threading, "Thread", FakeThread)
+    assert queue._thread_resource is not None
+    monkeypatch.setattr(queue._thread_resource, "track", lambda _thread: events.append("track"))
+    queue._pending_requests.append(_TTSRequest(text="test", tone=None))
+
+    queue._start_next_request()
+
+    assert events == ["track", "start"]
+
+
+def test_tts_queue_dispatches_public_failure_and_skip_methods() -> None:
+    provider = GPTSoVITSTTSProvider(_minimal_tts_settings(), adopt_existing_service=False)
+    started: list[str] = []
+    finished: list[str] = []
+    errors: list[str] = []
+    provider.error_occurred.connect(errors.append)
+
+    provider._synthesis_queue._request_audio(
+        _TTSRequest(
+            text="!!!",
+            tone=None,
+            on_started=lambda: started.append("skip"),
+            on_finished=lambda: finished.append("skip"),
+        )
+    )
+
+    class FailingEngine:
+        def synthesize(self, _queue, _request, *, fail, skip):  # type: ignore[no-untyped-def]
+            _ = skip
+            fail("合成失败")
+            return None
+
+    provider._synthesis_queue._engine = FailingEngine()
+    provider._synthesis_queue._request_audio(
+        _TTSRequest(
+            text="test",
+            tone=None,
+            on_started=lambda: started.append("fail"),
+            on_finished=lambda: finished.append("fail"),
+        )
+    )
+
+    assert started == ["skip", "fail"]
+    assert finished == ["skip", "fail"]
+    assert errors == ["合成失败"]
+
+
+def test_closed_playback_discards_late_results(tmp_path: Path) -> None:
+    provider = GPTSoVITSTTSProvider(_minimal_tts_settings(), adopt_existing_service=False)
+    playback = provider._playback
+    provider.close()
+
+    audio_path = tmp_path / "late.wav"
+    prepared_path = tmp_path / "late-prepared.wav"
+    cleanup_path = tmp_path / "late-cleanup.wav"
+    for path in (audio_path, prepared_path, cleanup_path):
+        path.write_bytes(b"wav")
+
+    prepared = TTSPreparedAudio(text="test")
+    playback.deliver_audio(str(audio_path), None, None, "test")
+    playback.deliver_prepared(prepared, str(prepared_path))
+    playback.schedule_cleanup(cleanup_path)
+    playback.fail_audio_request(_TTSRequest(text="test", tone=None, prepared_audio=prepared), "late")
+    playback.skip_audio_request(_TTSRequest(text="test", tone=None, prepared_audio=prepared), "late")
+
+    assert not audio_path.exists()
+    assert not prepared_path.exists()
+    assert not cleanup_path.exists()
+    assert prepared.failed
+
+
+def test_invalid_playback_endpoint_discards_result_without_qt_emit(tmp_path: Path) -> None:
+    if tts_playback.shiboken6 is None:
+        pytest.skip("当前环境没有真实 shiboken6")
+    from PySide6.QtCore import QObject
+
+    parent = QObject()
+    endpoint = tts_playback.TTSPlaybackEndpoint(
+        parent,
+        cache_dir=tmp_path,
+        playback_backend="",
+        is_closed=lambda: False,
+    )
+    audio_path = tmp_path / "invalid-endpoint.wav"
+    audio_path.write_bytes(b"wav")
+
+    tts_playback.shiboken6.delete(endpoint)
+    assert not tts_playback.shiboken6.isValid(endpoint)
+
+    endpoint.deliver_audio(str(audio_path), None, None, "test")
+
+    assert not audio_path.exists()
+
+
+def test_stop_local_service_serialized_by_lifecycle_lock(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # 防御「保存设置闪退」根因:close()/_stop_local_service 与启动/采用本地服务并发
+    # 拆解同一子进程会原生崩溃。两者用同一把 _service_lifecycle_lock 串行化:持锁期间
+    # 后台 stop 必须被挡住。
+    provider = GPTSoVITSTTSProvider(_minimal_tts_settings(), adopt_existing_service=False)
+    supervisor = provider._supervisor
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.pid = 4321
+            self.terminated = False
+
+        def poll(self) -> object | None:
+            return None  # 仍在运行
+
+    fake = FakeProcess()
+    supervisor._server_process = fake
+
+    terminated = threading.Event()
+
+    def fake_terminate(process, timeout):  # type: ignore[no-untyped-def]
+        process.terminated = True
+        terminated.set()
+
+    monkeypatch.setattr("app.voice.tts_service._terminate_process_tree", fake_terminate)
+
+    # 主线程先占住服务生命周期锁,模拟一次启动/采用正在进行。
+    supervisor._service_lifecycle_lock.acquire()
+    worker = threading.Thread(target=supervisor._stop_local_service)
+    worker.start()
+    try:
+        # 锁被占用期间后台 stop 应被挡住,不会终止进程。
+        assert not terminated.wait(0.2)
+        assert fake.terminated is False
+        assert supervisor._server_process is fake
+    finally:
+        supervisor._service_lifecycle_lock.release()
+
+    # 释放锁后 stop 立即完成并清理进程。
+    assert terminated.wait(2.0)
+    worker.join(2.0)
+    assert fake.terminated is True
+    assert supervisor._server_process is None
 
 
 def test_tts_service_probe_reports_unavailable_service(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    provider = types.SimpleNamespace()
+    provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())
     provider.settings = _minimal_tts_settings()
     provider._service_checked = False
     messages: list[str] = []
@@ -240,15 +431,15 @@ def test_tts_service_probe_reports_unavailable_service(monkeypatch) -> None:  # 
     def fake_create_connection(*_args: object, **_kwargs: object) -> object:
         raise OSError("connection refused")
 
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", fake_create_connection)
+    monkeypatch.setattr("app.voice.tts_service.socket.create_connection", fake_create_connection)
 
-    assert not GPTSoVITSTTSProvider._ensure_service_available(provider, messages.append)
+    assert not TTSServiceSupervisor._ensure_service_available(provider, messages.append)
     assert "服务不可用" in messages[0]
     assert "http://127.0.0.1:9880/tts" in messages[0]
 
 
 def test_tts_service_probe_uses_tcp_connection_without_get(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    provider = types.SimpleNamespace()
+    provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())
     provider.settings = _minimal_tts_settings()
     provider._service_checked = False
     messages: list[str] = []
@@ -268,16 +459,16 @@ def test_tts_service_probe_uses_tcp_connection_without_get(monkeypatch) -> None:
     def fail_urlopen(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("服务探测不应请求 /tts")
 
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", fake_create_connection)
-    monkeypatch.setattr("app.voice.tts.urllib.request.urlopen", fail_urlopen)
+    monkeypatch.setattr("app.voice.tts_service.socket.create_connection", fake_create_connection)
+    monkeypatch.setattr("app.voice.tts_service.urllib.request.urlopen", fail_urlopen)
 
-    assert GPTSoVITSTTSProvider._ensure_service_available(provider, messages.append)
+    assert TTSServiceSupervisor._ensure_service_available(provider, messages.append)
     assert messages == []
     assert calls == [(("127.0.0.1", 9880), 1)]
 
 
 def test_tts_service_probe_does_not_start_process_when_port_is_ready(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    provider = types.SimpleNamespace()
+    provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())
     provider.settings = _minimal_tts_settings(
         work_dir=Path("data/tts_bundles/installed/gpt_sovits_v2pro")
     )
@@ -291,21 +482,21 @@ def test_tts_service_probe_does_not_start_process_when_port_is_ready(monkeypatch
         def __exit__(self, *_args: object) -> None:
             return None
 
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", lambda *_args, **_kwargs: FakeConnection())
-    monkeypatch.setattr("app.voice.tts._find_running_local_tts_process", lambda *_args: None)
+    monkeypatch.setattr("app.voice.tts_service.socket.create_connection", lambda *_args, **_kwargs: FakeConnection())
+    monkeypatch.setattr("app.voice.tts_service._find_running_local_tts_process", lambda *_args: None)
     monkeypatch.setattr(
-        "app.voice.tts.subprocess.Popen",
+        "app.voice.tts_service.subprocess.Popen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应启动本地服务")),
     )
 
-    assert GPTSoVITSTTSProvider._ensure_service_available(provider, lambda _msg: None)
+    assert TTSServiceSupervisor._ensure_service_available(provider, lambda _msg: None)
 
 
 def test_genie_service_probe_adopts_existing_local_process_when_port_is_ready(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     work_dir = _runtime_root("genie_adopt") / "genie"
     (work_dir / "runtime").mkdir(parents=True)
     _write_fake_runtime_python(work_dir / "runtime" / "python.exe")
-    provider = types.SimpleNamespace()
+    provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())
     provider.settings = _minimal_tts_settings(provider="genie-tts", work_dir=work_dir, api_url="http://127.0.0.1:9881/")
     provider._service_checked = False
     provider._server_process = None
@@ -335,13 +526,13 @@ def test_genie_service_probe_adopts_existing_local_process_when_port_is_ready(mo
             return types.SimpleNamespace(returncode=0, stdout=command_line)
         raise AssertionError(f"未预期的命令：{args}")
 
-    monkeypatch.setattr("app.voice.tts.sys.platform", "win32")
-    monkeypatch.setattr("app.voice.tts.os.getpid", lambda: 1234)
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", lambda *_args, **_kwargs: FakeConnection())
-    monkeypatch.setattr("app.voice.tts.subprocess.run", fake_run)
-    monkeypatch.setattr(GenieTTSProvider, "_probe_genie_api", lambda *_args: True)
+    monkeypatch.setattr("app.voice.tts_service.sys.platform", "win32")
+    monkeypatch.setattr("app.voice.tts_service.os.getpid", lambda: 1234)
+    monkeypatch.setattr("app.voice.tts_service.socket.create_connection", lambda *_args, **_kwargs: FakeConnection())
+    monkeypatch.setattr("app.voice.tts_service.subprocess.run", fake_run)
+    monkeypatch.setattr(GenieServiceSupervisor, "_probe_genie_api", lambda *_args: True)
 
-    assert GenieTTSProvider._ensure_service_available(provider, lambda _msg: None)
+    assert GenieServiceSupervisor._ensure_service_available(provider, lambda _msg: None)
     assert provider._server_process is not None
     assert provider._server_process.pid == 41608
 
@@ -362,11 +553,45 @@ def test_tts_provider_adopts_existing_local_process_on_init(monkeypatch) -> None
         assert port == 9880
         return attached
 
-    monkeypatch.setattr("app.voice.tts._find_running_local_tts_process", fake_find_process)
+    monkeypatch.setattr("app.voice.tts_service._find_running_local_tts_process", fake_find_process)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings(work_dir=work_dir))
 
-    assert provider._server_process is attached
+    assert provider._supervisor._server_process is attached
+
+
+def test_tts_provider_adopts_existing_local_process_on_posix(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    work_dir = _runtime_root("gptsovits_adopt_posix") / "gpt-sovits"
+    python_exe = work_dir / "runtime" / "bin" / "python3.10"
+    api_script = work_dir / "api_v2.py"
+    python_exe.parent.mkdir(parents=True)
+    _write_fake_runtime_python(python_exe)
+    api_script.parent.mkdir(parents=True, exist_ok=True)
+    api_script.write_text("fake", encoding="utf-8")
+    settings = _minimal_tts_settings(
+        work_dir=work_dir,
+        provider="custom-gpt-sovits",
+        python_path=python_exe,
+    )
+
+    def fake_run(args, **_kwargs):  # type: ignore[no-untyped-def]
+        if args[0] == "lsof":
+            return types.SimpleNamespace(returncode=0, stdout="p24680\n")
+        if args[0] == "ps":
+            return types.SimpleNamespace(
+                returncode=0,
+                stdout=f"{python_exe} {api_script} -c config.yaml -p 9880\n",
+            )
+        raise AssertionError(f"未预期的命令：{args}")
+
+    monkeypatch.setattr("app.voice.tts_service.sys.platform", "darwin")
+    monkeypatch.setattr("app.voice.tts_service.os.getpid", lambda: 1234)
+    monkeypatch.setattr("app.voice.tts_service.subprocess.run", fake_run)
+
+    process = _find_running_local_tts_process(settings, 9880)
+
+    assert process is not None
+    assert process.pid == 24680
 
 
 def test_tts_service_probe_starts_local_gptsovits_when_port_is_down(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -376,7 +601,7 @@ def test_tts_service_probe_starts_local_gptsovits_when_port_is_down(monkeypatch)
     _write_fake_runtime_python(runtime_python)
     (work_dir / "api_v2.py").write_text("fake", encoding="utf-8")
     monkeypatch.chdir(work_dir.parent)
-    provider = types.SimpleNamespace()
+    provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())
     provider.settings = _minimal_tts_settings(work_dir=work_dir)
     provider._service_checked = False
     provider._server_process = None
@@ -409,12 +634,12 @@ def test_tts_service_probe_starts_local_gptsovits_when_port_is_down(monkeypatch)
         popen_calls.append(list(args))
         return FakeProcess()
 
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", fake_create_connection)
-    monkeypatch.setattr("app.voice.tts.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("app.voice.tts_service.socket.create_connection", fake_create_connection)
+    monkeypatch.setattr("app.voice.tts_service.subprocess.Popen", fake_popen)
     # TCP 探测成功后还会做 HTTP 探测，这里 mock 掉避免真实网络请求
-    monkeypatch.setattr("app.voice.tts._probe_gpt_sovits_http", lambda *_: True)
+    monkeypatch.setattr("app.voice.tts_service._probe_gpt_sovits_http", lambda *_: True)
 
-    assert GPTSoVITSTTSProvider._ensure_service_available(provider, messages.append)
+    assert TTSServiceSupervisor._ensure_service_available(provider, messages.append)
     assert messages == []
     assert len(popen_calls) == 1
     assert popen_calls[0] == [
@@ -459,7 +684,7 @@ def test_tts_service_waits_past_thirty_seconds_for_slow_gptsovits_start(monkeypa
     _write_fake_runtime_python(work_dir / "runtime" / "python.exe")
     (work_dir / "api_v2.py").write_text("fake", encoding="utf-8")
     monkeypatch.chdir(work_dir.parent)
-    provider = types.SimpleNamespace()
+    provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())
     provider.settings = replace(_minimal_tts_settings(work_dir=work_dir), timeout_seconds=55)
     provider._service_checked = False
     provider._server_process = None
@@ -490,18 +715,18 @@ def test_tts_service_waits_past_thirty_seconds_for_slow_gptsovits_start(monkeypa
         nonlocal elapsed
         elapsed += seconds
 
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", fake_create_connection)
-    monkeypatch.setattr("app.voice.tts.subprocess.Popen", lambda *_args, **_kwargs: FakeProcess())
-    monkeypatch.setattr("app.voice.tts.time.monotonic", lambda: elapsed)
-    monkeypatch.setattr("app.voice.tts.time.sleep", fake_sleep)
+    monkeypatch.setattr("app.voice.tts_service.socket.create_connection", fake_create_connection)
+    monkeypatch.setattr("app.voice.tts_service.subprocess.Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr("app.voice.tts_service.time.monotonic", lambda: elapsed)
+    monkeypatch.setattr("app.voice.tts_service.time.sleep", fake_sleep)
     # TCP 探测成功后还会做 HTTP 探测，这里 mock 掉避免真实网络请求
-    monkeypatch.setattr("app.voice.tts._probe_gpt_sovits_http", lambda *_: True)
+    monkeypatch.setattr("app.voice.tts_service._probe_gpt_sovits_http", lambda *_: True)
     monkeypatch.setattr(
-        "app.voice.tts.debug_log",
+        "app.voice.tts_service.debug_log",
         lambda _category, message, data=None: debug_messages.append((message, data)),
     )
 
-    assert GPTSoVITSTTSProvider._ensure_service_available(provider, messages.append)
+    assert TTSServiceSupervisor._ensure_service_available(provider, messages.append)
     assert messages == []
     assert elapsed >= 31
     log_messages = [message for message, _data in debug_messages]
@@ -516,7 +741,7 @@ def test_tts_service_waits_past_thirty_seconds_for_slow_gptsovits_start(monkeypa
 def test_tts_service_probe_reports_missing_local_runtime(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     work_dir = _runtime_root("gptsovits_missing_runtime") / "gpt-sovits"
     work_dir.mkdir()
-    provider = types.SimpleNamespace()
+    provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())
     provider.settings = _minimal_tts_settings(work_dir=work_dir)
     provider._service_checked = False
     provider._server_process = None
@@ -526,9 +751,9 @@ def test_tts_service_probe_reports_missing_local_runtime(monkeypatch) -> None:  
     def fake_create_connection(*_args: object, **_kwargs: object) -> object:
         raise OSError("connection refused")
 
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", fake_create_connection)
+    monkeypatch.setattr("app.voice.tts_service.socket.create_connection", fake_create_connection)
 
-    assert not GPTSoVITSTTSProvider._ensure_service_available(provider, messages.append)
+    assert not TTSServiceSupervisor._ensure_service_available(provider, messages.append)
     assert "运行时不可用" in messages[0]
     assert "未找到当前系统可执行的 Python 运行时" in messages[0]
 
@@ -540,7 +765,7 @@ def test_tts_service_probe_reports_incompatible_windows_runtime_on_macos(monkeyp
     runtime_python.write_bytes(b"MZ\x00\x00")
     runtime_python.chmod(0o755)
     (work_dir / "api_v2.py").write_text("fake", encoding="utf-8")
-    provider = types.SimpleNamespace()
+    provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())
     provider.settings = _minimal_tts_settings(work_dir=work_dir)
     provider._service_checked = False
     provider._server_process = None
@@ -550,11 +775,11 @@ def test_tts_service_probe_reports_incompatible_windows_runtime_on_macos(monkeyp
     def fake_create_connection(*_args: object, **_kwargs: object) -> object:
         raise OSError("connection refused")
 
-    monkeypatch.setattr("app.voice.tts.sys.platform", "darwin")
+    monkeypatch.setattr("app.voice.tts_service.sys.platform", "darwin")
     monkeypatch.setattr("app.voice.runtime_compat.sys.platform", "darwin")
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", fake_create_connection)
+    monkeypatch.setattr("app.voice.tts_service.socket.create_connection", fake_create_connection)
 
-    assert not GPTSoVITSTTSProvider._ensure_service_available(provider, messages.append)
+    assert not TTSServiceSupervisor._ensure_service_available(provider, messages.append)
     assert "检测到 Windows Python 运行时" in messages[0]
     assert "当前系统是 macOS" in messages[0]
 
@@ -571,10 +796,10 @@ def test_gptsovits_ensure_ready_returns_success_after_service_and_weights(monkey
         calls.append("weights")
         return True
 
-    monkeypatch.setattr(GPTSoVITSTTSProvider, "_ensure_service_available", fake_service)
-    monkeypatch.setattr(GPTSoVITSTTSProvider, "_ensure_character_weights", fake_weights)
+    monkeypatch.setattr(TTSServiceSupervisor, "_ensure_service_available", fake_service)
+    monkeypatch.setattr(TTSServiceSupervisor, "_ensure_character_weights", fake_weights)
 
-    ok, message = GPTSoVITSTTSProvider.ensure_ready(provider)
+    ok, message = provider.ensure_ready()
 
     assert ok
     assert "已就绪" in message
@@ -588,9 +813,9 @@ def test_gptsovits_ensure_ready_returns_service_failure(monkeypatch) -> None:  #
         fail("GPT-SoVITS 服务不可用")
         return False
 
-    monkeypatch.setattr(GPTSoVITSTTSProvider, "_ensure_service_available", fake_service)
+    monkeypatch.setattr(TTSServiceSupervisor, "_ensure_service_available", fake_service)
 
-    ok, message = GPTSoVITSTTSProvider.ensure_ready(provider)
+    ok, message = provider.ensure_ready()
 
     assert not ok
     assert "服务不可用" in message
@@ -603,10 +828,10 @@ def test_gptsovits_ensure_ready_returns_weight_failure(monkeypatch) -> None:  # 
         fail("权重切换失败")
         return False
 
-    monkeypatch.setattr(GPTSoVITSTTSProvider, "_ensure_service_available", lambda *_args: True)
-    monkeypatch.setattr(GPTSoVITSTTSProvider, "_ensure_character_weights", fake_weights)
+    monkeypatch.setattr(TTSServiceSupervisor, "_ensure_service_available", lambda *_args: True)
+    monkeypatch.setattr(TTSServiceSupervisor, "_ensure_character_weights", fake_weights)
 
-    ok, message = GPTSoVITSTTSProvider.ensure_ready(provider)
+    ok, message = provider.ensure_ready()
 
     assert not ok
     assert "权重切换失败" in message
@@ -617,7 +842,7 @@ def test_genie_service_probe_starts_local_server_when_port_is_down(monkeypatch) 
     (work_dir / "runtime").mkdir(parents=True)
     runtime_python = work_dir / "runtime" / "python.exe"
     _write_fake_runtime_python(runtime_python)
-    provider = types.SimpleNamespace()
+    provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())
     provider.settings = _minimal_tts_settings(provider="genie-tts", work_dir=work_dir, api_url="http://127.0.0.1:9881/")
     provider._service_checked = False
     provider._server_process = None
@@ -650,11 +875,11 @@ def test_genie_service_probe_starts_local_server_when_port_is_down(monkeypatch) 
         popen_calls.append(list(args))
         return FakeProcess()
 
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", fake_create_connection)
-    monkeypatch.setattr("app.voice.tts.subprocess.Popen", fake_popen)
-    monkeypatch.setattr(GenieTTSProvider, "_probe_genie_api", lambda *_args: True)
+    monkeypatch.setattr("app.voice.tts_service.socket.create_connection", fake_create_connection)
+    monkeypatch.setattr("app.voice.tts_service.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(GenieServiceSupervisor, "_probe_genie_api", lambda *_args: True)
 
-    assert GenieTTSProvider._ensure_service_available(provider, messages.append)
+    assert GenieServiceSupervisor._ensure_service_available(provider, messages.append)
     assert messages == []
     assert len(popen_calls) == 1
     assert popen_calls[0][0] == str(work_dir / "runtime" / "python.exe")
@@ -678,11 +903,11 @@ def test_genie_ensure_ready_loads_model_and_reference(monkeypatch) -> None:  # t
         calls.append(f"reference:{reference.ref_text}")
         return True
 
-    monkeypatch.setattr(GenieTTSProvider, "_ensure_service_available", fake_service)
-    monkeypatch.setattr(GenieTTSProvider, "_ensure_character_model", fake_model)
-    monkeypatch.setattr(GenieTTSProvider, "_ensure_reference_audio", fake_reference)
+    monkeypatch.setattr(GenieServiceSupervisor, "_ensure_service_available", fake_service)
+    monkeypatch.setattr(GenieServiceSupervisor, "_ensure_character_model", fake_model)
+    monkeypatch.setattr(GenieServiceSupervisor, "_ensure_reference_audio", fake_reference)
 
-    ok, message = GenieTTSProvider.ensure_ready(provider)
+    ok, message = provider.ensure_ready()
 
     assert ok
     assert "已就绪" in message
@@ -696,11 +921,11 @@ def test_genie_ensure_ready_returns_reference_failure(monkeypatch) -> None:  # t
         fail("参考音频设置失败")
         return False
 
-    monkeypatch.setattr(GenieTTSProvider, "_ensure_service_available", lambda *_args: True)
-    monkeypatch.setattr(GenieTTSProvider, "_ensure_character_model", lambda *_args: True)
-    monkeypatch.setattr(GenieTTSProvider, "_ensure_reference_audio", fake_reference)
+    monkeypatch.setattr(GenieServiceSupervisor, "_ensure_service_available", lambda *_args: True)
+    monkeypatch.setattr(GenieServiceSupervisor, "_ensure_character_model", lambda *_args: True)
+    monkeypatch.setattr(GenieServiceSupervisor, "_ensure_reference_audio", fake_reference)
 
-    ok, message = GenieTTSProvider.ensure_ready(provider)
+    ok, message = provider.ensure_ready()
 
     assert not ok
     assert "参考音频设置失败" in message
@@ -711,7 +936,7 @@ def test_genie_service_probe_moves_to_fallback_port_when_9880_is_gptsovits(monke
     (work_dir / "runtime").mkdir(parents=True)
     runtime_python = work_dir / "runtime" / "python.exe"
     _write_fake_runtime_python(runtime_python)
-    provider = types.SimpleNamespace()
+    provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())
     provider.settings = _minimal_tts_settings(provider="genie-tts", work_dir=work_dir, api_url="http://127.0.0.1:9880/")
     provider._service_checked = False
     provider._server_process = None
@@ -750,19 +975,19 @@ def test_genie_service_probe_moves_to_fallback_port_when_9880_is_gptsovits(monke
     def fake_probe_genie_api(self, _timeout):  # type: ignore[no-untyped-def]
         return str(self.settings.api_url).endswith(":9881/")
 
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", fake_create_connection)
-    monkeypatch.setattr("app.voice.tts.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("app.voice.tts._can_bind_local_port", lambda *_args: True)
-    monkeypatch.setattr(GenieTTSProvider, "_probe_genie_api", fake_probe_genie_api)
+    monkeypatch.setattr("app.voice.tts_service.socket.create_connection", fake_create_connection)
+    monkeypatch.setattr("app.voice.tts_service.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("app.voice.tts_service._can_bind_local_port", lambda *_args: True)
+    monkeypatch.setattr(GenieServiceSupervisor, "_probe_genie_api", fake_probe_genie_api)
 
-    assert GenieTTSProvider._ensure_service_available(provider, messages.append)
+    assert GenieServiceSupervisor._ensure_service_available(provider, messages.append)
     assert messages == []
     assert provider.settings.api_url == "http://127.0.0.1:9881/"
     assert "port=9881" in popen_calls[0][2]
 
 
 def test_genie_service_probe_rejects_non_genie_service(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    provider = types.SimpleNamespace()
+    provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())
     provider.settings = _minimal_tts_settings(provider="genie-tts", api_url="http://127.0.0.1:9880/")
     provider._service_checked = False
     provider._server_process = None
@@ -775,10 +1000,10 @@ def test_genie_service_probe_rejects_non_genie_service(monkeypatch) -> None:  # 
         def __exit__(self, *_args: object) -> None:
             return None
 
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", lambda *_args, **_kwargs: FakeConnection())
-    monkeypatch.setattr(GenieTTSProvider, "_probe_genie_api", lambda *_args: False)
+    monkeypatch.setattr("app.voice.tts_service.socket.create_connection", lambda *_args, **_kwargs: FakeConnection())
+    monkeypatch.setattr(GenieServiceSupervisor, "_probe_genie_api", lambda *_args: False)
 
-    assert not GenieTTSProvider._ensure_service_available(provider, messages.append)
+    assert not GenieServiceSupervisor._ensure_service_available(provider, messages.append)
     assert "不是 Genie TTS" in messages[0]
 
 
@@ -796,7 +1021,7 @@ def test_genie_audio_writer_accepts_raw_pcm() -> None:
 
 def test_tts_provider_stop_local_service_terminates_owned_process(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     calls: list[str] = []
-    monkeypatch.setattr("app.voice.tts.sys.platform", "linux")
+    monkeypatch.setattr("app.voice.tts_service.sys.platform", "linux")
 
     class FakeProcess:
         pid = 9876
@@ -813,9 +1038,10 @@ def test_tts_provider_stop_local_service_terminates_owned_process(monkeypatch) -
     provider = types.SimpleNamespace(
         settings=_minimal_tts_settings(),
         _server_process=FakeProcess(),
+        _service_lifecycle_lock=threading.RLock(),
     )
 
-    GPTSoVITSTTSProvider._stop_local_service(provider)
+    TTSServiceSupervisor._stop_local_service(provider)
 
     assert calls == ["terminate", "wait:5"]
     assert provider._server_process is None
@@ -848,11 +1074,12 @@ def test_tts_provider_stop_local_service_uses_taskkill_tree_on_windows(monkeypat
     provider = types.SimpleNamespace(
         settings=_minimal_tts_settings(),
         _server_process=FakeProcess(),
+        _service_lifecycle_lock=threading.RLock(),
     )
-    monkeypatch.setattr("app.voice.tts.sys.platform", "win32")
-    monkeypatch.setattr("app.voice.tts.subprocess.run", fake_run)
+    monkeypatch.setattr("app.voice.tts_service.sys.platform", "win32")
+    monkeypatch.setattr("app.voice.tts_service.subprocess.run", fake_run)
 
-    GPTSoVITSTTSProvider._stop_local_service(provider)
+    TTSServiceSupervisor._stop_local_service(provider)
 
     assert calls[0] == (["taskkill", "/PID", "2468", "/T", "/F"], 5)
     assert calls[1] == "wait:5"
@@ -860,17 +1087,50 @@ def test_tts_provider_stop_local_service_uses_taskkill_tree_on_windows(monkeypat
     assert provider._server_process is None
 
 
+def test_gptsovits_broken_pipe_restart_resets_local_service_state(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[str] = []
+    work_dir = _runtime_root("gptsovits_restart_broken_pipe") / "gpt-sovits"
+
+    class FakeProcess:
+        pid = 13579
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+
+        def wait(self, timeout: int) -> None:
+            calls.append(f"wait:{timeout}")
+
+    provider = types.SimpleNamespace(
+        settings=_minimal_tts_settings(work_dir=work_dir),
+        _server_process=FakeProcess(),
+        _service_checked=True,
+        _weights_ready=True,
+        _service_lifecycle_lock=threading.RLock(),
+    )
+    body = '{"message":"tts failed","Exception":"[Errno 32] Broken pipe"}'
+    monkeypatch.setattr("app.voice.tts_service.sys.platform", "linux")
+
+    assert TTSServiceSupervisor._restart_local_service_after_http_failure(provider, 400, body)
+    assert calls == ["terminate", "wait:5"]
+    assert provider._server_process is None
+    assert provider._service_checked is False
+    assert provider._weights_ready is False
+
+
 def test_tts_weight_switch_error_includes_endpoint_and_path(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    provider = types.SimpleNamespace()
+    provider = types.SimpleNamespace(_service_lifecycle_lock=threading.RLock())
     provider.settings = _minimal_tts_settings()
     messages: list[str] = []
 
     def fake_urlopen(*_args: object, **_kwargs: object) -> object:
         raise urllib.error.URLError("bad weights")
 
-    monkeypatch.setattr("app.voice.tts.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.voice.tts_service.urllib.request.urlopen", fake_urlopen)
 
-    ok = GPTSoVITSTTSProvider._request_weight_switch(
+    ok = TTSServiceSupervisor._request_weight_switch(
         provider,
         "set_gpt_weights",
         Path("characters/sakura/voice/models/Sakura-e15.ckpt"),
@@ -1006,14 +1266,14 @@ def test_gptsovits_provider_warms_up_qt_player_before_first_play(monkeypatch) ->
         def stop(self) -> None:
             pass
 
-    monkeypatch.setattr(tts_module, "QTimer", TimerStub)
-    monkeypatch.setattr(tts_module, "QAudioOutput", AudioOutputStub)
-    monkeypatch.setattr(tts_module, "QMediaPlayer", MediaPlayerStub)
+    monkeypatch.setattr(tts_playback, "QTimer", TimerStub)
+    monkeypatch.setattr(tts_playback, "QAudioOutput", AudioOutputStub)
+    monkeypatch.setattr(tts_playback, "QMediaPlayer", MediaPlayerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
     # 本测试验证 QMediaPlayer 预热复用；旧版靠"假文件让 sink 失败再 fallback"
     # 隐式走到 media_player，播放前校验引入后显式指定后端
-    provider._playback_backend = "media_player"
+    provider._playback._playback_backend = "media_player"
 
     assert calls == []
 
@@ -1023,8 +1283,8 @@ def test_gptsovits_provider_warms_up_qt_player_before_first_play(monkeypatch) ->
 
     warmup_audio = _runtime_root("warmup_play") / "dummy.wav"
     _write_silence_wav(warmup_audio, frame_count=1600, frame_rate=16000)
-    provider._pending_audio.append((warmup_audio, None, None, None, ""))
-    provider._play_next()
+    provider._playback._pending_audio.append((warmup_audio, None, None, None, ""))
+    provider._playback._play_next()
 
     # 播放后会追加一个播放完成兜底定时器（delay>0，仅记录不执行）
     assert calls == ["timer", "audio", "player", "source", "play", "timer"]
@@ -1073,18 +1333,18 @@ def test_tts_provider_treats_started_stopped_state_as_audio_finished(monkeypatch
         def stop(self) -> None:
             events.append("stop")
 
-    monkeypatch.setattr(tts_module, "QAudioOutput", AudioOutputStub)
-    monkeypatch.setattr(tts_module, "QMediaPlayer", MediaPlayerStub)
+    monkeypatch.setattr(tts_playback, "QAudioOutput", AudioOutputStub)
+    monkeypatch.setattr(tts_playback, "QMediaPlayer", MediaPlayerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
-    provider._playback_backend = "media_player"  # force media_player for this legacy test
-    monkeypatch.setattr(provider, "_schedule_audio_cleanup", lambda path: cleaned.append(path))
+    provider._playback._playback_backend = "media_player"  # force media_player for this legacy test
+    monkeypatch.setattr(provider._playback, "_schedule_audio_cleanup", lambda path: cleaned.append(path))
     stopped_root = _runtime_root("stopped_state_finish")
     first_audio = stopped_root / "first.wav"
     second_audio = stopped_root / "second.wav"
     _write_silence_wav(first_audio, frame_count=1600, frame_rate=16000)
     _write_silence_wav(second_audio, frame_count=1600, frame_rate=16000)
-    provider._pending_audio.append(
+    provider._playback._pending_audio.append(
         (
             first_audio,
             lambda: events.append("first_started"),
@@ -1093,7 +1353,7 @@ def test_tts_provider_treats_started_stopped_state_as_audio_finished(monkeypatch
             "",
         )
     )
-    provider._pending_audio.append(
+    provider._playback._pending_audio.append(
         (
             second_audio,
             lambda: events.append("second_started"),
@@ -1103,13 +1363,13 @@ def test_tts_provider_treats_started_stopped_state_as_audio_finished(monkeypatch
         )
     )
 
-    provider._play_next()
-    provider._handle_playback_state(MediaPlayerStub.PlaybackState.PlayingState)
-    provider._handle_playback_state(MediaPlayerStub.PlaybackState.StoppedState)
+    provider._playback._play_next()
+    provider._playback._handle_playback_state(MediaPlayerStub.PlaybackState.PlayingState)
+    provider._playback._handle_playback_state(MediaPlayerStub.PlaybackState.StoppedState)
 
     assert events == ["play", "first_started", "stop", "first_finished", "play"]
     assert cleaned == [first_audio]
-    assert provider._current_audio == second_audio
+    assert provider._playback._current_audio == second_audio
     assert len(sources) == 3
 
 
@@ -1166,14 +1426,14 @@ def test_tts_provider_finish_fallback_advances_queue_without_player_end_signal(m
         def stop(self) -> None:
             events.append("stop")
 
-    monkeypatch.setattr(tts_module, "QTimer", TimerStub)
-    monkeypatch.setattr(tts_module, "QAudioOutput", AudioOutputStub)
-    monkeypatch.setattr(tts_module, "QMediaPlayer", MediaPlayerStub)
+    monkeypatch.setattr(tts_playback, "QTimer", TimerStub)
+    monkeypatch.setattr(tts_playback, "QAudioOutput", AudioOutputStub)
+    monkeypatch.setattr(tts_playback, "QMediaPlayer", MediaPlayerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
-    provider._playback_backend = "media_player"  # force media_player for this legacy test
-    monkeypatch.setattr(provider, "_schedule_audio_cleanup", lambda path: cleaned.append(path))
-    provider._pending_audio.append(
+    provider._playback._playback_backend = "media_player"  # force media_player for this legacy test
+    monkeypatch.setattr(provider._playback, "_schedule_audio_cleanup", lambda path: cleaned.append(path))
+    provider._playback._pending_audio.append(
         (
             first_audio,
             lambda: events.append("first_started"),
@@ -1182,7 +1442,7 @@ def test_tts_provider_finish_fallback_advances_queue_without_player_end_signal(m
             "",
         )
     )
-    provider._pending_audio.append(
+    provider._playback._pending_audio.append(
         (
             second_audio,
             lambda: events.append("second_started"),
@@ -1192,15 +1452,15 @@ def test_tts_provider_finish_fallback_advances_queue_without_player_end_signal(m
         )
     )
 
-    provider._play_next()
-    provider._handle_playback_state(MediaPlayerStub.PlaybackState.PlayingState)
+    provider._playback._play_next()
+    provider._playback._handle_playback_state(MediaPlayerStub.PlaybackState.PlayingState)
     assert timers[0][0] == 2000
 
     timers[0][1]()
 
     assert events == ["play", "first_started", "stop", "first_finished", "play"]
     assert cleaned == [first_audio]
-    assert provider._current_audio == second_audio
+    assert provider._playback._current_audio == second_audio
     assert len(timers) == 2
 
 
@@ -1509,8 +1769,8 @@ def test_speak_prepared_cancelled_emits_callbacks(monkeypatch) -> None:  # type:
     finished_calls: list[object] = []
 
     # Replace the whole signal attribute on the instance
-    monkeypatch.setattr(provider, "_started", types.SimpleNamespace(emit=lambda cb: started_calls.append(cb) if cb is not None else None))
-    monkeypatch.setattr(provider, "_finished", types.SimpleNamespace(emit=lambda cb: finished_calls.append(cb) if cb is not None else None))
+    monkeypatch.setattr(provider._playback, "_started", types.SimpleNamespace(emit=lambda cb: started_calls.append(cb) if cb is not None else None))
+    monkeypatch.setattr(provider._playback, "_finished", types.SimpleNamespace(emit=lambda cb: finished_calls.append(cb) if cb is not None else None))
 
     handle = TTSPreparedAudio(text="test", tone="neutral")
     handle.cancelled = True
@@ -1532,8 +1792,8 @@ def test_speak_prepared_failed_emits_callbacks(monkeypatch) -> None:  # type: ig
     finished_calls: list[object] = []
 
     # Replace the whole signal attribute on the instance
-    monkeypatch.setattr(provider, "_started", types.SimpleNamespace(emit=lambda cb: started_calls.append(cb) if cb is not None else None))
-    monkeypatch.setattr(provider, "_finished", types.SimpleNamespace(emit=lambda cb: finished_calls.append(cb) if cb is not None else None))
+    monkeypatch.setattr(provider._playback, "_started", types.SimpleNamespace(emit=lambda cb: started_calls.append(cb) if cb is not None else None))
+    monkeypatch.setattr(provider._playback, "_finished", types.SimpleNamespace(emit=lambda cb: finished_calls.append(cb) if cb is not None else None))
 
     handle = TTSPreparedAudio(text="test", tone="neutral")
     handle.failed = True
@@ -1585,35 +1845,35 @@ def test_finish_current_audio_is_idempotent(monkeypatch) -> None:  # type: ignor
         def stop(self) -> None:
             pass
 
-    monkeypatch.setattr(tts_module, "QAudioOutput", AudioOutputStub)
-    monkeypatch.setattr(tts_module, "QMediaPlayer", MediaPlayerStub)
+    monkeypatch.setattr(tts_playback, "QAudioOutput", AudioOutputStub)
+    monkeypatch.setattr(tts_playback, "QMediaPlayer", MediaPlayerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
     cleanup_calls: list[Path] = []
-    monkeypatch.setattr(provider, "_schedule_audio_cleanup", lambda path: cleanup_calls.append(path))
+    monkeypatch.setattr(provider._playback, "_schedule_audio_cleanup", lambda path: cleanup_calls.append(path))
 
     # Replace signal attribute on instance
     finished_calls: list[object] = []
-    monkeypatch.setattr(provider, "_finished", types.SimpleNamespace(emit=lambda cb: finished_calls.append(cb) if cb is not None else None))
+    monkeypatch.setattr(provider._playback, "_finished", types.SimpleNamespace(emit=lambda cb: finished_calls.append(cb) if cb is not None else None))
 
     root = _runtime_root("finish_idempotent")
     audio_path = root / "test.wav"
     _write_silence_wav(audio_path, frame_count=1600, frame_rate=16000)
 
-    provider._current_audio = audio_path
-    provider._current_finished = lambda: None
-    provider._current_started = lambda: None
-    provider._current_started_emitted = False
+    provider._playback._current_audio = audio_path
+    provider._playback._current_finished = lambda: None
+    provider._playback._current_started = lambda: None
+    provider._playback._current_started_emitted = False
 
     # First finish
-    provider._finish_current_audio("normal")
-    assert provider._current_audio is None
+    provider._playback._finish_current_audio("normal")
+    assert provider._playback._current_audio is None
     assert len(cleanup_calls) == 1
     assert len(finished_calls) == 1
 
     # Second call - _current_audio is None so returns early
-    provider._finish_current_audio("duplicate")
-    assert provider._current_audio is None
+    provider._playback._finish_current_audio("duplicate")
+    assert provider._playback._current_audio is None
 
 def test_enqueue_audio_dispatches_play_next_via_timer(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """_enqueue_audio 应使用 QTimer.singleShot(0, self._play_next) 触发播放。"""
@@ -1626,17 +1886,17 @@ def test_enqueue_audio_dispatches_play_next_via_timer(monkeypatch) -> None:  # t
         def singleShot(delay_ms: int, callback: object) -> None:
             timer_calls.append((delay_ms, callback))
 
-    monkeypatch.setattr(tts_module, "QTimer", TimerStub)
+    monkeypatch.setattr(tts_playback, "QTimer", TimerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
     play_next_calls: list = []
-    monkeypatch.setattr(provider, "_play_next", lambda: play_next_calls.append(True))
+    monkeypatch.setattr(provider._playback, "_play_next", lambda: play_next_calls.append(True))
 
     root = _runtime_root("enqueue_dispatch")
     audio_path = root / "test.wav"
     _write_silence_wav(audio_path, frame_count=1600, frame_rate=16000)
 
-    provider._enqueue_audio(str(audio_path), None, None)
+    provider._playback._enqueue_audio(str(audio_path), None, None)
 
     assert len(timer_calls) == 1
     assert timer_calls[0][0] == 0
@@ -1683,29 +1943,29 @@ def test_handle_media_status_passes_reason_to_finish(monkeypatch) -> None:  # ty
         def stop(self) -> None:
             pass
 
-    monkeypatch.setattr(tts_module, "QAudioOutput", AudioOutputStub)
-    monkeypatch.setattr(tts_module, "QMediaPlayer", MediaPlayerStub)
+    monkeypatch.setattr(tts_playback, "QAudioOutput", AudioOutputStub)
+    monkeypatch.setattr(tts_playback, "QMediaPlayer", MediaPlayerStub)
 
     provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
     finish_reasons: list[str] = []
-    orig_finish = provider._finish_current_audio
+    orig_finish = provider._playback._finish_current_audio
 
     def capture_finish(reason: str = "normal") -> None:
         finish_reasons.append(reason)
         return orig_finish(reason)
 
-    monkeypatch.setattr(provider, "_finish_current_audio", capture_finish)
-    monkeypatch.setattr(provider, "_schedule_audio_cleanup", lambda _path: None)
+    monkeypatch.setattr(provider._playback, "_finish_current_audio", capture_finish)
+    monkeypatch.setattr(provider._playback, "_schedule_audio_cleanup", lambda _path: None)
 
     root = _runtime_root("media_status_reason")
     audio_path = root / "test.wav"
     _write_silence_wav(audio_path, frame_count=1600, frame_rate=16000)
 
-    provider._current_audio = audio_path
-    provider._current_finished = lambda: None
-    provider._current_started = lambda: None
+    provider._playback._current_audio = audio_path
+    provider._playback._current_finished = lambda: None
+    provider._playback._current_started = lambda: None
 
-    provider._handle_media_status(MediaPlayerStub.MediaStatus.EndOfMedia)
+    provider._playback._handle_media_status(MediaPlayerStub.MediaStatus.EndOfMedia)
 
     assert finish_reasons == ["end_of_media"]
 
@@ -1722,12 +1982,12 @@ def test_playback_backend_is_configurable() -> None:
     settings = _minimal_tts_settings()
     assert settings.playback_backend == ""
     provider = GPTSoVITSTTSProvider(settings)
-    assert provider._playback_backend == TTS_PLAYBACK_BACKEND_AUDIO_SINK
+    assert provider._playback._playback_backend == TTS_PLAYBACK_BACKEND_AUDIO_SINK
 
     # Explicitly set audio_sink
     sink_settings = dc_replace(settings, playback_backend=TTS_PLAYBACK_BACKEND_AUDIO_SINK)
     sink_provider = GPTSoVITSTTSProvider(sink_settings)
-    assert sink_provider._playback_backend == TTS_PLAYBACK_BACKEND_AUDIO_SINK
+    assert sink_provider._playback._playback_backend == TTS_PLAYBACK_BACKEND_AUDIO_SINK
 
 
 # === 新增：TTS 缓存目录（data/cache/tts）测试 ===

@@ -30,7 +30,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install system dependencies
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
@@ -81,14 +81,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install system dependencies
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             libegl1 libxkbcommon0 libxcb-cursor0 libxcb-icccm4 \
             libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
             libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
-            libglib2.0-0 libportaudio2 portaudio19-dev libpulse0
+            libglib2.0-0 libportaudio2 portaudio19-dev libpulse0 xvfb
 
       - name: Install Python dependencies
         timeout-minutes: 8
@@ -100,7 +100,7 @@ jobs:
       - name: Run UI tests
         timeout-minutes: 6
         env:
-          QT_QPA_PLATFORM: offscreen
+          QT_QPA_PLATFORM: xcb
           PYTHONIOENCODING: utf-8
           PYTEST_QT_API: pyside6
         run: |
@@ -110,7 +110,7 @@ jobs:
             local name="$1"
             shift
             local log="/tmp/ui-tests-${name}.log"
-            python -m pytest "$@" -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 2>&1 | tee "$log"
+            xvfb-run -a python -m pytest "$@" -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 2>&1 | tee "$log"
             local exit_code=${PIPESTATUS[0]}
 
             local collected
@@ -142,10 +142,15 @@ jobs:
 
           run_ui_pytest history tests/ui/test_history_window.py
           HISTORY_EXIT=$?
-          run_ui_pytest rest tests/ui --ignore=tests/ui/test_history_window.py
+          run_ui_pytest pet tests/ui/test_pet_window.py
+          PET_EXIT=$?
+          run_ui_pytest rest tests/ui --ignore=tests/ui/test_history_window.py --ignore=tests/ui/test_pet_window.py
           REST_EXIT=$?
 
           if [ "$HISTORY_EXIT" -ne 0 ]; then
             exit "$HISTORY_EXIT"
+          fi
+          if [ "$PET_EXIT" -ne 0 ]; then
+            exit "$PET_EXIT"
           fi
           exit "$REST_EXIT"

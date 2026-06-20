@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import shutil
 import sys
-import threading
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from app.agent.mcp.config import MCPServerConfig
+from app.core.resource_manager import AsyncLoopResource, ResourceRegistry
 
 
 @dataclass(frozen=True)
@@ -24,12 +24,20 @@ class MCPToolSpec:
 class MCPBridge:
     """同步封装官方 MCP 异步 ClientSession，便于现有工具线程调用。"""
 
-    def __init__(self, config: MCPServerConfig, default_call_timeout: float) -> None:
+    def __init__(
+        self,
+        config: MCPServerConfig,
+        default_call_timeout: float,
+        *,
+        resource_registry: ResourceRegistry | None = None,
+    ) -> None:
         self.config = config
         self.default_call_timeout = default_call_timeout
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._thread: threading.Thread | None = None
-        self._ready = threading.Event()
+        self._resource_registry = resource_registry or ResourceRegistry()
+        self._loop_resource: AsyncLoopResource = self._resource_registry.track_async_loop(
+            label=f"mcp:{self.config.name}",
+            shutdown_order=900,
+        )
         self._closed = False
         self._connection_task: asyncio.Task[None] | None = None
         self._close_requested: asyncio.Event | None = None
@@ -37,18 +45,20 @@ class MCPBridge:
         self._session: Any | None = None
 
     def connect(self) -> None:
-        if self._loop is not None:
+        if self._loop_resource.is_running() and self._session is not None:
             return
+        if self._closed:
+            raise RuntimeError("MCP Bridge 已关闭。")
         self._ensure_stdio_command_exists()
-        self._thread = threading.Thread(
-            target=self._run_loop,
-            name=f"sakura-mcp-{self.config.name}",
-            daemon=True,
-        )
-        self._thread.start()
-        if not self._ready.wait(timeout=5):
-            raise TimeoutError(f"MCP Server {self.config.name} 事件循环启动超时。")
-        self._run_async(self._connect(), timeout=self.config.effective_call_timeout(self.default_call_timeout))
+        self._loop_resource.start(name=f"sakura-mcp-{self.config.name}", daemon=True)
+        try:
+            self._run_async(
+                self._connect(),
+                timeout=self.config.effective_call_timeout(self.default_call_timeout),
+            )
+        except Exception:
+            self.close()
+            raise
 
     def list_tools(self) -> list[MCPToolSpec]:
         result = self._run_async(
@@ -65,35 +75,18 @@ class MCPBridge:
         if self._closed:
             return
         self._closed = True
-        if self._loop is None:
-            return
-        try:
-            self._run_async(self._close_async(), timeout=5)
-        finally:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            if self._thread is not None:
-                self._thread.join(timeout=5)
-            self._loop = None
-            self._thread = None
-
-    def _run_loop(self) -> None:
-        loop = asyncio.new_event_loop()
-        self._loop = loop
-        asyncio.set_event_loop(loop)
-        self._ready.set()
-        loop.run_forever()
-        pending = asyncio.all_tasks(loop)
-        for task in pending:
-            task.cancel()
-        if pending:
-            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        loop.close()
+        if self._loop_resource.is_running():
+            try:
+                self._run_async(self._close_async(), timeout=5)
+            except Exception:
+                # 关闭路径只负责回收资源；连接失败或任务异常已在调用点报告。
+                pass
+        self._loop_resource.stop(5_000)
 
     def _run_async(self, coro: Any, timeout: float) -> Any:
-        if self._loop is None:
+        if not self._loop_resource.is_running():
             raise RuntimeError("MCP Bridge 尚未连接。")
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
+        return self._loop_resource.submit(coro, timeout=timeout)
 
     def _ensure_stdio_command_exists(self) -> None:
         """启动前检查 stdio 命令，避免把 WinError 2 直接暴露给用户。"""

@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime
+from dataclasses import replace
+from threading import Lock
 from typing import Any, Callable
 
 from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult, PendingToolAction
+from app.agent.context_orchestrator import ContextOrchestrator, build_context_request
+from app.agent.memory_recall import MemoryRecallService
 from app.agent.memory import MemoryStore
 from app.agent.screen_awareness import SCREEN_AWARENESS_IMAGE_DETAIL
 from app.agent.screen_tools import (
@@ -35,29 +39,32 @@ from app.llm.api_client import (
 )
 from app.llm.chat_reply import ChatReply, parse_chat_reply, parse_chat_reply_result, sanitize_reply_tones
 from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
-from app.core.debug_log import debug_log, summarize_messages
+from app.core.debug_log import debug_body_enabled, debug_log, summarize_messages
 from app.agent.runtime_limits import (
-    MAX_AGENT_STEPS_PER_TURN,
     MAX_EVENT_RECENT_CONVERSATION_CONTENT_CHARS,
     MAX_EVENT_RECENT_CONVERSATION_MESSAGES,
     MAX_PENDING_CONTEXT_MESSAGES,
     MAX_PENDING_CONTEXT_TEXT_CHARS,
-    MAX_TOOL_CALLS_PER_STEP,
-    MAX_TOOL_CALLS_PER_TURN,
     MAX_TOOL_RESULT_CHARS,
     ProgressCallback,
+    RuntimeLoopSettings,
+    normalize_runtime_loop_settings,
 )
 from app.llm.prompt_templates import (
     build_agent_reply_protocol,
     build_context_acquisition_strategy,
     build_event_system_prompt,
-    build_proactive_check_tool_system_prompt,
+    build_proactive_check_tool_system_prefix,
 )
 from app.plugins.models import ContextProviderContribution, PromptPatchContribution
 
-# 单个插件 context provider 注入 prompt 的最大字符数，超出截断，避免拖垮上下文。
-MAX_PLUGIN_CONTEXT_PROVIDER_CHARS = 2000
-
+from app.llm.prompts.runtime import PromptRuntime
+from app.llm.prompts.types import (
+    ContextSnapshot,
+    PromptInspection,
+    PromptRecipe,
+    PromptSection,
+)
 
 
 class AgentRuntime:
@@ -73,6 +80,7 @@ class AgentRuntime:
         memory: MemoryStore | None = None,
         prompt_patches: list[PromptPatchContribution] | None = None,
         context_providers: list[ContextProviderContribution] | None = None,
+        runtime_loop_settings: RuntimeLoopSettings | None = None,
     ) -> None:
         self.api_client = api_client
         self.system_prompt = system_prompt
@@ -84,6 +92,12 @@ class AgentRuntime:
         self.context_providers = (
             [*context_providers] if context_providers is not None else []
         )
+        self.runtime_loop_settings = normalize_runtime_loop_settings(runtime_loop_settings)
+        self.prompt_runtime = PromptRuntime()
+        self.context_orchestrator = ContextOrchestrator()
+        self.memory_recall = MemoryRecallService(self.memory)
+        self._last_prompt_inspection: PromptInspection | None = None
+        self._prompt_inspection_lock = Lock()
         self.model_vision_enabled = True
         self.autonomous_screen_observation_enabled = True
 
@@ -110,6 +124,66 @@ class AgentRuntime:
         self.context_providers = (
             [*context_providers] if context_providers is not None else []
         )
+    def get_last_prompt_inspection(self) -> dict[str, Any] | None:
+        """返回最近一次 Prompt 构建的脱敏检查结果。"""
+
+        lock = getattr(self, "_prompt_inspection_lock", None)
+        if lock is None:
+            inspection = getattr(self, "_last_prompt_inspection", None)
+        else:
+            with lock:
+                inspection = self._last_prompt_inspection
+        if inspection is None:
+            return None
+        return inspection.to_dict(include_content=debug_body_enabled())
+
+    def _record_prompt_inspection(self, inspection: PromptInspection) -> None:
+        lock = getattr(self, "_prompt_inspection_lock", None)
+        if lock is None:
+            self._last_prompt_inspection = inspection
+        else:
+            with lock:
+                self._last_prompt_inspection = inspection
+        debug_log(
+            "PromptInspector",
+            "Prompt 构建完成",
+            inspection.to_dict(include_content=debug_body_enabled()),
+        )
+
+    def _build_single_context_snapshot(
+        self,
+        messages: list[ChatMessage],
+        *,
+        source: str,
+        mode: str = "normal",
+        event_type: str = "",
+        event_payload: dict[str, Any] | None = None,
+    ) -> ContextSnapshot:
+        request = build_context_request(
+            messages,
+            source=source,
+            mode=mode,
+            event_type=event_type,
+            step_index=0,
+            remaining_steps=0,
+            available_tools=(),
+            event_payload=event_payload,
+            service_status={"memory": "unknown"},
+        )
+        recall = self.memory_recall.recall(request)
+        request = replace(request, service_status={"memory": recall.status})
+        return self.context_orchestrator.build_snapshot(
+            request,
+            providers=self.context_providers,
+            memory_fragments=recall.fragments,
+        )
+
+    def _record_runtime_role(self, inspection: PromptInspection) -> None:
+        role = str(getattr(self.api_client, "runtime_context_role", inspection.runtime_role))
+        if role != inspection.runtime_role:
+            inspection = replace(inspection, runtime_role=role)
+        self._record_prompt_inspection(inspection)
+
 
     def set_model_vision_enabled(self, enabled: bool) -> None:
         """允许模型在需要时请求一次当前屏幕截图。"""
@@ -118,6 +192,10 @@ class AgentRuntime:
     def set_autonomous_screen_observation_enabled(self, enabled: bool) -> None:
         """允许模型在对话或主动事件中自主决定是否观察屏幕。"""
         self.autonomous_screen_observation_enabled = enabled
+
+    def set_runtime_loop_settings(self, settings: RuntimeLoopSettings | None) -> None:
+        """同步工具循环限制，后续对话从新设置开始生效。"""
+        self.runtime_loop_settings = normalize_runtime_loop_settings(settings)
 
     def _resolve_dialogue_params(self) -> tuple[float, dict[str, Any]]:
         """读取角色对话生成参数，兼容测试桩和外部传入的旧客户端实现。"""
@@ -253,6 +331,9 @@ class AgentRuntime:
         allow_screen_observation: bool,
         turn_started_at: float,
         proactive_mode: bool = False,
+        context_source: str = "chat",
+        event_type: str = "",
+        event_payload: dict[str, Any] | None = None,
         planning_extra_instructions: str = "",
         initial_actions: list[AgentAction] | None = None,
         vision_unsupported_reply: ChatReply | None = None,
@@ -265,7 +346,11 @@ class AgentRuntime:
         emitted_actions: list[AgentAction] = [*(initial_actions or [])]
         total_tool_calls = 0
         active_groups: set[str] = {"default", "mcp", "memory", "pet_state"}
-        for step_index in range(MAX_AGENT_STEPS_PER_TURN):
+        turn_memory_fragments = ()
+        memory_status = "unknown"
+        memory_needs_refresh = True
+        loop_settings = self.runtime_loop_settings
+        for step_index in range(loop_settings.max_agent_steps_per_turn):
             check_cancelled(cancel_checker)
             browser_page_mode = tool_routing._should_prefer_browser_page_tools(working_messages)
             browser_page_guard_active = (
@@ -291,29 +376,56 @@ class AgentRuntime:
             )
             try:
                 planning_started_at = time.perf_counter()
-                system_prompt = (
-                    self._build_proactive_tool_system_prompt(
-                        step_index=step_index,
-                        remaining_steps=MAX_AGENT_STEPS_PER_TURN - step_index - 1,
+                tool_names = [
+                    str(item.get("function", {}).get("name", ""))
+                    for item in tool_defs
+                    if isinstance(item, dict) and isinstance(item.get("function"), dict)
+                ]
+                request = build_context_request(
+                    working_messages,
+                    source=context_source,
+                    mode="proactive" if proactive_mode else "normal",
+                    event_type=event_type,
+                    step_index=step_index,
+                    remaining_steps=loop_settings.max_agent_steps_per_turn - step_index - 1,
+                    available_tools=tool_names,
+                    event_payload=event_payload,
+                    service_status={"memory": memory_status},
+                )
+                if memory_needs_refresh:
+                    recall = self.memory_recall.recall(request)
+                    turn_memory_fragments = recall.fragments
+                    memory_status = recall.status
+                    memory_needs_refresh = False
+                    request = replace(request, service_status={"memory": memory_status})
+                snapshot = self.context_orchestrator.build_snapshot(
+                    request,
+                    providers=self.context_providers,
+                    memory_fragments=turn_memory_fragments,
+                )
+                prompt_build = (
+                    self._build_proactive_tool_prompt_result(
+                        snapshot,
                         extra_instructions=planning_extra_instructions,
                     )
                     if proactive_mode
-                    else self._build_tool_system_prompt(
+                    else self._build_tool_prompt_result(
+                        snapshot,
                         allow_screen_observation=allow_screen_observation,
-                        step_index=step_index,
-                        remaining_steps=MAX_AGENT_STEPS_PER_TURN - step_index - 1,
                         extra_instructions=planning_extra_instructions,
                         browser_page_mode=browser_page_guard_active,
                         visible_browser_mode=visible_browser_guard_active,
                     )
                 )
+                self._record_prompt_inspection(prompt_build.inspection)
                 dialogue_temperature, dialogue_extra_params = self._resolve_dialogue_params()
                 turn = self.api_client.complete_with_tools(
-                    system_prompt,
+                    prompt_build.system_prompt,
                     working_messages,
                     tools=tool_defs,
                     tool_choice="auto",
                     temperature=dialogue_temperature,
+                    runtime_context=prompt_build.runtime_context,
                     # Some OpenAI-compatible providers return pseudo tool-call JSON
                     # in message.content instead of native tool_calls when
                     # response_format=json_object is combined with tools.
@@ -321,6 +433,10 @@ class AgentRuntime:
                     cancel_checker=cancel_checker,
                     **dialogue_extra_params,
                 )
+                if turn.runtime_context_role != prompt_build.inspection.runtime_role:
+                    self._record_prompt_inspection(
+                        replace(prompt_build.inspection, runtime_role=turn.runtime_context_role)
+                    )
             except ApiRequestError as exc:
                 if messages_contain_image(working_messages) and is_vision_unsupported_error(exc):
                     debug_log("AgentRuntime", "视觉输入不受支持，返回兜底回复", {"error": str(exc)})
@@ -344,7 +460,6 @@ class AgentRuntime:
                 },
             )
             if not turn.tool_calls:
-                require_pet_state_delta = _messages_require_pet_state_delta(working_messages)
                 debug_log(
                     "AgentRuntime",
                     "多步循环完成，返回模型回复",
@@ -357,10 +472,10 @@ class AgentRuntime:
                 return AgentResult(
                     reply=sanitize_reply_tones(
                         self._parse_final_reply_with_retry(
-                            system_prompt,
+                            prompt_build.system_prompt,
                             working_messages,
                             turn.content,
-                            require_pet_state_delta=require_pet_state_delta,
+                            require_pet_state_delta=_messages_require_pet_state_delta(working_messages),
                             cancel_checker=cancel_checker,
                         ),
                         self.reply_tones,
@@ -368,6 +483,7 @@ class AgentRuntime:
                     _debug=_build_debug_meta(
                         self.api_client, execution_results,
                         total_tool_calls, turn_started_at,
+                        self.get_last_prompt_inspection(),
                     ),
                     actions=emitted_actions,
                 )
@@ -390,8 +506,8 @@ class AgentRuntime:
             should_fast_forward_final_reply = False
             allowed_calls = min(
                 len(turn.tool_calls),
-                MAX_TOOL_CALLS_PER_STEP,
-                max(0, MAX_TOOL_CALLS_PER_TURN - total_tool_calls),
+                loop_settings.max_tool_calls_per_step,
+                max(0, loop_settings.max_tool_calls_per_turn - total_tool_calls),
             )
             for call in turn.tool_calls[:allowed_calls]:
                 check_cancelled(cancel_checker)
@@ -525,14 +641,14 @@ class AgentRuntime:
                         "requested": len(turn.tool_calls),
                         "allowed": allowed_calls,
                         "total_tool_calls": total_tool_calls,
-                        "step_limit": MAX_TOOL_CALLS_PER_STEP,
-                        "turn_limit": MAX_TOOL_CALLS_PER_TURN,
+                        "step_limit": loop_settings.max_tool_calls_per_step,
+                        "turn_limit": loop_settings.max_tool_calls_per_turn,
                     },
                 )
                 for skipped_call in turn.tool_calls[allowed_calls:]:
                     limit_error = (
-                        f"本步骤最多执行 {MAX_TOOL_CALLS_PER_STEP} 个工具调用，"
-                        f"整轮最多执行 {MAX_TOOL_CALLS_PER_TURN} 个工具调用，"
+                        f"本步骤最多执行 {loop_settings.max_tool_calls_per_step} 个工具调用，"
+                        f"整轮最多执行 {loop_settings.max_tool_calls_per_turn} 个工具调用，"
                         f"已跳过后续调用 {skipped_call.name}。"
                     )
                     limit_result = ToolExecutionResult(
@@ -610,6 +726,7 @@ class AgentRuntime:
                     _debug=_build_debug_meta(
                         self.api_client, execution_results,
                         total_tool_calls, turn_started_at,
+                        self.get_last_prompt_inspection(),
                     ),
                     actions=[
                         *emitted_actions,
@@ -628,6 +745,12 @@ class AgentRuntime:
 
             working_messages.append(turn.message)
             working_messages.extend(tool_messages)
+            # 本步若写过记忆，下一步重新执行相关记忆召回。
+            if any(
+                getattr(result, "tool_name", "") in {"memory_remember", "memory_forget"}
+                for result in step_results
+            ):
+                memory_needs_refresh = True
             if should_fast_forward_final_reply:
                 debug_log(
                     "AgentRuntime",
@@ -639,7 +762,7 @@ class AgentRuntime:
                     },
                 )
                 break
-            if total_tool_calls >= MAX_TOOL_CALLS_PER_TURN:
+            if total_tool_calls >= loop_settings.max_tool_calls_per_turn:
                 break
 
         try:
@@ -740,22 +863,29 @@ class AgentRuntime:
                 working_messages,
                 allow_screen_observation=allow_screen_observation,
                 turn_started_at=turn_started_at,
+                context_source="confirmed_action",
                 planning_extra_instructions=_build_confirmed_action_continuation_rules(action),
                 initial_actions=emitted_actions,
                 progress_callback=progress_callback,
                 cancel_checker=cancel_checker,
             )
+        final_messages = [_build_confirmed_action_result_message(action, results)]
+        snapshot = self._build_single_context_snapshot(
+            final_messages, source="confirmed_action"
+        )
+        prompt_build = self._build_final_reply_result(snapshot)
+        self._record_prompt_inspection(prompt_build.inspection)
         try:
             check_cancelled(cancel_checker)
             reply = self.api_client.chat(
-                self._build_final_reply_prompt(),
-                [
-                    _build_confirmed_action_result_message(action, results),
-                ],
+                prompt_build.system_prompt,
+                final_messages,
                 self.reply_tones,
                 self.reply_portraits,
+                runtime_context=prompt_build.runtime_context,
                 cancel_checker=cancel_checker,
             )
+            self._record_runtime_role(prompt_build.inspection)
             check_cancelled(cancel_checker)
         except OperationCancelled:
             raise
@@ -831,22 +961,36 @@ class AgentRuntime:
                 allow_screen_observation=allow_screen_observation,
                 turn_started_at=time.perf_counter(),
                 proactive_mode=True,
+                context_source="event",
+                event_type=event.type,
+                event_payload=event.payload,
                 initial_actions=[event_action],
                 vision_unsupported_reply=_build_proactive_vision_unsupported_reply(),
                 progress_callback=progress_callback,
                 cancel_checker=cancel_checker,
             )
 
+        snapshot = self._build_single_context_snapshot(
+            event_messages,
+            source="event",
+            mode="proactive" if event.type in {"screen_awareness_check", "proactive_check"} else "normal",
+            event_type=event.type,
+            event_payload=event.payload,
+        )
+        prompt_build = self._build_event_reply_result(event.type, snapshot)
+        self._record_prompt_inspection(prompt_build.inspection)
         try:
             check_cancelled(cancel_checker)
             reply = self.api_client.chat(
-                self._build_event_reply_prompt(event.type),
+                prompt_build.system_prompt,
                 event_messages,
                 self.reply_tones,
                 self.reply_portraits,
                 require_pet_state_delta=_messages_require_pet_state_delta(event_messages),
+                runtime_context=prompt_build.runtime_context,
                 cancel_checker=cancel_checker,
             )
+            self._record_runtime_role(prompt_build.inspection)
             check_cancelled(cancel_checker)
         except ApiRequestError as exc:
             if messages_contain_image(event_messages) and is_vision_unsupported_error(exc):
@@ -858,65 +1002,36 @@ class AgentRuntime:
             actions=[event_action],
         )
 
-    def _patched_system_prompt(self) -> str:
-        parts = [self.system_prompt.strip()]
-        parts.extend(
-            patch.system_prompt_append.strip()
+    def _persona_sections(self) -> list[PromptSection]:
+        sections = [
+            PromptSection(
+                section_id="persona.character",
+                body=self.system_prompt.strip(),
+                source="character",
+                sensitivity="private",
+            )
+        ]
+        sections.extend(
+            PromptSection(
+                section_id=f"plugin_patch.{patch.patch_id}",
+                body=patch.system_prompt_append.strip(),
+                source=f"plugin:{patch.patch_id}",
+            )
             for patch in getattr(self, "prompt_patches", [])
             if patch.system_prompt_append.strip()
         )
-        context_block = self._build_plugin_context_block()
-        if context_block:
-            parts.append(context_block)
-        return "\n\n".join(part for part in parts if part)
+        return sections
 
-    def _build_plugin_context_block(self) -> str:
-        """汇总插件 context provider 的动态上下文。
+    def _static_persona_prompt(self) -> str:
+        recipe = PromptRecipe("persona", self._persona_sections())
+        return self._prompt_runtime().build(recipe).system_prompt
 
-        - 按 order 升序排序，跳过 enabled=False；
-        - 单个 provider 异常只写日志、不影响其他 provider 与主 prompt；
-        - 单个 provider 输出超长会截断；
-        - 输出形如 ``[Plugin Context: <provider_id>]\\n<text>`` 的块，块间空行分隔。
-        """
-        providers = sorted(
-            (
-                provider
-                for provider in getattr(self, "context_providers", [])
-                if getattr(provider, "enabled", True)
-            ),
-            key=lambda provider: getattr(provider, "order", 100.0),
-        )
-        blocks: list[str] = []
-        for provider in providers:
-            provider_id = getattr(provider, "provider_id", "unknown")
-            try:
-                text = provider.build_context({})
-            except Exception as exc:  # noqa: BLE001 — provider 异常不得影响 prompt 构建
-                debug_log(
-                    "AgentRuntime",
-                    "插件上下文提供者执行失败，已跳过",
-                    {"provider_id": provider_id, "error": str(exc)},
-                )
-                continue
-            if not isinstance(text, str):
-                text = str(text) if text is not None else ""
-            text = text.strip()
-            if not text:
-                debug_log(
-                    "AgentRuntime",
-                    "插件上下文提供者无输出，已跳过",
-                    {"provider_id": provider_id},
-                )
-                continue
-            if len(text) > MAX_PLUGIN_CONTEXT_PROVIDER_CHARS:
-                text = text[:MAX_PLUGIN_CONTEXT_PROVIDER_CHARS] + "…（已截断）"
-            debug_log(
-                "AgentRuntime",
-                "插件上下文提供者已生效",
-                {"provider_id": provider_id, "chars": len(text)},
-            )
-            blocks.append(f"[Plugin Context: {provider_id}]\n{text}")
-        return "\n\n".join(blocks)
+    def _prompt_runtime(self) -> PromptRuntime:
+        runtime = getattr(self, "prompt_runtime", None)
+        if runtime is None:
+            runtime = PromptRuntime()
+            self.prompt_runtime = runtime
+        return runtime
 
     def _reply_protocol_patch_text(self) -> str:
         patches = [
@@ -938,17 +1053,15 @@ class AgentRuntime:
         parts = [extra_instructions.strip(), self._reply_protocol_patch_text()]
         return "\n".join(part for part in parts if part)
 
-    def _build_tool_system_prompt(
+    def _build_tool_prompt_result(
         self,
+        snapshot: ContextSnapshot | None,
+        *,
         allow_screen_observation: bool = False,
-        step_index: int = 0,
-        remaining_steps: int = MAX_AGENT_STEPS_PER_TURN - 1,
         extra_instructions: str = "",
         browser_page_mode: bool = False,
         visible_browser_mode: bool = False,
-    ) -> str:
-        memory_summary = self._memory_summary()
-        current_time = datetime.now().astimezone().isoformat(timespec="seconds")
+    ):
         reply_protocol = self._apply_reply_protocol_patches(
             build_agent_reply_protocol(self.reply_tones, self.reply_portraits)
         )
@@ -959,101 +1072,140 @@ class AgentRuntime:
         browser_page_rule = tool_routing._build_browser_page_mode_rule(browser_page_mode)
         visible_browser_rule = tool_routing._build_visible_browser_mode_rule(visible_browser_mode)
         web_tool_capability_rule = tool_routing._build_web_tool_capability_rule(visible_browser_mode)
-        return f"""
-{self._patched_system_prompt()}
+        capability_rules = "\n".join(
+            [
+                "可用工具能力领域：",
+                web_tool_capability_rule,
+                "- 屏幕：理解当前画面用 observe_screen（仅启用时可用）。",
+                "- 桌面控制：窗口、鼠标、键盘和系统界面操作用 windows__*。",
+                "- 提醒与记忆：add_reminder、memory_search、memory_remember、memory_update、memory_forget",
+                "- 桌宠状态：普通回复通过最终 JSON 的 pet_state_delta 提交状态建议；显式读取或手动修正时才使用 pet_state_get / pet_state_update。",
+            ]
+        )
+        tool_rules = "\n".join(
+            [
+                "- 只调用 API tools 列表中真实存在的工具；工具能帮助完成请求时优先发起原生 tool_calls。",
+                "- 可以在 assistant content 中写一句可直接说给用户听的短句；不要提前给最终结论。",
+                "- 不要臆造工具名；只能使用 API tools 列表中的工具。",
+                "- 高风险或 requires_confirmation 工具会在用户确认后执行；你可以发起 tool_call，但正文要简短说明为什么需要确认。",
+                "- 宿主已经注入桌宠状态快照时，直接据此回答，不要重复调用 pet_state_get。",
+                "- 普通回复不要调用 pet_state_update；状态建议写入最终 JSON 的 pet_state_delta。只有用户明确要求调试或手动修正状态时才调用 pet_state_update。",
+                "- pet_state_update 只能提交 mood、affect、evidence，不要提交 display；display 是宿主派生字段。",
+                "- 用户明确要求浏览器可见过程或网页操作时，用 playwright_*，不要用后台 web__ 替代。",
+                "- 浏览器外的桌面点击、输入、窗口操作才用 windows__*；操作前先用 windows__Snapshot / windows__Screenshot 获取真实状态。",
+                screen_observation_rule,
+                browser_page_rule,
+                visible_browser_rule,
+                "- 如果 playwright_ 浏览器工具不可用，说明网页自动化能力不可用；不要回退到 Sakura 内置浏览器工具。",
+                "- 需要网页交互时，只能基于当前页面真实内容选择工具，不要臆造 selector、target 或页面内容。",
+                self._combine_extra_instructions(extra_instructions),
+                "- 用户说‘几分钟后/几秒后/一会儿后’等相对提醒时，add_reminder 必须使用 delay_minutes 或 delay_seconds，不要自己换算 trigger_at。",
+                "- 只有用户给出明确日期或钟点时，add_reminder 才使用 trigger_at。",
+                "- 需要跨会话信息、用户偏好或项目状态时，优先使用 memory_search。",
+                "- 只有用户明确要求记住，或信息明显长期有用且不包含敏感凭据时，才使用 memory_remember。",
+                "- 需要纠正、补充或合并已有长期记忆时，先用 memory_search 找到 id，再用 memory_update 写入更新后的完整记忆。",
+                "- 只有用户明确要求忘掉信息时，才使用 memory_forget。",
+            ]
+        )
+        sections = [
+            *self._persona_sections(),
+            PromptSection(
+                "agent.identity",
+                "你现在是 Sakura 的桌面陪伴型 Agent。上下文不足、需要核实或工具能明显提升帮助质量时，可以主动发起 tool_calls；信息足够时直接按回复协议回答。\n不要把工具计划、工具名伪代码或 tool_calls JSON 写进正文。",
+            ),
+            PromptSection(
+                "agent.loop_limits",
+                f"当前 Agent 循环：\n- 每步最多请求 {self.runtime_loop_settings.max_tool_calls_per_step} 个工具，整轮最多 {self.runtime_loop_settings.max_tool_calls_per_turn} 个工具。\n- 工具结果足够、受限、需要确认或同参数失败时，停止循环并自然说明状态。",
+            ),
+            PromptSection("reply.protocol", reply_protocol),
+            PromptSection("context.acquisition", context_strategy),
+            PromptSection("tools.capabilities", capability_rules),
+            PromptSection("tools.rules", tool_rules),
+        ]
+        return self._prompt_runtime().build(PromptRecipe("agent_tool_loop", sections), snapshot)
 
-你现在是 Sakura 的桌面陪伴型 Agent。上下文不足、需要核实或工具能明显提升帮助质量时，可以主动发起 tool_calls；信息足够时直接按回复协议回答。
-不要把工具计划、工具名伪代码或 tool_calls JSON 写进正文。
-
-长期记忆摘要：
-{memory_summary}
-
-当前本地时间：
-{current_time}
-
-当前 Agent 循环：
-- 这是第 {step_index + 1} 步，之后最多还可以继续 {remaining_steps} 步。
-- 每步最多请求 {MAX_TOOL_CALLS_PER_STEP} 个工具，整轮最多 {MAX_TOOL_CALLS_PER_TURN} 个工具。
-- 工具结果足够、受限、需要确认或同参数失败时，停止循环并自然说明状态。
-
-{reply_protocol}
-
-{context_strategy}
-
-可用工具能力领域：
-{web_tool_capability_rule}
-- 屏幕：理解当前画面用 observe_screen（仅启用时可用）。
-- 桌面控制：窗口、鼠标、键盘和系统界面操作用 windows__*。
-- 提醒与记忆：add_reminder、memory_search、memory_remember、memory_forget
-- 桌宠状态：普通回复通过最终 JSON 的 pet_state_delta 提交状态建议；显式读取或手动修正时才使用 pet_state_get / pet_state_update。
-
-工具要求：
-- 只调用 API tools 列表中真实存在的工具；工具能帮助完成请求时优先发起原生 tool_calls。
-- 可以在 assistant content 中写一句可直接说给用户听的短句；不要提前给最终结论。
-- 不要臆造工具名；只能使用 API tools 列表中的工具。
-- 高风险或 requires_confirmation 工具会在用户确认后执行；你可以发起 tool_call，但正文要简短说明为什么需要确认。
-- 宿主已经注入桌宠状态快照时，直接据此回答，不要重复调用 pet_state_get。
-- 普通回复不要调用 pet_state_update；状态建议写入最终 JSON 的 pet_state_delta。只有用户明确要求调试或手动修正状态时才调用 pet_state_update。
-- pet_state_update 只能提交 mood、affect、evidence，不要提交 display；display 是宿主派生字段。
-- 用户明确要求浏览器可见过程或网页操作时，用 playwright_*，不要用后台 web__ 替代。
-- 浏览器外的桌面点击、输入、窗口操作才用 windows__*；操作前先用 windows__Snapshot / windows__Screenshot 获取真实状态。
-{screen_observation_rule}
-{browser_page_rule}
-{visible_browser_rule}
-- 如果 playwright_ 浏览器工具不可用，说明网页自动化能力不可用；不要回退到 Sakura 内置浏览器工具。
-- 需要网页交互时，只能基于当前页面真实内容选择工具，不要臆造 selector、target 或页面内容。
-{self._combine_extra_instructions(extra_instructions)}
-- 用户说“几分钟后/几秒后/一会儿后”等相对提醒时，add_reminder 必须使用 delay_minutes 或 delay_seconds，不要自己换算 trigger_at。
-- 只有用户给出明确日期或钟点时，add_reminder 才使用 trigger_at。
-- 需要跨会话信息、用户偏好或项目状态时，优先使用 memory_search。
-- 只有用户明确要求记住，或信息明显长期有用且不包含敏感凭据时，才使用 memory_remember。
-- 只有用户明确要求忘掉信息时，才使用 memory_forget。
-""".strip()
-
-    def _build_proactive_tool_system_prompt(
+    def _build_tool_system_prompt(
         self,
-        step_index: int = 0,
-        remaining_steps: int = MAX_AGENT_STEPS_PER_TURN - 1,
+        allow_screen_observation: bool = False,
         extra_instructions: str = "",
+        browser_page_mode: bool = False,
+        visible_browser_mode: bool = False,
     ) -> str:
-        memory_summary = self._memory_summary()
-        current_time = datetime.now().astimezone().isoformat(timespec='seconds')
-        return build_proactive_check_tool_system_prompt(
-            self._patched_system_prompt(),
+        return self._build_tool_prompt_result(
+            None,
+            allow_screen_observation=allow_screen_observation,
+            extra_instructions=extra_instructions,
+            browser_page_mode=browser_page_mode,
+            visible_browser_mode=visible_browser_mode,
+        ).system_prompt
+
+    def _build_proactive_tool_prompt_result(
+        self,
+        snapshot: ContextSnapshot | None,
+        *,
+        extra_instructions: str = "",
+    ):
+        proactive_rules = build_proactive_check_tool_system_prefix(
+            "",
             self.reply_tones,
             self.reply_portraits,
-            memory_summary=memory_summary,
-            current_time=current_time,
-            step_index=step_index,
-            remaining_steps=remaining_steps,
-            max_tool_calls_per_step=MAX_TOOL_CALLS_PER_STEP,
-            max_tool_calls_per_turn=MAX_TOOL_CALLS_PER_TURN,
+            max_tool_calls_per_step=self.runtime_loop_settings.max_tool_calls_per_step,
+            max_tool_calls_per_turn=self.runtime_loop_settings.max_tool_calls_per_turn,
             extra_instructions=self._combine_extra_instructions(extra_instructions),
         )
-    def _build_final_reply_prompt(self) -> str:
-        return f"""
-{self._patched_system_prompt()}
+        sections = [
+            *self._persona_sections(),
+            PromptSection("agent.proactive", proactive_rules),
+        ]
+        return self._prompt_runtime().build(
+            PromptRecipe("proactive_tool_loop", sections), snapshot
+        )
 
-你会收到上一轮工具调用结果。请基于这些结果给用户最终回复。
-不要再次请求工具，不要提及内部 JSON、工具协议或实现细节。
-如果工具结果信息丰富，可以适当展开总结、补充细节或引导对话继续，让用户能感受到信息已经被充分理解和整理。
-{self._reply_protocol_patch_text()}
-""".strip()
+    def _build_proactive_tool_system_prompt(self, extra_instructions: str = "") -> str:
+        return self._build_proactive_tool_prompt_result(
+            None, extra_instructions=extra_instructions
+        ).system_prompt
+
+    def _build_final_reply_result(self, snapshot: ContextSnapshot | None = None):
+        sections = [
+            *self._persona_sections(),
+            PromptSection(
+                "final_reply.instructions",
+                "你会收到上一轮工具调用结果。请基于这些结果给用户最终回复。\n"
+                "不要再次请求工具，不要提及内部 JSON、工具协议或实现细节。\n"
+                "如果工具结果信息丰富，可以适当展开总结、补充细节或引导对话继续，让用户能感受到信息已经被充分理解和整理。",
+            ),
+            PromptSection("reply.patch", self._reply_protocol_patch_text()),
+        ]
+        return self._prompt_runtime().build(PromptRecipe("final_reply", sections), snapshot)
+
+    def _build_final_reply_prompt(self) -> str:
+        return self._build_final_reply_result().system_prompt
+
+    def _build_event_reply_result(
+        self,
+        event_type: str = "reminder_due",
+        snapshot: ContextSnapshot | None = None,
+    ):
+        event_rules = build_event_system_prompt(
+            "", self.reply_tones, self.reply_portraits, event_type=event_type
+        )
+        sections = [
+            *self._persona_sections(),
+            PromptSection("event.rules", event_rules),
+            PromptSection("reply.patch", self._reply_protocol_patch_text()),
+        ]
+        return self._prompt_runtime().build(PromptRecipe("event_reply", sections), snapshot)
 
     def _build_event_reply_prompt(self, event_type: str = "reminder_due") -> str:
-        prompt = build_event_system_prompt(
-            self._patched_system_prompt(),
-            self.reply_tones,
-            self.reply_portraits,
-            event_type=event_type,
-        )
-        reply_patch = self._reply_protocol_patch_text()
-        if reply_patch:
-            return f"{prompt}\n\n{reply_patch}"
-        return prompt
+        return self._build_event_reply_result(event_type).system_prompt
 
-    def _memory_summary(self) -> str:
+    def _memory_context(self, messages: list[ChatMessage], *, mode: str) -> str:
+        query = _latest_user_text(messages)
         try:
+            builder = getattr(self.memory, "build_memory_context", None)
+            if callable(builder):
+                return builder(query, mode=mode)
             return self.memory.summary()
         except Exception as exc:
             return f"长期记忆读取失败：{exc}"
@@ -1182,6 +1334,31 @@ def _groups_from_search_tools_result(result: ToolExecutionResult) -> set[str]:
         if isinstance(group, str) and group.strip():
             groups.add(group.strip())
     return groups
+
+
+def _latest_user_text(messages: list[ChatMessage]) -> str:
+    """提取最近一条用户文本，作为分层记忆检索查询。"""
+
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        return _message_text_content(message.get("content"))
+    return ""
+
+
+def _message_text_content(content: object) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip())
+    return "\n".join(parts)
 
 
 def _build_tool_role_message(call: NativeToolCall, result: ToolExecutionResult) -> ChatMessage:
@@ -1926,6 +2103,7 @@ def _build_debug_meta(
     execution_results: list,
     total_tool_calls: int,
     turn_started_at: float,
+    prompt_inspection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构建写入聊天记录的调试元数据，包含工具调用摘要和耗时。"""
     return {
@@ -1940,4 +2118,5 @@ def _build_debug_meta(
             }
             for result in execution_results
         ],
+        "prompt_inspection": prompt_inspection,
     }

@@ -2,7 +2,7 @@
 
 Sakura 基于 PySide6（Qt）开发，本身是跨平台的，因此可以在 macOS 上从源码运行。
 仓库自带的 `install.bat` / `start.bat` 仅适用于 Windows；本文档说明 macOS 的运行路径
-以及我们踩到的平台相关问题。
+以及已知的平台相关问题。
 
 > 在 Apple Silicon（M2 Pro）Mac 上测试。多数说明同样适用于 Intel Mac。
 
@@ -64,7 +64,7 @@ python.org 的 macOS 安装包**不会**安装根证书，导致 app 基于 `url
 ```
 
 （版本目录请按你的 Python 版本调整。）此命令会安装 `certifi` 并链接框架的 `cert.pem`。
-Homebrew / conda 版的 Python 通常已自带证书。
+Homebrew / conda 版的 Python 已自带证书。
 
 ---
 
@@ -120,7 +120,7 @@ bash install.sh --device MPS --source HF       # 安装 torch 并下载底模
 python api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS/configs/tts_infer.yaml
 ```
 
-### 我们踩到的坑
+### 已知问题
 
 - **`opencc` 编译失败**（`ld: symbol(s) not found for architecture x86_64`）。
   `requirements.txt` 里有 `--no-binary=opencc`，强制源码编译，而在 Rosetta 下会误判架构。
@@ -138,7 +138,7 @@ python api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS/configs/tts_infer.yaml
   `Output channels > 65536 not supported at the MPS device`。这是硬性约束，
   连 `PYTORCH_ENABLE_MPS_FALLBACK=1` 也救不了。请在
   `GPT_SoVITS/configs/tts_infer.yaml`（`custom` 配置段）把设备改成 **`cpu`**，
-  并设 `is_half: false`。在 M2 Pro 上，一句话用 CPU 约 7 秒合成完成 —— 对桌宠完全够用。
+  并设 `is_half: false`。在 M2 Pro 上，一句话用 CPU 约 7 秒合成完成——对桌宠完全够用。
 
 ### 让 app 指向服务器
 在 `data/config/api.yaml` 中：
