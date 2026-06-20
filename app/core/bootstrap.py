@@ -32,6 +32,12 @@ from app.storage.paths import StoragePaths
 from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
 from app.pet_state.store import PetStateStore
+from app.sensory.context import SensoryContextProvider
+from app.sensory.pipeline import SensoryPipeline
+from app.sensory.providers import build_provider_registry
+from app.sensory.settings import SensorySettings
+from app.sensory.store import SensoryObservationStore
+from app.sensory.tools import create_sensory_observation_tool
 
 
 PORTRAIT_SCALE_MIN_PERCENT = 50
@@ -144,6 +150,20 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     plugin_manager = PluginManager(base_dir=base_dir, resource_registry=resource_registry)
     mcp_settings = settings_service.load_mcp_runtime_settings()
     runtime_loop_settings = settings_service.load_runtime_loop_settings()
+    sensory_settings = settings_service.load_sensory_settings()
+    sensory_observation_store = create_sensory_observation_store(
+        base_dir,
+        character_profile,
+        sensory_settings,
+    )
+    sensory_pipeline = create_sensory_pipeline(
+        sensory_settings,
+        sensory_observation_store,
+    )
+    sensory_context_provider = SensoryContextProvider(
+        sensory_settings,
+        sensory_observation_store,
+    ).contribution()
     agent_runtime = AgentRuntime(
         api_client=api_client,
         system_prompt=system_prompt,
@@ -152,6 +172,13 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         tools=tool_registry,
         memory=memory_store,
         runtime_loop_settings=runtime_loop_settings,
+        context_providers=[sensory_context_provider],
+    )
+    agent_runtime.set_sensory_pipeline(sensory_pipeline)
+    tool_registry.register(
+        create_sensory_observation_tool(
+            lambda: getattr(agent_runtime, "sensory_pipeline", None)
+        )
     )
     history_store = create_history_store(base_dir, character_profile)
     runtime_event_log = create_runtime_event_log(base_dir, character_profile)
@@ -200,6 +227,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             reminder_store=reminder_store,
             history_store=history_store,
             visual_observation_store=visual_observation_store,
+            sensory_observation_store=sensory_observation_store,
             pet_state_store=pet_state_store,
             runtime_event_log=runtime_event_log,
         ),
@@ -216,6 +244,8 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             memory_curation_state=memory_curation_state,
             memory_curator=memory_curator,
             screen_awareness_settings=screen_awareness_settings,
+            sensory_settings=sensory_settings,
+            sensory_pipeline=sensory_pipeline,
         ),
         startup_initializing=True,
     )
@@ -266,6 +296,11 @@ def build_deferred_services(
             context.memory_store,
             context.reminder_store,
             context.pet_state_store,
+        )
+        tool_registry.register(
+            create_sensory_observation_tool(
+                lambda: getattr(context.agent_runtime, "sensory_pipeline", None)
+            )
         )
         tool_registry.set_free_access_enabled(context.tool_registry.free_access_enabled)
         extension_registry = ExtensionRegistry()
@@ -369,6 +404,33 @@ def create_visual_observation_store(
 ) -> VisualObservationStore:
     visual_path = StoragePaths(base_dir).visual_observations_for(profile.id)
     return VisualObservationStore(visual_path)
+
+
+def create_sensory_observation_store(
+    base_dir: Path,
+    profile: CharacterProfile,
+    settings: SensorySettings | None = None,
+) -> SensoryObservationStore:
+    sensory_settings = settings or AppSettingsService(base_dir=base_dir).load_sensory_settings()
+    sensory_path = StoragePaths(base_dir).sensory_observations_for(profile.id)
+    normalized = sensory_settings.normalized()
+    return SensoryObservationStore(
+        sensory_path,
+        retention_days=normalized.retention_days,
+        retention_limit=normalized.retention_limit,
+    )
+
+
+def create_sensory_pipeline(
+    settings: SensorySettings,
+    store: SensoryObservationStore,
+) -> SensoryPipeline:
+    normalized = settings.normalized()
+    return SensoryPipeline(
+        settings=normalized,
+        store=store,
+        providers=build_provider_registry(normalized.providers),
+    )
 
 
 def create_pet_state_store(base_dir: Path, profile: CharacterProfile) -> PetStateStore:

@@ -190,6 +190,11 @@ from app.storage.visual_observation import (
 from app.pet_state.prompting import build_pet_state_context_message
 from app.pet_state.store import PetStateStore
 from app.pet_state.tools import create_pet_state_tools
+from app.sensory.context import SensoryContextProvider
+from app.sensory.pipeline import SensoryPipeline
+from app.sensory.providers import build_provider_registry
+from app.sensory.settings import SensorySettings
+from app.sensory.store import SensoryObservationStore
 from app.ui.fonts import _rounded_chinese_font, _rounded_japanese_font
 from app.ui.input_bar_animator import InputBarAnimator
 from app.ui.card_container import CardContainer
@@ -574,6 +579,10 @@ class PetWindow(QWidget):
         self.history_store = context.history_store
         self.runtime_event_log = context.runtime_event_log
         self.visual_observation_store = context.visual_observation_store
+        self.sensory_observation_store = context.sensory_observation_store
+        self.sensory_settings = context.sensory_settings
+        self.sensory_pipeline = context.sensory_pipeline
+        self.agent_runtime.set_sensory_pipeline(self.sensory_pipeline)
         self.pet_state_store = context.pet_state_store
         self._pet_state_store_connected = False
         self.pet_state_popup: QFrame | None = None
@@ -3209,6 +3218,7 @@ class PetWindow(QWidget):
             request_messages,
             visual_observation_store=getattr(self, "visual_observation_store", None),
             visual_observation_jobs=visual_observation_jobs,
+            sensory_pipeline=getattr(self, "sensory_pipeline", None),
             interaction_id=self.active_interaction_id,
         )
         self.resource_manager.spawn_qt_worker(
@@ -4221,6 +4231,7 @@ class PetWindow(QWidget):
         )
         worker.visual_observation_store = getattr(self, "visual_observation_store", None)
         worker.visual_observation_jobs = getattr(self, "pending_event_visual_observation_jobs", [])
+        worker.sensory_pipeline = getattr(self, "sensory_pipeline", None)
         self.pending_event_visual_observation_jobs = []
         self.resource_manager.spawn_qt_worker(
             worker,
@@ -4865,7 +4876,6 @@ class PetWindow(QWidget):
         for provider, keep_local_service in pending:
             self._close_retired_tts_provider(provider, keep_local_service=keep_local_service)
 
-
     def _apply_startup_initializing_state(self) -> None:
         self.input_edit.setPlaceholderText(STARTUP_INITIALIZING_TEXT)
         self._set_busy(True)
@@ -5145,6 +5155,18 @@ class PetWindow(QWidget):
                 "proactive_care_settings",
                 ScreenAwarenessSettings(),
             )
+        sensory_settings = getattr(self, "sensory_settings", None)
+        if sensory_settings is None:
+            load_sensory_settings = getattr(
+                self.settings_service,
+                "load_sensory_settings",
+                None,
+            )
+            sensory_settings = (
+                load_sensory_settings()
+                if callable(load_sensory_settings)
+                else SensorySettings()
+            )
 
         dialog = SettingsDialog(
             self.api_client.settings,
@@ -5175,6 +5197,7 @@ class PetWindow(QWidget):
                 "runtime_loop_settings",
                 RuntimeLoopSettings(),
             ),
+            sensory_settings=sensory_settings,
             on_layout_preview=self._preview_layout,
             memory_curation_settings=getattr(self, "memory_curation_settings", None),
         )
@@ -5263,6 +5286,11 @@ class PetWindow(QWidget):
             getattr(dialog, "result_memory_curation_settings", None)
             or getattr(self, "memory_curation_settings", None)
         )
+        result_sensory_settings = getattr(
+            dialog,
+            "result_sensory_settings",
+            getattr(self, "sensory_settings", SensorySettings()),
+        )
         result_screen_awareness_settings = getattr(
             dialog,
             "result_screen_awareness_settings",
@@ -5312,6 +5340,15 @@ class PetWindow(QWidget):
                 self,
                 "backchannel_settings",
                 BackchannelSettings(),
+            )
+        if result_sensory_settings is None or not isinstance(
+            result_sensory_settings,
+            SensorySettings,
+        ):
+            result_sensory_settings = getattr(
+                self,
+                "sensory_settings",
+                SensorySettings(),
             )
         (
             result_subtitle_typing_interval_ms,
@@ -5398,6 +5435,13 @@ class PetWindow(QWidget):
                 self.settings_service.save_memory_curation_settings(
                     result_memory_curation_settings
                 )
+            save_sensory_settings = getattr(
+                self.settings_service,
+                "save_sensory_settings",
+                None,
+            )
+            if callable(save_sensory_settings):
+                save_sensory_settings(result_sensory_settings)
         except (CharacterConfigError, OSError) as exc:
             show_themed_critical(self, "保存失败", f"无法保存设置：{exc}")
             return
@@ -5494,6 +5538,11 @@ class PetWindow(QWidget):
                     debug_log("TTS", "丢弃未使用的等价 TTS Provider 失败", {"error": str(exc)})
             debug_log("PetWindow", "TTS 配置与角色均未变,保留现有 Provider,跳过重建")
         self._apply_character(selected_profile)
+        apply_sensory_settings = getattr(self, "_apply_sensory_settings", None)
+        if callable(apply_sensory_settings):
+            apply_sensory_settings(result_sensory_settings, profile=selected_profile)
+        else:
+            self.sensory_settings = result_sensory_settings.normalized()
         apply_backchannel_settings = getattr(self, "_apply_backchannel_settings", None)
         if callable(apply_backchannel_settings):
             apply_backchannel_settings(result_backchannel_settings)
@@ -5515,6 +5564,35 @@ class PetWindow(QWidget):
     def _activate_settings_dialog(self, dialog: SettingsDialog) -> None:
         """重复打开设置时激活已有窗口，避免托盘菜单创建多个设置页。"""
         self._present_registered_secondary_window(dialog)
+
+    def _apply_sensory_settings(
+        self,
+        settings: SensorySettings,
+        *,
+        profile: CharacterProfile | None = None,
+    ) -> None:
+        normalized = settings.normalized()
+        active_profile = profile or getattr(self, "character_profile", None)
+        if active_profile is None:
+            return
+        sensory_path = StoragePaths(self.base_dir).sensory_observations_for(active_profile.id)
+        store = SensoryObservationStore(
+            sensory_path,
+            retention_days=normalized.retention_days,
+            retention_limit=normalized.retention_limit,
+        )
+        pipeline = SensoryPipeline(
+            settings=normalized,
+            store=store,
+            providers=build_provider_registry(normalized.providers),
+        )
+        self.sensory_settings = normalized
+        self.sensory_observation_store = store
+        self.sensory_pipeline = pipeline
+        self.agent_runtime.set_sensory_pipeline(pipeline)
+        self.agent_runtime.set_builtin_context_providers(
+            [SensoryContextProvider(normalized, store).contribution()]
+        )
 
     @Slot(bool)
     def _toggle_chinese_subtitles(self, checked: bool) -> None:

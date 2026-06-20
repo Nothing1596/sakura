@@ -18,6 +18,9 @@ from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
 from app.pet_state.store import PetStateStore
 from app.core.resource_manager import ResourceRegistry
+from app.sensory.pipeline import SensoryPipeline
+from app.sensory.settings import SensorySettings
+from app.sensory.store import SensoryObservationStore
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,7 @@ class StorageServices:
     reminder_store: ReminderStore
     history_store: ChatHistoryStore
     visual_observation_store: VisualObservationStore
+    sensory_observation_store: SensoryObservationStore
     pet_state_store: PetStateStore
     runtime_event_log: RuntimeEventLog
 
@@ -56,6 +60,8 @@ class FeatureServices:
     memory_curation_state: MemoryCurationState
     memory_curator: MemoryCurator
     screen_awareness_settings: ScreenAwarenessSettings
+    sensory_settings: SensorySettings
+    sensory_pipeline: SensoryPipeline
 
 
 @dataclass(frozen=True)
@@ -104,6 +110,10 @@ class AppContext:
         return self.storage.visual_observation_store
 
     @property
+    def sensory_observation_store(self) -> SensoryObservationStore:
+        return self.storage.sensory_observation_store
+
+    @property
     def pet_state_store(self) -> PetStateStore:
         return self.storage.pet_state_store
 
@@ -150,6 +160,14 @@ class AppContext:
     @property
     def screen_awareness_settings(self) -> ScreenAwarenessSettings:
         return self.features.screen_awareness_settings
+
+    @property
+    def sensory_settings(self) -> SensorySettings:
+        return self.features.sensory_settings
+
+    @property
+    def sensory_pipeline(self) -> SensoryPipeline:
+        return self.features.sensory_pipeline
 
     @property
     def proactive_care_settings(self) -> ScreenAwarenessSettings:
