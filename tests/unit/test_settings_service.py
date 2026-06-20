@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 
 from app.agent.mcp.settings import MCPRuntimeSettings
+from app.agent.runtime_limits import RuntimeLoopSettings
 from app.config.character_loader import CharacterRegistry
 from app.config.settings_service import (
     AppSettingsService,
@@ -165,6 +166,58 @@ def test_save_bubble_settings_preserves_other_ui_keys() -> None:
     # 写气泡配置时用读-改-写，原有 ui 键不应丢失。
     assert system["ui"]["subtitle_language"] == "ja"
     assert system["ui"]["bubble_auto_hide_delay_seconds"] == 8
+
+
+def test_settings_service_loads_and_saves_memory_curation_settings() -> None:
+    from app.agent.memory_curator import MemoryCurationSettings
+
+    root = _runtime_root("yaml_memory_curation")
+    service = AppSettingsService(root)
+
+    # 默认：启用、每 8 轮触发、回填上限 200。
+    assert service.load_memory_curation_settings() == MemoryCurationSettings(
+        enabled=True,
+        trigger_turns=8,
+        backfill_limit=200,
+    )
+
+    # 仅改 UI 暴露的 enabled/trigger_turns，backfill_limit 用非默认值确认会被一并持久化。
+    service.save_memory_curation_settings(
+        MemoryCurationSettings(enabled=False, trigger_turns=20, backfill_limit=150)
+    )
+
+    loaded = service.load_memory_curation_settings()
+    assert loaded.enabled is False
+    assert loaded.trigger_turns == 20
+    assert loaded.backfill_limit == 150
+    system = load_yaml_mapping(service.system_config_path)
+    assert system["memory_curation"]["enabled"] is False
+    assert system["memory_curation"]["trigger_turns"] == 20
+    assert system["memory_curation"]["backfill_limit"] == 150
+
+
+def test_settings_service_loads_and_saves_runtime_loop_settings() -> None:
+    root = _runtime_root("yaml_runtime_loop")
+    service = AppSettingsService(root)
+
+    assert service.load_runtime_loop_settings() == RuntimeLoopSettings()
+
+    service.save_runtime_loop_settings(
+        RuntimeLoopSettings(
+            max_agent_steps_per_turn=20,
+            max_tool_calls_per_step=6,
+            max_tool_calls_per_turn=4,
+        )
+    )
+
+    loaded = service.load_runtime_loop_settings()
+    assert loaded.max_agent_steps_per_turn == 12
+    assert loaded.max_tool_calls_per_step == 6
+    assert loaded.max_tool_calls_per_turn == 6
+    system = load_yaml_mapping(service.system_config_path)
+    assert system["tool_loop"]["max_agent_steps_per_turn"] == 12
+    assert system["tool_loop"]["max_tool_calls_per_step"] == 6
+    assert system["tool_loop"]["max_tool_calls_per_turn"] == 6
 
 
 def test_settings_service_loads_tts_work_dir_and_keeps_legacy_blank() -> None:

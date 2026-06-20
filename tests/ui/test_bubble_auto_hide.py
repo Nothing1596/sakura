@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
@@ -10,7 +8,6 @@ from app.ui.bubble_auto_hide import BubbleAutoHideController  # noqa: E402
 
 
 def _qt_app_or_skip():  # type: ignore[no-untyped-def]
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     return qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
 
@@ -115,4 +112,41 @@ def test_set_settings_disable_reveals_and_stops() -> None:
     controller.set_settings(enabled=False, delay_seconds=5)
     assert controller.is_hidden is False
     assert not controller._hide_timer.isActive()
+    window.deleteLater()
+
+
+def test_set_polling_enabled_pauses_and_resumes_in_countdown() -> None:
+    from PySide6.QtWidgets import QWidget
+
+    _qt_app_or_skip()
+    window = QWidget()
+    window.show()
+    controller = _make(window, [False])
+    controller.notify_settled()
+    assert controller._poll_timer.isActive()
+
+    # 副窗口打开：停轮询（隐藏倒计时本身不受影响）。
+    controller.set_polling_enabled(False)
+    assert not controller._poll_timer.isActive()
+    assert controller._hide_timer.isActive()
+
+    # 副窗口关闭：仍在计时态 → 恢复轮询。
+    controller.set_polling_enabled(True)
+    assert controller._poll_timer.isActive()
+    window.deleteLater()
+
+
+def test_set_polling_enabled_resume_noop_when_not_in_countdown() -> None:
+    from PySide6.QtWidgets import QWidget
+
+    _qt_app_or_skip()
+    window = QWidget()
+    window.show()
+    controller = _make(window, [False])
+    controller.notify_settled()
+    controller._on_hide_timeout()
+    assert controller.is_hidden
+    # 已隐藏（非计时态）：恢复轮询应为空操作，避免空转。
+    controller.set_polling_enabled(True)
+    assert not controller._poll_timer.isActive()
     window.deleteLater()

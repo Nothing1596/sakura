@@ -60,6 +60,7 @@ from app.agent.memory_curator import (
     MemoryCurationResult,
 )
 from app.agent.memory_curation_worker import MemoryCurationWorker
+from app.agent.runtime_limits import RuntimeLoopSettings
 from app.agent.screen_tools import SCREEN_OBSERVATION_REQUEST_ACTION
 from app.core.app_context import AppContext
 from app.config.character_loader import (
@@ -97,6 +98,7 @@ from app.backchannel.eval_log import BackchannelEvalLogger
 from app.backchannel.models import BackchannelLabel, BackchannelManifest
 from app.backchannel.resolver import BackchannelChoice
 from app.core.interaction import clear_interaction_id, set_interaction_id
+from app.core.resource_manager import ResourceManager
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 from app.plugins.manager import (
@@ -483,6 +485,11 @@ class PetWindow(QWidget):
         self.deferred_startup_worker: QObject | None = None
         self.tts_ready_warmup_thread: QThread | None = None
         self.tts_ready_warmup_worker: QObject | None = None
+        # 在途预热线程正在探测的 provider；该 provider 在预热结束前不得 close()，
+        # 否则主线程与预热线程并发拆解同一原生服务进程会引发闪退。
+        self._tts_warmup_provider: TTSProvider | None = None
+        # 因预热在途而被推迟关闭的 provider，待预热线程结束后在 cleanup 槽里补关。
+        self._tts_pending_provider_closes: list[tuple[TTSProvider, bool]] = []
         self.screen_observation_encode_thread: QThread | None = None
         self.screen_observation_encode_worker: QObject | None = None
         self.settings_service = context.settings_service
@@ -526,6 +533,12 @@ class PetWindow(QWidget):
         self.free_access_enabled = self._load_free_access_enabled()
         self.tool_registry.set_free_access_enabled(self.free_access_enabled)
         self.always_on_top_enabled = self._load_always_on_top_enabled()
+        # 普通副窗口打开期间临时压低桌宠的实际置顶层级，避免副窗口被桌宠盖住；不改变用户配置。
+        self._secondary_windows_suppress_topmost = False
+        self._secondary_windows_hide_input_bar = False
+        # 副窗口可见期间暂停桌宠后台 hover 轮询，减少与副窗口下拉弹层抢占合成器。
+        self._secondary_windows_background_quiesced = False
+        self._registered_secondary_windows: set[QWidget] = set()
         self.history_window: HistoryWindow | None = None
         self.runtime_log_window: RuntimeLogWindow | None = None
         self.settings_dialog: SettingsDialog | None = None
@@ -537,7 +550,6 @@ class PetWindow(QWidget):
         self.memory_curation_mode = ""
         self.memory_curation_target_history_count = 0
         self.memory_curation_consumed_turns = 0
-        self.pending_history_clear_after_curation = False
         self.drag_anchor: QPoint | None = None
         # 是否正在拖动窗口：首次 move 置位，用于拖动时收起输入栏、区分单击与拖动（单击桌宠唤回气泡）。
         self._dragging = False
@@ -577,7 +589,9 @@ class PetWindow(QWidget):
         self.pet_hidden_at: float | None = None
         self._runtime_app_closed_logged = False
         self._shutdown_in_progress = False
-        self._shutdown_lingering_threads: list[tuple[QThread, QObject | None]] = []
+        # 后台线程生命周期、lingering 线程与退役 wrapper 统一由资源管理器治理。
+        self.resource_manager = ResourceManager(self, registry=context.resource_registry)
+        self._register_runtime_service_resources()
         self.screen_observation_followup_in_progress = False
         self.active_reminder_id: str | None = None
         self.active_reminder_text = ""
@@ -882,6 +896,7 @@ class PetWindow(QWidget):
             self._create_backchannel_classifier(self.backchannel_settings),
             self._display_backchannel,
             settings=self.backchannel_settings,
+            resource_manager=self.resource_manager,
             on_classified=self._log_backchannel_classification,
             parent=self,
         )
@@ -1033,6 +1048,17 @@ class PetWindow(QWidget):
             if event.type() == QEvent.Type.ApplicationActivate:
                 self._handle_application_activated()
             return super().eventFilter(watched, event)
+        if self._is_registered_secondary_window(watched):
+            if event.type() == QEvent.Type.Destroy:
+                self._unregister_secondary_window(watched)
+                QTimer.singleShot(0, self._sync_secondary_window_state)
+            elif event.type() in {
+                QEvent.Type.Show,
+                QEvent.Type.Hide,
+                QEvent.Type.Close,
+            }:
+                QTimer.singleShot(0, self._sync_secondary_window_state)
+            return super().eventFilter(watched, event)
         if watched is self.input_edit:
             if event.type() == QEvent.Type.KeyPress:
                 self._log_input_key_event(event)
@@ -1120,6 +1146,36 @@ class PetWindow(QWidget):
         finally:
             self.renderer_manager = None
             self._set_portrait_overlay_suppressed(False)
+
+    def _register_runtime_service_resources(self) -> None:
+        """把 App 级长期服务登记到 shared ResourceRegistry。"""
+        close_memory = getattr(self.memory_store, "close", None)
+        if callable(close_memory):
+            self.resource_manager.track_service(
+                stop=close_memory,
+                label="memory_store",
+                shutdown_order=1200,
+            )
+        self.resource_manager.track_service(
+            stop=self.close_tts_tools,
+            label="tts_provider",
+            shutdown_order=900,
+        )
+        self.resource_manager.track_service(
+            stop=self.close_mcp_tools,
+            label="mcp_provider",
+            shutdown_order=800,
+        )
+        self.resource_manager.track_service(
+            stop=self._close_renderer_manager,
+            label="renderer_manager",
+            shutdown_order=750,
+        )
+        self.resource_manager.track_service(
+            stop=self.close_plugins,
+            label="plugin_manager",
+            shutdown_order=700,
+        )
 
     def _start_gaze_tracking(self) -> None:
         """overlay 渲染器激活时，周期采样鼠标位置驱动角色视线追踪。
@@ -1225,70 +1281,11 @@ class PetWindow(QWidget):
         subtitle_controller = getattr(self, "subtitle_controller", None)
         if subtitle_controller is not None:
             subtitle_controller.cancel_reply_flow()
-        self._shutdown_qthread("worker_thread", "worker")
-        self._shutdown_qthread("memory_curation_thread", "memory_curation_worker")
-        self._shutdown_qthread("deferred_startup_thread", "deferred_startup_worker")
-        self._shutdown_qthread("tts_ready_warmup_thread", "tts_ready_warmup_worker")
-        self._shutdown_qthread("screen_observation_encode_thread", "screen_observation_encode_worker")
-        self.close_tts_tools()
-        self.close_mcp_tools()
-        self.close_plugins()
-        self._close_renderer_manager()
-
-    def _shutdown_qthread(self, thread_attr: str, worker_attr: str) -> None:
-        thread = getattr(self, thread_attr, None)
-        worker = getattr(self, worker_attr, None)
-        if thread is None:
-            setattr(self, worker_attr, None)
-            return
-        debug_log("PetWindow", "准备关闭后台线程", {"thread": thread_attr})
-        try:
-            cancel = getattr(worker, "cancel", None)
-            if callable(cancel):
-                cancel()
-            thread.requestInterruption()
-            if thread.isRunning():
-                thread.quit()
-                if not thread.wait(THREAD_SHUTDOWN_WAIT_MS):
-                    debug_log(
-                        "PetWindow",
-                        "后台线程未在退出等待时间内结束",
-                        {"thread": thread_attr, "wait_ms": THREAD_SHUTDOWN_WAIT_MS},
-                    )
-                    self._keep_shutdown_lingering_thread(thread, worker)
-                    return
-        except RuntimeError as exc:
-            debug_log("PetWindow", "关闭后台线程失败", {"thread": thread_attr, "error": str(exc)})
-        setattr(self, thread_attr, None)
-        setattr(self, worker_attr, None)
-
-    def _keep_shutdown_lingering_thread(self, thread: QThread, worker: QObject | None) -> None:
-        if any(item_thread is thread for item_thread, _worker in self._shutdown_lingering_threads):
-            return
-        self._shutdown_lingering_threads.append((thread, worker))
-        try:
-            thread.finished.connect(lambda _thread=thread: self._release_shutdown_lingering_thread(_thread))
-        except RuntimeError:
-            self._release_shutdown_lingering_thread(thread)
-
-    def _release_shutdown_lingering_thread(self, thread: QThread) -> None:
-        remaining: list[tuple[QThread, QObject | None]] = []
-        released_worker: QObject | None = None
-        for item_thread, item_worker in self._shutdown_lingering_threads:
-            if item_thread is thread:
-                released_worker = item_worker
-                continue
-            remaining.append((item_thread, item_worker))
-        self._shutdown_lingering_threads = remaining
-        if released_worker is not None:
-            try:
-                released_worker.deleteLater()
-            except RuntimeError:
-                pass
-        try:
-            thread.deleteLater()
-        except RuntimeError:
-            pass
+        backchannel_controller = getattr(self, "backchannel_controller", None)
+        cancel_backchannel = getattr(backchannel_controller, "cancel", None)
+        if callable(cancel_backchannel):
+            cancel_backchannel()
+        self.resource_manager.stop_all(THREAD_SHUTDOWN_WAIT_MS)
 
     def _emit_app_started_event(self) -> None:
         """启动就绪后落盘 app.started；若存在上次关闭记录则附带跨会话信息并注入首条消息。"""
@@ -1518,10 +1515,23 @@ class PetWindow(QWidget):
             animator.resume_after_drag()
 
     def _handle_pet_click(self) -> None:
-        """单击桌宠（非拖动）：唤回被自动隐藏的气泡。具体由气泡自动隐藏控制器实现。"""
+        """单击桌宠（非拖动）：唤回被自动隐藏的气泡，并浮现输入栏供用户输入。"""
         controller = getattr(self, "bubble_auto_hide", None)
         if controller is not None:
             controller.handle_pet_clicked()
+        # 无副窗口/对话框占用且模型未在思考时，让输入栏现身并把焦点移入输入框。
+        # 先 set_force_visible(True) 使 input_card 同步 show()（hidden widget 无法接收焦点），
+        # 设完焦点后立即释放 force_visible——_input_bar_pinned 会通过焦点继续维持可见。
+        # 思考中不浮现：避免用户点击桌宠时反而让输入栏被焦点固定、无法随思考态收起。
+        if not self._any_dialog_open() and not getattr(self, "reply_waiting_ui_active", False):
+            animator = getattr(self, "input_bar_animator", None)
+            input_edit = getattr(self, "input_edit", None)
+            if animator is not None:
+                animator.set_force_visible(True)
+            if input_edit is not None:
+                input_edit.setFocus()
+            if animator is not None:
+                animator.set_force_visible(False)
 
     def _apply_bubble_settings(self, settings: BubbleSettings) -> None:
         """应用气泡无操作自动隐藏配置到控制器（设置保存后调用）。"""
@@ -1559,18 +1569,9 @@ class PetWindow(QWidget):
     ) -> RuleClassifier | HybridBackchannelClassifier:
         normalized = settings.normalized()
         if normalized.mode == "hybrid":
-            classifier = HybridBackchannelClassifier.from_model_cache(self.base_dir)
-            # 在后台线程异步预加载，避免阻塞 GUI 线程
-            import threading
-            def run_preload() -> None:
-                try:
-                    classifier.preload()
-                except Exception as exc:
-                    from app.core.debug_log import debug_log
-                    debug_log("Backchannel", "后台预加载模型失败", {"error": str(exc)})
-            thread = threading.Thread(target=run_preload, daemon=True)
-            thread.start()
-            return classifier
+            # 首次分类仍由 BackchannelController 的受控后台线程冷加载；不额外启动
+            # 无法纳入关闭生命周期的预热线程。
+            return HybridBackchannelClassifier.from_model_cache(self.base_dir)
         return RuleClassifier()
 
     def _log_backchannel_classification(
@@ -2020,6 +2021,7 @@ class PetWindow(QWidget):
         """切换回复等待期间的输入区状态：保留输入能力，只提示当前正在等待。"""
         if getattr(self, "startup_initializing", False):
             waiting = False
+        was_waiting = bool(getattr(self, "reply_waiting_ui_active", False))
         self.reply_waiting_ui_active = waiting
         if hasattr(self, "input_edit"):
             self.input_edit.setPlaceholderText(
@@ -2030,7 +2032,23 @@ class PetWindow(QWidget):
             self._set_widget_dynamic_property(self.input_edit, "replyWaiting", waiting)
         if hasattr(self, "send_button"):
             self._set_widget_dynamic_property(self.send_button, "replyWaiting", waiting)
+        release_empty_focus = getattr(self, "_release_empty_input_focus_after_reply_waiting", None)
+        if (waiting or (was_waiting and not waiting)) and callable(release_empty_focus):
+            release_empty_focus()
         self._sync_input_bar_waiting_visibility()
+
+    def _release_empty_input_focus_after_reply_waiting(self) -> None:
+        """回复等待切换时释放空输入框焦点，避免输入栏被焦点状态固定。"""
+        input_edit = getattr(self, "input_edit", None)
+        text = getattr(input_edit, "text", None)
+        if callable(text) and str(text()).strip():
+            return
+        has_focus = getattr(input_edit, "hasFocus", None)
+        if not callable(has_focus) or not has_focus():
+            return
+        clear_focus = getattr(input_edit, "clearFocus", None)
+        if callable(clear_focus):
+            clear_focus()
 
     def _sync_input_bar_waiting_visibility(self) -> None:
         animator = getattr(self, "input_bar_animator", None)
@@ -2205,15 +2223,16 @@ class PetWindow(QWidget):
             getattr(self, "history_window", None),
             getattr(self, "runtime_log_window", None),
         ):
-            if dialog is not None and dialog.isVisible():
+            if self._is_secondary_window_visible(dialog):
                 dialog.raise_()
 
     def _any_dialog_open(self) -> bool:
         for dialog in (
             getattr(self, "settings_dialog", None),
             getattr(self, "history_window", None),
+            getattr(self, "runtime_log_window", None),
         ):
-            if dialog is not None and dialog.isVisible():
+            if self._is_secondary_window_visible(dialog):
                 return True
         return False
 
@@ -2473,7 +2492,7 @@ class PetWindow(QWidget):
         return make_blurred_pixmap(cropped, radius=4.0, downscale=2)
 
     def _cursor_in_pet_region(self) -> bool:
-        # 设置/历史窗口打开时禁用输入栏浮现，避免盖住对话框。
+        # 普通副窗口打开时禁用输入栏浮现，避免盖住对话框。
         if self._any_dialog_open():
             return False
         if not self._input_bar_foreground_allowed():
@@ -2539,8 +2558,8 @@ class PetWindow(QWidget):
     def _input_bar_pinned(self) -> bool:
         """输入栏在以下任一情况保持常显，避免用户操作中途被收起。
 
-        注意：不把「对话进行中(active_interaction_id)」整体算进来；但等待模型回复时输入栏有状态提示
-        与呼吸动效，需要保持可见直到回复流程结束。
+        注意：不把「对话进行中(active_interaction_id)」和「等待模型回复」算进来；
+        思考中只更新输入区状态，不强制输入栏常显。
         """
         # 设置/历史窗口打开时不固定输入栏，配合 hover 禁用一起彻底收起。
         if self._any_dialog_open():
@@ -2550,7 +2569,6 @@ class PetWindow(QWidget):
         return (
             self.input_edit.hasFocus()
             or bool(self.input_edit.text().strip())
-            or bool(getattr(self, "reply_waiting_ui_active", False))
             # 用待确认动作状态而非 panel.isVisible()：输入栏卡片收起时 panel 的可见性会假阴性。
             or self.pending_tool_action is not None
         )
@@ -2955,24 +2973,27 @@ class PetWindow(QWidget):
                 "messages": summarize_messages(request_messages),
             },
         )
-        self.worker_thread = QThread(self)
-        self.worker = ChatWorker(
+        worker = ChatWorker(
             self.agent_runtime,
             request_messages,
             visual_observation_store=getattr(self, "visual_observation_store", None),
             visual_observation_jobs=visual_observation_jobs,
             interaction_id=self.active_interaction_id,
         )
-        self.worker.moveToThread(self.worker_thread)
-        self.worker_thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self._handle_progress_reply)
-        self.worker.finished.connect(self._handle_reply)
-        self.worker.failed.connect(self._handle_error)
-        self.worker.finished.connect(self.worker_thread.quit)
-        self.worker.failed.connect(self.worker_thread.quit)
-        self.worker.cancelled.connect(self.worker_thread.quit)
-        self.worker_thread.finished.connect(self._cleanup_worker)
-        self.worker_thread.start()
+        self.resource_manager.spawn_qt_worker(
+            worker,
+            parent=self,
+            owner=self,
+            thread_attr="worker_thread",
+            worker_attr="worker",
+            signal_bindings=[
+                (worker.progress, self._handle_progress_reply),
+                (worker.finished, self._handle_reply),
+                (worker.failed, self._handle_error),
+            ],
+            quit_on=[worker.finished, worker.failed, worker.cancelled],
+            on_finished=self._cleanup_worker,
+        )
         self._log_interaction_stage("chat_worker_started")
 
     @Slot(object)
@@ -3302,22 +3323,20 @@ class PetWindow(QWidget):
             or self.screen_observation_encode_thread is not None
         ):
             return False
-        thread = QThread(self)
         worker = ScreenObservationEncodeWorker(captured, context)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._handle_screen_observation_encoded)
-        worker.failed.connect(self._handle_screen_observation_encode_failed)
-        worker.cancelled.connect(self._handle_screen_observation_encode_cancelled)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        worker.cancelled.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_screen_observation_encode_worker)
-        self.screen_observation_encode_thread = thread
-        self.screen_observation_encode_worker = worker
-        thread.start()
+        self.resource_manager.spawn_qt_worker(
+            worker,
+            parent=self,
+            owner=self,
+            thread_attr="screen_observation_encode_thread",
+            worker_attr="screen_observation_encode_worker",
+            signal_bindings=[
+                (worker.finished, self._handle_screen_observation_encoded),
+                (worker.failed, self._handle_screen_observation_encode_failed),
+                (worker.cancelled, self._handle_screen_observation_encode_cancelled),
+            ],
+            quit_on=[worker.finished, worker.failed, worker.cancelled],
+        )
         return True
 
     @Slot(object, object)
@@ -3369,10 +3388,9 @@ class PetWindow(QWidget):
             self.screen_observation_followup_in_progress = False
             self._resume_screen_observation_followup_cleanup()
 
-    @Slot()
-    def _cleanup_screen_observation_encode_worker(self) -> None:
-        self.screen_observation_encode_thread = None
-        self.screen_observation_encode_worker = None
+    def _retain_qobject_wrappers_until_deleted(self, *objects: QObject | None) -> None:
+        """委托资源管理器保留退役 wrapper，避开 Shiboken 双重析构窗口。"""
+        self.resource_manager.retain_wrappers(*objects)
 
     def _resume_screen_observation_followup_cleanup(self) -> None:
         if getattr(self, "_shutdown_in_progress", False):
@@ -3440,23 +3458,26 @@ class PetWindow(QWidget):
                 "cancelled": cancelled_action.tool_name if cancelled_action is not None else "",
             },
         )
-        self.worker_thread = QThread(self)
-        self.worker = ChatWorker(
+        worker = ChatWorker(
             self.agent_runtime,
             confirmed_action=confirmed_action,
             cancelled_action=cancelled_action,
             interaction_id=self.active_interaction_id,
         )
-        self.worker.moveToThread(self.worker_thread)
-        self.worker_thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self._handle_progress_reply)
-        self.worker.finished.connect(self._handle_action_reply)
-        self.worker.failed.connect(self._handle_error)
-        self.worker.finished.connect(self.worker_thread.quit)
-        self.worker.failed.connect(self.worker_thread.quit)
-        self.worker.cancelled.connect(self.worker_thread.quit)
-        self.worker_thread.finished.connect(self._cleanup_worker)
-        self.worker_thread.start()
+        self.resource_manager.spawn_qt_worker(
+            worker,
+            parent=self,
+            owner=self,
+            thread_attr="worker_thread",
+            worker_attr="worker",
+            signal_bindings=[
+                (worker.progress, self._handle_progress_reply),
+                (worker.finished, self._handle_action_reply),
+                (worker.failed, self._handle_error),
+            ],
+            quit_on=[worker.finished, worker.failed, worker.cancelled],
+            on_finished=self._cleanup_worker,
+        )
         self._log_interaction_stage("action_worker_started")
 
     @Slot(object)
@@ -3923,25 +3944,28 @@ class PetWindow(QWidget):
         self.active_reminder_id = reminder_id
         self.active_reminder_text = str(event.payload.get("text", ""))
         self._set_busy(True)
-        self.worker_thread = QThread(self)
-        self.worker = EventWorker(
+        worker = EventWorker(
             self.agent_runtime,
             event,
             interaction_id=self.active_interaction_id,
         )
-        self.worker.visual_observation_store = getattr(self, "visual_observation_store", None)
-        self.worker.visual_observation_jobs = getattr(self, "pending_event_visual_observation_jobs", [])
+        worker.visual_observation_store = getattr(self, "visual_observation_store", None)
+        worker.visual_observation_jobs = getattr(self, "pending_event_visual_observation_jobs", [])
         self.pending_event_visual_observation_jobs = []
-        self.worker.moveToThread(self.worker_thread)
-        self.worker_thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self._handle_progress_reply)
-        self.worker.finished.connect(self._handle_event_reply)
-        self.worker.failed.connect(self._handle_event_error)
-        self.worker.finished.connect(self.worker_thread.quit)
-        self.worker.failed.connect(self.worker_thread.quit)
-        self.worker.cancelled.connect(self.worker_thread.quit)
-        self.worker_thread.finished.connect(self._cleanup_worker)
-        self.worker_thread.start()
+        self.resource_manager.spawn_qt_worker(
+            worker,
+            parent=self,
+            owner=self,
+            thread_attr="worker_thread",
+            worker_attr="worker",
+            signal_bindings=[
+                (worker.progress, self._handle_progress_reply),
+                (worker.finished, self._handle_event_reply),
+                (worker.failed, self._handle_event_error),
+            ],
+            quit_on=[worker.finished, worker.failed, worker.cancelled],
+            on_finished=self._cleanup_worker,
+        )
         self._log_interaction_stage("event_worker_started")
 
     @Slot(object)
@@ -4109,12 +4133,6 @@ class PetWindow(QWidget):
                 "screen_observation_followup_in_progress": self.screen_observation_followup_in_progress,
             },
         )
-        if self.worker is not None:
-            self.worker.deleteLater()
-        if self.worker_thread is not None:
-            self.worker_thread.deleteLater()
-        self.worker = None
-        self.worker_thread = None
         if getattr(self, "_shutdown_in_progress", False):
             self.pending_screen_observation_messages = None
             self.pending_screen_observation_event = None
@@ -4180,8 +4198,6 @@ class PetWindow(QWidget):
             return
         if not self.memory_curation_settings.enabled:
             return
-        if self.pending_history_clear_after_curation:
-            return
         state = self.memory_curation_state.snapshot()
         if state.get("backfill_completed"):
             return
@@ -4233,17 +4249,20 @@ class PetWindow(QWidget):
         self.memory_curation_mode = mode
         self.memory_curation_target_history_count = target_history_count
         self.memory_curation_consumed_turns = consumed_turns
-        self.memory_curation_thread = QThread(self)
-        self.memory_curation_worker = MemoryCurationWorker(self.memory_curator, entries)
-        self.memory_curation_worker.moveToThread(self.memory_curation_thread)
-        self.memory_curation_thread.started.connect(self.memory_curation_worker.run)
-        self.memory_curation_worker.finished.connect(self._handle_memory_curation_finished)
-        self.memory_curation_worker.failed.connect(self._handle_memory_curation_failed)
-        self.memory_curation_worker.finished.connect(self.memory_curation_thread.quit)
-        self.memory_curation_worker.failed.connect(self.memory_curation_thread.quit)
-        self.memory_curation_worker.cancelled.connect(self.memory_curation_thread.quit)
-        self.memory_curation_thread.finished.connect(self._cleanup_memory_curation_worker)
-        self.memory_curation_thread.start()
+        worker = MemoryCurationWorker(self.memory_curator, entries)
+        self.resource_manager.spawn_qt_worker(
+            worker,
+            parent=self,
+            owner=self,
+            thread_attr="memory_curation_thread",
+            worker_attr="memory_curation_worker",
+            signal_bindings=[
+                (worker.finished, self._handle_memory_curation_finished),
+                (worker.failed, self._handle_memory_curation_failed),
+            ],
+            quit_on=[worker.finished, worker.failed, worker.cancelled],
+            on_finished=self._cleanup_memory_curation_worker,
+        )
 
     @Slot(object)
     def _handle_memory_curation_finished(self, result: MemoryCurationResult) -> None:
@@ -4260,25 +4279,6 @@ class PetWindow(QWidget):
                 "consumed_turns": self.memory_curation_consumed_turns,
             },
         )
-        if mode == "history_clear":
-            if result.processed_entries > 0 and result.returned == 0:
-                show_themed_warning(
-                    self,
-                    "整理失败",
-                    "记忆整理没有写入任何结果，已保留聊天历史。请检查日志后再重试。",
-                )
-                return
-            try:
-                self.history_store.clear()
-                self.memory_curation_state.mark_history_cleared()
-            except OSError as exc:
-                show_themed_warning(self, "清空失败", f"记忆已整理，但清空历史失败：{exc}")
-            else:
-                if self.history_window is not None:
-                    self.history_window.refresh()
-                show_themed_information(self, "整理完成", result.summary())
-            return
-
         self.memory_curation_state.mark_processed(
             self.memory_curation_target_history_count,
             consumed_turns=self.memory_curation_consumed_turns,
@@ -4297,50 +4297,15 @@ class PetWindow(QWidget):
                 "error": message,
             },
         )
-        if self.memory_curation_mode == "history_clear":
-            show_themed_warning(self, "整理失败", f"历史没有清空，原因：{message}")
 
     @Slot()
     def _cleanup_memory_curation_worker(self) -> None:
-        if self.memory_curation_worker is not None:
-            self.memory_curation_worker.deleteLater()
-        if self.memory_curation_thread is not None:
-            self.memory_curation_thread.deleteLater()
-        self.memory_curation_worker = None
-        self.memory_curation_thread = None
         self.memory_curation_mode = ""
         self.memory_curation_target_history_count = 0
         self.memory_curation_consumed_turns = 0
         if getattr(self, "_shutdown_in_progress", False):
-            self.pending_history_clear_after_curation = False
             return
-        if self.pending_history_clear_after_curation:
-            self.pending_history_clear_after_curation = False
-            if self._start_pending_history_clear_after_curation():
-                return
-        if self.history_window is not None:
-            self.history_window.set_memory_save_busy(False)
         QTimer.singleShot(0, self._maybe_start_auto_memory_curation)
-
-    def _start_pending_history_clear_after_curation(self) -> bool:
-        if not self._memory_curation_can_start():
-            return False
-        entries = self.history_store.load()
-        if not entries:
-            if self.history_window is not None:
-                self.history_window.refresh()
-            return False
-        if not self._memory_store_ready_for_history_clear():
-            self._show_memory_not_ready_for_history_clear()
-            return False
-        self._reset_memory_curation_cache_for_history_clear()
-        self._start_memory_curation(
-            entries,
-            mode="history_clear",
-            target_history_count=len(entries),
-            consumed_turns=self.memory_curation_state.pending_turns(),
-        )
-        return self.memory_curation_thread is not None
 
     @Slot(object)
     def apply_deferred_services(self, services: "DeferredStartupServices") -> None:
@@ -4572,19 +4537,21 @@ class PetWindow(QWidget):
             debug_log("TTS", "TTS 服务预热已在进行，跳过重复请求")
             return
 
-        thread = QThread(self)
         worker = TTSReadyWarmupWorker(provider)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.succeeded.connect(self._handle_tts_ready_warmup_succeeded)
-        worker.failed.connect(self._handle_tts_ready_warmup_failed)
-        worker.finished.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_tts_ready_warmup_worker)
-        self.tts_ready_warmup_thread = thread
-        self.tts_ready_warmup_worker = worker
-        thread.start()
+        self._tts_warmup_provider = provider
+        self.resource_manager.spawn_qt_worker(
+            worker,
+            parent=self,
+            owner=self,
+            thread_attr="tts_ready_warmup_thread",
+            worker_attr="tts_ready_warmup_worker",
+            signal_bindings=[
+                (worker.succeeded, self._handle_tts_ready_warmup_succeeded),
+                (worker.failed, self._handle_tts_ready_warmup_failed),
+            ],
+            quit_on=[worker.finished],
+            on_finished=self._cleanup_tts_ready_warmup_worker,
+        )
 
     @Slot(str)
     def _handle_tts_ready_warmup_succeeded(self, _message: str) -> None:
@@ -4600,8 +4567,14 @@ class PetWindow(QWidget):
 
     @Slot()
     def _cleanup_tts_ready_warmup_worker(self) -> None:
-        self.tts_ready_warmup_thread = None
-        self.tts_ready_warmup_worker = None
+        # 预热线程已结束(ensure_ready 必已返回),此刻补关之前因预热在途而推迟关闭的
+        # provider 才不会与预热线程并发拆解同一服务进程。
+        self._tts_warmup_provider = None
+        pending = self._tts_pending_provider_closes
+        self._tts_pending_provider_closes = []
+        for provider, keep_local_service in pending:
+            self._close_retired_tts_provider(provider, keep_local_service=keep_local_service)
+
 
     def _apply_startup_initializing_state(self) -> None:
         self.input_edit.setPlaceholderText(STARTUP_INITIALIZING_TEXT)
@@ -4832,19 +4805,15 @@ class PetWindow(QWidget):
             self.history_window = HistoryWindow(
                 self.history_store,
                 self.subtitle_language,
-                self._save_history_to_memory_and_clear,
                 self.theme_settings,
                 self,
             )
         self.history_window.set_subtitle_language(self.subtitle_language)
         self.history_window.set_theme_settings(self.theme_settings)
-        # 独立窗口：可最小化、有独立任务栏按钮；桌宠置顶时同步置顶以免被桌宠盖住。
-        _configure_secondary_window(
-            self.history_window,
-            keep_on_top=bool(getattr(self, "always_on_top_enabled", False)),
-        )
+        # 作为普通窗口打开：可最小化、有独立任务栏按钮，不置顶。
+        self._prepare_secondary_window(self.history_window)
         self.history_window.refresh()
-        _present_secondary_window(self.history_window)
+        self._present_registered_secondary_window(self.history_window)
 
     @Slot()
     def show_runtime_log(self) -> None:
@@ -4854,79 +4823,10 @@ class PetWindow(QWidget):
                 parent=self,
             )
         self.runtime_log_window.set_theme_settings(self.theme_settings)
-        # 独立窗口：可最小化、有独立任务栏按钮；桌宠置顶时同步置顶（与设置/历史窗口一致）。
-        _configure_secondary_window(
-            self.runtime_log_window,
-            keep_on_top=bool(getattr(self, "always_on_top_enabled", False)),
-        )
+        # 作为普通窗口打开：可最小化、有独立任务栏按钮、不置顶（与设置/历史窗口一致）。
+        self._prepare_secondary_window(self.runtime_log_window)
         self.runtime_log_window.refresh(reset=True)
-        _present_secondary_window(self.runtime_log_window)
-
-    def _save_history_to_memory_and_clear(self) -> None:
-        if self.memory_curation_thread is not None:
-            if self.memory_curation_mode in {"auto", "backfill"}:
-                self.pending_history_clear_after_curation = True
-                show_themed_information(
-                    self,
-                    "整理中",
-                    "当前正在自动整理记忆，结束后会继续清空并保存历史。",
-                )
-                return
-            show_themed_information(self, "整理中", "记忆整理已经在进行中，请稍后再试。")
-            if self.history_window is not None:
-                self.history_window.set_memory_save_busy(False)
-            return
-        if self.worker_thread is not None:
-            show_themed_information(self, "正在回复", "当前聊天还没处理完，稍后再整理历史。")
-            if self.history_window is not None:
-                self.history_window.set_memory_save_busy(False)
-            return
-        entries = self.history_store.load()
-        if not entries:
-            if self.history_window is not None:
-                self.history_window.set_memory_save_busy(False)
-                self.history_window.refresh()
-            return
-        if not self._memory_store_ready_for_history_clear():
-            self._show_memory_not_ready_for_history_clear()
-            if self.history_window is not None:
-                self.history_window.set_memory_save_busy(False)
-            return
-        self._reset_memory_curation_cache_for_history_clear()
-        self._start_memory_curation(
-            entries,
-            mode="history_clear",
-            target_history_count=len(entries),
-            consumed_turns=self.memory_curation_state.pending_turns(),
-        )
-
-    def _memory_store_ready_for_history_clear(self) -> bool:
-        is_ready = getattr(self.memory_store, "is_ready", None)
-        if not callable(is_ready):
-            return True
-        try:
-            return bool(is_ready())
-        except Exception as exc:  # noqa: BLE001
-            debug_log("Memory", "检查长期记忆就绪状态失败", {"error": str(exc)})
-            return False
-
-    def _show_memory_not_ready_for_history_clear(self) -> None:
-        message = getattr(self, "memory_status_last_message", "") or (
-            "长期记忆系统还在初始化。首次启动或覆盖更新后，"
-            "可能需要准备本地嵌入模型，请稍等就绪后再试。"
-        )
-        show_themed_information(self, "记忆初始化中", message)
-
-    def _reset_memory_curation_cache_for_history_clear(self) -> None:
-        reset_cache = getattr(self.memory_store, "reset_curation_cache", None)
-        if not callable(reset_cache):
-            return
-        try:
-            reset_counts = reset_cache()
-        except Exception as exc:  # noqa: BLE001
-            debug_log("Memory", "重置 mem0 整理缓存失败", {"error": str(exc)})
-            return
-        debug_log("Memory", "已重置 mem0 整理缓存", reset_counts)
+        self._present_registered_secondary_window(self.runtime_log_window)
 
     @Slot()
     def show_settings(self) -> None:
@@ -4977,15 +4877,17 @@ class PetWindow(QWidget):
             startup_settings=getattr(self, "startup_settings", StartupSettings()),
             bubble_settings=getattr(self, "bubble_settings", BubbleSettings()),
             backchannel_settings=getattr(self, "backchannel_settings", BackchannelSettings()),
+            runtime_loop_settings=getattr(
+                self.agent_runtime,
+                "runtime_loop_settings",
+                RuntimeLoopSettings(),
+            ),
             on_layout_preview=self._preview_layout,
+            memory_curation_settings=getattr(self, "memory_curation_settings", None),
         )
         self.settings_dialog = dialog
-        # 非模态打开：设置窗口开着时仍可正常点击/拖动桌宠。可最小化、有独立任务栏按钮；
-        # 桌宠置顶时同步置顶，避免设置窗口被置顶的桌宠盖住。
-        _configure_secondary_window(
-            dialog,
-            keep_on_top=bool(getattr(self, "always_on_top_enabled", False)),
-        )
+        # 非模态打开：设置窗口开着时仍可正常点击/拖动桌宠。可最小化、有独立任务栏按钮、不置顶。
+        self._prepare_secondary_window(dialog)
         # 记录打开前的立绘缩放与控制组布局，便于取消时回滚实时预览。
         original_layout = (
             self.portrait_scale_percent,
@@ -4994,13 +4896,10 @@ class PetWindow(QWidget):
             self.control_panel_vertical_offset,
             self.input_bar_offset,
         )
-        # 设置期间保持气泡与输入栏常显并停掉自动隐藏，方便实时观察调整效果。
+        # 设置期间保持气泡稳定，但隐藏输入栏，避免输入栏挡住设置窗口或跟设置抢层级。
         bubble_auto_hide = getattr(self, "bubble_auto_hide", None)
         if bubble_auto_hide is not None:
             bubble_auto_hide.notify_speaking()
-        input_bar_animator = getattr(self, "input_bar_animator", None)
-        if input_bar_animator is not None:
-            input_bar_animator.set_force_visible(True)
         # 非模态没有阻塞返回值，结果处理改由 finished 信号驱动；闭包捕获打开前状态用于回滚。
         dialog.finished.connect(
             lambda result: self._on_settings_dialog_finished(
@@ -5008,10 +4907,9 @@ class PetWindow(QWidget):
                 result,
                 original_layout,
                 bubble_auto_hide,
-                input_bar_animator,
             )
         )
-        _present_secondary_window(dialog)
+        self._present_registered_secondary_window(dialog)
 
     def _on_settings_dialog_finished(
         self,
@@ -5019,16 +4917,15 @@ class PetWindow(QWidget):
         dialog_result: int,
         original_layout: tuple[int, int, int, int, int],
         bubble_auto_hide: object,
-        input_bar_animator: object,
     ) -> None:
         """设置窗口关闭后的结果处理（原 exec() 之后的同步逻辑，迁移到非模态信号回调）。"""
         if getattr(self, "settings_dialog", None) is dialog:
             self.settings_dialog = None
+        self._unregister_secondary_window(dialog)
+        self._sync_secondary_window_state()
         # 关闭设置后恢复气泡自动隐藏计时与输入栏常规显隐。
         if bubble_auto_hide is not None:
             bubble_auto_hide.notify_settled()
-        if input_bar_animator is not None:
-            input_bar_animator.set_force_visible(False)
         if dialog_result != QDialog.DialogCode.Accepted:
             # 取消/关闭：回滚到打开前的立绘与控制组布局，撤销实时预览的改动。
             self._preview_layout(*original_layout)
@@ -5063,6 +4960,15 @@ class PetWindow(QWidget):
             dialog,
             "result_backchannel_settings",
             getattr(self, "backchannel_settings", BackchannelSettings()),
+        )
+        result_runtime_loop_settings = (
+            getattr(dialog, "result_runtime_loop_settings", None)
+            or getattr(self.agent_runtime, "runtime_loop_settings", RuntimeLoopSettings())
+        )
+        # result_memory_curation_settings 在用户未改动时可能为 None，用当前配置兜底。
+        result_memory_curation_settings = (
+            getattr(dialog, "result_memory_curation_settings", None)
+            or getattr(self, "memory_curation_settings", None)
         )
         result_screen_awareness_settings = getattr(
             dialog,
@@ -5102,6 +5008,7 @@ class PetWindow(QWidget):
             or result_theme_settings is None
             or result_subtitle_typing_interval_ms is None
             or result_reply_segment_pause_ms is None
+            or not isinstance(result_runtime_loop_settings, RuntimeLoopSettings)
         ):
             return
         if result_backchannel_settings is None or not isinstance(
@@ -5187,6 +5094,17 @@ class PetWindow(QWidget):
             )
             if callable(save_backchannel_settings):
                 save_backchannel_settings(result_backchannel_settings)
+            save_runtime_loop_settings = getattr(
+                self.settings_service,
+                "save_runtime_loop_settings",
+                None,
+            )
+            if callable(save_runtime_loop_settings):
+                save_runtime_loop_settings(result_runtime_loop_settings)
+            if result_memory_curation_settings is not None:
+                self.settings_service.save_memory_curation_settings(
+                    result_memory_curation_settings
+                )
         except (CharacterConfigError, OSError) as exc:
             show_themed_critical(self, "保存失败", f"无法保存设置：{exc}")
             return
@@ -5194,6 +5112,7 @@ class PetWindow(QWidget):
         if api_changed:
             self.api_client.update_settings(dialog.result_api_settings)
             self.memory_store.reload_api_settings(dialog.result_api_settings, wait=False)
+        self.agent_runtime.set_runtime_loop_settings(result_runtime_loop_settings)
         self._apply_layout_settings(
             portrait_scale_percent=dialog.result_portrait_scale_percent,
             control_panel_width=result_control_panel_width,
@@ -5207,6 +5126,8 @@ class PetWindow(QWidget):
             result_reply_segment_pause_ms,
         )
         self._apply_bubble_settings(result_bubble_settings)
+        if result_memory_curation_settings is not None:
+            self.memory_curation_settings = result_memory_curation_settings
         apply_theme_settings = getattr(self, "_apply_theme_settings", None)
         if callable(apply_theme_settings):
             apply_theme_settings(result_theme_settings)
@@ -5300,7 +5221,7 @@ class PetWindow(QWidget):
 
     def _activate_settings_dialog(self, dialog: SettingsDialog) -> None:
         """重复打开设置时激活已有窗口，避免托盘菜单创建多个设置页。"""
-        _present_secondary_window(dialog)
+        self._present_registered_secondary_window(dialog)
 
     @Slot(bool)
     def _toggle_chinese_subtitles(self, checked: bool) -> None:
@@ -5379,7 +5300,7 @@ class PetWindow(QWidget):
             return
 
         self._apply_window_flags()
-        if checked:
+        if checked and not bool(getattr(self, "_secondary_windows_suppress_topmost", False)):
             self.raise_()
         # 已打开的设置/历史/日志窗口需跟随桌宠置顶状态更新，否则桌宠置顶后会反盖住它们。
         self._sync_secondary_windows_topmost()
@@ -5434,6 +5355,37 @@ class PetWindow(QWidget):
         *,
         keep_local_service: bool = False,
     ) -> None:
+        # 先持有引用,避免 provider 在(可能推迟的)关闭前被 GC 回收。
+        self.retired_tts_providers.append(provider)
+        # 该 provider 的预热线程仍在途时不能立即 close():主线程 close() 与预热线程
+        # ensure_ready() 并发拆解同一本地服务进程会引发原生闪退。推迟到预热结束的
+        # _cleanup_tts_ready_warmup_worker 里补关,届时 ensure_ready 必已返回。
+        warmup_thread = getattr(self, "tts_ready_warmup_thread", None)
+        warmup_provider = getattr(self, "_tts_warmup_provider", None)
+        if warmup_thread is not None and provider is warmup_provider:
+            self._tts_pending_provider_closes.append((provider, keep_local_service))
+            debug_log(
+                "TTS",
+                "服务预热在途,推迟关闭旧 TTS Provider",
+                {
+                    "provider": type(provider).__name__,
+                    "keep_local_service": keep_local_service,
+                },
+            )
+            return
+        self._close_retired_tts_provider(provider, keep_local_service=keep_local_service)
+
+    def _close_retired_tts_provider(
+        self,
+        provider: TTSProvider,
+        *,
+        keep_local_service: bool = False,
+    ) -> None:
+        """实际拆解一个已退休的 provider(detach 本地服务 + close)。
+
+        调用方需保证此刻没有预热/请求线程正在该 provider 上并发拆解服务进程。
+        provider 的引用应已在 retired_tts_providers 中,本方法不重复登记。
+        """
         if keep_local_service:
             detach = getattr(provider, "detach_local_service", None)
             if callable(detach):
@@ -5460,7 +5412,6 @@ class PetWindow(QWidget):
                     "切换配置时关闭旧 TTS Provider 失败",
                     {"provider": type(provider).__name__, "error": str(exc)},
                 )
-        self.retired_tts_providers.append(provider)
 
     def _default_tts_settings(self) -> GPTSoVITSTTSSettings:
         if self.character_profile.voice is not None:
@@ -5681,6 +5632,125 @@ class PetWindow(QWidget):
             flags |= Qt.WindowType.WindowStaysOnTopHint
         return flags
 
+    def _prepare_secondary_window(self, window: QWidget) -> None:
+        """配置并登记普通副窗口，使其显示期间统一压低桌宠层级。"""
+        keep_on_top = bool(getattr(self, "always_on_top_enabled", False))
+        _configure_secondary_window(window, keep_on_top=keep_on_top)
+        self._register_secondary_window(window)
+
+    def _present_registered_secondary_window(self, window: QWidget) -> None:
+        """打开已登记的普通副窗口，并在显示前临时取消桌宠实际置顶。"""
+        self._set_secondary_windows_topmost_suppressed(True)
+        self._set_secondary_windows_input_bar_hidden(True)
+        _present_secondary_window(window)
+        self._sync_secondary_window_state()
+
+    def _register_secondary_window(self, window: QWidget) -> None:
+        registered = getattr(self, "_registered_secondary_windows", None)
+        if registered is None:
+            registered = set()
+            self._registered_secondary_windows = registered
+        if window in registered:
+            return
+        registered.add(window)
+        install_event_filter = getattr(window, "installEventFilter", None)
+        if callable(install_event_filter):
+            install_event_filter(self)
+
+    def _unregister_secondary_window(self, window: QWidget) -> None:
+        registered = getattr(self, "_registered_secondary_windows", None)
+        if registered is not None:
+            registered.discard(window)
+        remove_event_filter = getattr(window, "removeEventFilter", None)
+        if callable(remove_event_filter):
+            try:
+                remove_event_filter(self)
+            except RuntimeError:
+                pass
+
+    def _is_registered_secondary_window(self, window: object) -> bool:
+        registered = getattr(self, "_registered_secondary_windows", None)
+        return registered is not None and window in registered
+
+    def _sync_secondary_window_state(self) -> None:
+        has_visible_secondary_window = any(
+            self._is_secondary_window_visible(window)
+            for window in tuple(getattr(self, "_registered_secondary_windows", set()))
+        )
+        self._set_secondary_windows_topmost_suppressed(has_visible_secondary_window)
+        self._set_secondary_windows_input_bar_hidden(has_visible_secondary_window)
+        set_background_quiesced = getattr(
+            self,
+            "_set_secondary_windows_background_quiesced",
+            None,
+        )
+        if callable(set_background_quiesced):
+            set_background_quiesced(has_visible_secondary_window)
+
+    def _set_secondary_windows_background_quiesced(self, quiesced: bool) -> None:
+        """副窗口可见期间暂停桌宠后台 hover 轮询，关闭后恢复。
+
+        设置/历史/日志窗口打开时输入栏已被强制隐藏、hover 也不生效，此时轮询纯属
+        无谓的原生命中测试与重绘，会与副窗口（尤其设置里的下拉弹层）抢占合成器。
+        仅停/起轮询计时器，零视觉变化。
+        """
+        quiesced = bool(quiesced)
+        if quiesced == bool(getattr(self, "_secondary_windows_background_quiesced", False)):
+            return
+        self._secondary_windows_background_quiesced = quiesced
+        polling_enabled = not quiesced
+        for controller_attr in ("input_bar_animator", "bubble_auto_hide"):
+            controller = getattr(self, controller_attr, None)
+            set_polling_enabled = getattr(controller, "set_polling_enabled", None)
+            if callable(set_polling_enabled):
+                set_polling_enabled(polling_enabled)
+
+    def _is_secondary_window_visible(self, window: object | None) -> bool:
+        if window is None:
+            return False
+        is_visible = getattr(window, "isVisible", None)
+        if callable(is_visible):
+            try:
+                return bool(is_visible())
+            except RuntimeError:
+                return False
+        return bool(getattr(window, "visible", False))
+
+    def _set_secondary_windows_input_bar_hidden(self, hidden: bool) -> None:
+        """副窗口打开期间强制隐藏输入栏，避免输入区挡住副窗口。"""
+        hidden = bool(hidden)
+        if hidden == bool(getattr(self, "_secondary_windows_hide_input_bar", False)):
+            return
+        self._secondary_windows_hide_input_bar = hidden
+        input_bar_animator = getattr(self, "input_bar_animator", None)
+        set_force_hidden = getattr(input_bar_animator, "set_force_hidden", None)
+        if callable(set_force_hidden):
+            set_force_hidden(hidden)
+
+    def _set_secondary_windows_topmost_suppressed(self, suppressed: bool) -> None:
+        """副窗口存活期间临时取消桌宠原生置顶，关闭后按用户配置恢复。"""
+        suppressed = bool(suppressed)
+        if suppressed == bool(getattr(self, "_secondary_windows_suppress_topmost", False)):
+            return
+        self._secondary_windows_suppress_topmost = suppressed
+        sync_native_topmost = getattr(self, "_sync_native_topmost_state", None)
+        if callable(sync_native_topmost):
+            sync_native_topmost()
+        is_visible = getattr(self, "isVisible", None)
+        raise_window = getattr(self, "raise_", None)
+        if (
+            not suppressed
+            and bool(getattr(self, "always_on_top_enabled", False))
+            and callable(is_visible)
+            and is_visible()
+            and callable(raise_window)
+        ):
+            raise_window()
+
+    def _set_settings_window_topmost_suppressed(self, suppressed: bool) -> None:
+        """兼容旧调用：设置窗口也走统一副窗口置顶压低逻辑。"""
+        self._set_secondary_windows_topmost_suppressed(suppressed)
+
     def _apply_window_flags(self) -> None:
         was_visible = self.isVisible()
         self.setWindowFlags(self._window_flags())
@@ -5708,7 +5778,11 @@ class PetWindow(QWidget):
                 swp_no_size = 0x0001
                 swp_no_move = 0x0002
                 swp_no_activate = 0x0010
-                insert_after = hwnd_topmost if self.always_on_top_enabled else hwnd_notopmost
+                effective_topmost = bool(
+                    self.always_on_top_enabled
+                    and not bool(getattr(self, "_secondary_windows_suppress_topmost", False))
+                )
+                insert_after = hwnd_topmost if effective_topmost else hwnd_notopmost
                 flags = swp_no_size | swp_no_move | swp_no_activate
                 for window in self._topmost_sync_windows():
                     ctypes.windll.user32.SetWindowPos(
@@ -5721,7 +5795,11 @@ class PetWindow(QWidget):
         if sys.platform == "darwin":
             try:
                 for window in self._topmost_sync_windows():
-                    _set_macos_window_topmost(int(window.winId()), self.always_on_top_enabled)
+                    effective_topmost = bool(
+                        self.always_on_top_enabled
+                        and not bool(getattr(self, "_secondary_windows_suppress_topmost", False))
+                    )
+                    _set_macos_window_topmost(int(window.winId()), effective_topmost)
                 self._stack_renderer_overlay_below()
             except Exception as exc:  # noqa: BLE001
                 debug_log("PetWindow", "同步 macOS 原生置顶状态失败", {"error": str(exc)})
@@ -6580,7 +6658,8 @@ def _configure_secondary_window(window, *, keep_on_top: bool = False) -> None:  
     # 窗口的 Python 引用由调用方持有（设置窗口靠 self.settings_dialog，历史/日志窗口靠
     # self.history_window / self.runtime_log_window），脱离 Qt 对象树后生命周期仍安全。
     set_parent = getattr(window, "setParent", None)
-    if callable(set_parent) and window.parent() is not None:
+    parent = getattr(window, "parent", None)
+    if callable(set_parent) and callable(parent) and parent() is not None:
         set_parent(None)
     set_flag = getattr(window, "setWindowFlag", None)
     if callable(set_flag):

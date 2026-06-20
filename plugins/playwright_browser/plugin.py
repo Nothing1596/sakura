@@ -15,6 +15,9 @@ class PlaywrightBrowserPlugin(PluginBase):
     plugin_id = "playwright_browser"
     plugin_version = "1.0.0"
 
+    def __init__(self) -> None:
+        self._resource_cleanup_registered = False
+
     def initialize(
         self,
         register: PluginCapabilityRegistry,
@@ -22,6 +25,11 @@ class PlaywrightBrowserPlugin(PluginBase):
     ) -> None:
         plugin_root = context.plugin_root
         browser.set_plugin_root(plugin_root)
+        resources = getattr(getattr(context, "services", None), "resources", None)
+        register_cleanup = getattr(resources, "register_cleanup", None)
+        if callable(register_cleanup):
+            register_cleanup(browser.shutdown_browser, label="browser", shutdown_order=650)
+            self._resource_cleanup_registered = True
         _register_tools(register)
         register.register_settings_panel(
             SettingsPanelContribution(
@@ -33,7 +41,8 @@ class PlaywrightBrowserPlugin(PluginBase):
         )
 
     def shutdown(self) -> None:
-        browser.shutdown_browser()
+        if not self._resource_cleanup_registered:
+            browser.shutdown_browser()
 
 
 def _register_tools(register: PluginCapabilityRegistry) -> None:

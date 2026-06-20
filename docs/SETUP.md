@@ -10,7 +10,7 @@
 
 | 文件名 | 是什么 | 适合谁下载 |
 |:-:|---|---|
-| `sakura-v0.9.x-windows-x64.zip` | Windows 完整包，包含项目文件和 `runtime` | **Windows 新手首选** |
+| `sakura-v0.9.x-windows-x64.zip` | Windows 完整包，包含项目文件和 `runtime` | Windows 新手推荐 |
 | `runtime-windows-x64.zip` | 只有 Windows 预置 Python 运行环境 | 拉源码、缺 `runtime` 的用户 |
 | `sakura.char` | 默认 Sakura 角色包（含语音权重） | 想使用默认角色的用户 |
 | `models--sentence-transformers--all-MiniLM-L6-v2.zip` | 长期记忆所需的本地向量模型 | 首次启动自动下载失败时手动导入 |
@@ -57,7 +57,7 @@
 
 进入**模型**页面，填写 `Base URL`、`API Key` 和模型名称。新手或第一次配置中转站的用户，按 **[API 配置教程](API_CONFIG.md)** 操作。
 
-> **必须选择支持多模态（图像识别）的模型**，否则屏幕观察等功能会报错。推荐 Gemini Flash 系列，不建议使用 DeepSeek 系列作为 Sakura 主模型。
+> 必须选择支持多模态（图像识别）的模型，否则屏幕观察等功能会报错。推荐 Gemini Flash 系列。DeepSeek 系列作为主模型时，截图识别等功能会报错。
 
 填写完成后点击**检测模型**获取可用模型列表，再点击**测试 API** 验证连通性。
 

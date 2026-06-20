@@ -2,7 +2,7 @@
 
 # Sakura Desktop Pet
 
-A desktop companion Agent — chats, changes expressions, speaks, remembers what you allow, and helps with tasks after confirmation. It is not just a "desktop pet + chat" but a desktop companion Agent.
+A desktop companion Agent — chats, changes expressions, speaks, remembers what you allow, and helps with tasks after confirmation.
 
 ![Sakura Preview](../assets/sakura_01.png)
 
@@ -54,7 +54,7 @@ llm:
 
 ## Acknowledgements and Open Source License Notice
 
-Sakura Desktop Pet is inspired by several open source projects across desktop Agents, desktop companion interactions, and plugin ecosystems. Special thanks to the [Shinsekai](https://github.com/RachelForster/Shinsekai) project and its plugin ecosystem for exploring desktop companions, character interaction, and plugin extensibility, which informed Sakura's compatibility design and feature evolution.
+Sakura Desktop Pet is inspired by open source projects in desktop Agents, companion interactions, and plugin ecosystems. Special thanks to the [Shinsekai](https://github.com/RachelForster/Shinsekai) project and its plugin ecosystem for exploring desktop companions, character interaction, and plugin extensibility, which informed Sakura's compatibility design and feature set.
 
 This project is open source under the MIT License. You may freely use, copy, modify, merge, publish, distribute, sublicense, or sell copies of this project's code, provided that you retain this project's copyright notice and MIT License text.
 

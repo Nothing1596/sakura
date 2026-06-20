@@ -108,6 +108,9 @@ class StoragePaths:
     def memory_store(self) -> Path:
         return self._data / "memory.json"
 
+    def memory_core_profiles(self) -> Path:
+        return self.memory_dir / "core_profiles.json"
+
     def memory_curation_state(self) -> Path:
         return self._data / "memory_curation_state.json"
 
@@ -143,6 +146,10 @@ class StoragePaths:
 
     def runtime_log_file(self) -> Path:
         return self.logs_dir / "sakura-runtime.log"
+
+    def crash_log_file(self) -> Path:
+        # faulthandler/未捕获异常的崩溃留痕；原生段错误不会进 runtime 日志,单列一份。
+        return self.logs_dir / "sakura-crash.log"
 
     def tts_service_log(self, provider: str) -> Path:
         safe_provider = re.sub(r"[^A-Za-z0-9_.-]+", "-", provider.strip().lower()) or "tts"

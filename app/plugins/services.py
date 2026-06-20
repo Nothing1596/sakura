@@ -13,9 +13,17 @@ manager、LLM client 等），这里提供一组安全的门面服务。
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from app.core.debug_log import debug_log
+from app.core.resource_manager import (
+    DEFAULT_THREAD_SHUTDOWN_WAIT_MS,
+    ResourceRegistry,
+    ServiceResource,
+    ThreadGroupResource,
+)
 
 
 class PluginUIService:
@@ -137,6 +145,172 @@ class PluginInputService:
             debug_log("PluginInputService", "set_input_text 失败", {"error": str(exc)})
 
 
+class PluginResourceService:
+    """插件可登记的资源门面，由宿主 ResourceRegistry 统一关闭。"""
+
+    def __init__(self, registry: ResourceRegistry | None = None) -> None:
+        self._registry = registry or ResourceRegistry()
+        self._lock = threading.RLock()
+        self._plugin_resources: dict[str, list[Any]] = {}
+
+    def set_resource_registry(self, registry: ResourceRegistry) -> None:
+        """宿主装配 shared registry；应在插件加载前调用。"""
+        with self._lock:
+            self._registry = registry
+
+    def for_plugin(self, plugin_id: str) -> "ScopedPluginResourceService":
+        """返回绑定单个插件 ID 的窄资源门面。"""
+        return ScopedPluginResourceService(self, plugin_id)
+
+    def register_cleanup(
+        self,
+        plugin_id: str,
+        cleanup: Callable[[], Any],
+        *,
+        label: str = "cleanup",
+        shutdown_order: int = 650,
+    ) -> ServiceResource:
+        """登记插件清理函数，关闭时由 registry 调度。"""
+        resource = self._registry.track_service(
+            stop=cleanup,
+            label=self._resource_label(plugin_id, label),
+            shutdown_order=shutdown_order,
+        )
+        self._remember(plugin_id, resource)
+        return resource
+
+    def track_thread_group(
+        self,
+        plugin_id: str,
+        *,
+        cancel: Callable[[], None] | None = None,
+        label: str = "threads",
+        shutdown_order: int = 700,
+    ) -> ThreadGroupResource:
+        """为插件创建受管线程组，插件只拿到线程组资源本身。"""
+        resource = self._registry.track_thread_group(
+            cancel=cancel,
+            label=self._resource_label(plugin_id, label),
+            shutdown_order=shutdown_order,
+        )
+        self._remember(plugin_id, resource)
+        return resource
+
+    def register_executor(
+        self,
+        plugin_id: str,
+        executor: ThreadPoolExecutor,
+        *,
+        label: str = "executor",
+        shutdown_order: int = 700,
+    ) -> ServiceResource:
+        """登记 ThreadPoolExecutor，关闭时取消未开始任务并不阻塞 UI。"""
+
+        def shutdown_executor() -> None:
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                executor.shutdown(wait=False)
+
+        return self.register_cleanup(
+            plugin_id,
+            shutdown_executor,
+            label=label,
+            shutdown_order=shutdown_order,
+        )
+
+    def stop_plugin(
+        self,
+        plugin_id: str,
+        timeout_ms: int = DEFAULT_THREAD_SHUTDOWN_WAIT_MS,
+    ) -> None:
+        """停止某个插件登记过的全部资源；幂等。"""
+        with self._lock:
+            resources = list(reversed(self._plugin_resources.pop(plugin_id, [])))
+        for resource in resources:
+            stop = getattr(resource, "stop", None)
+            if not callable(stop):
+                continue
+            try:
+                stop(timeout_ms)
+            except Exception as exc:  # noqa: BLE001
+                debug_log(
+                    "PluginResourceService",
+                    "插件资源关闭失败",
+                    {"plugin_id": plugin_id, "error": str(exc)},
+                )
+
+    def _remember(self, plugin_id: str, resource: Any) -> None:
+        with self._lock:
+            self._plugin_resources.setdefault(plugin_id, []).append(resource)
+
+    @staticmethod
+    def _resource_label(plugin_id: str, label: str) -> str:
+        label_text = str(label or "resource").strip() or "resource"
+        return f"plugin:{plugin_id}:{label_text}"
+
+
+class ScopedPluginResourceService:
+    """绑定插件 ID 后暴露给插件的资源登记接口。"""
+
+    def __init__(self, parent: PluginResourceService, plugin_id: str) -> None:
+        self._parent = parent
+        self._plugin_id = plugin_id
+
+    def register_cleanup(
+        self,
+        cleanup: Callable[[], Any],
+        *,
+        label: str = "cleanup",
+        shutdown_order: int = 650,
+    ) -> ServiceResource:
+        return self._parent.register_cleanup(
+            self._plugin_id,
+            cleanup,
+            label=label,
+            shutdown_order=shutdown_order,
+        )
+
+    def track_thread_group(
+        self,
+        *,
+        cancel: Callable[[], None] | None = None,
+        label: str = "threads",
+        shutdown_order: int = 700,
+    ) -> ThreadGroupResource:
+        return self._parent.track_thread_group(
+            self._plugin_id,
+            cancel=cancel,
+            label=label,
+            shutdown_order=shutdown_order,
+        )
+
+    def register_executor(
+        self,
+        executor: ThreadPoolExecutor,
+        *,
+        label: str = "executor",
+        shutdown_order: int = 700,
+    ) -> ServiceResource:
+        return self._parent.register_executor(
+            self._plugin_id,
+            executor,
+            label=label,
+            shutdown_order=shutdown_order,
+        )
+
+
+class ScopedPluginServices:
+    """单插件视角的宿主服务集合。"""
+
+    def __init__(self, services: "PluginServices", plugin_id: str) -> None:
+        self.ui = services.ui
+        self.tts = services.tts
+        self.agent = services.agent
+        self.input = services.input
+        self.resources = services.resources.for_plugin(plugin_id)
+
+
 class PluginServices:
     """聚合宿主服务门面，作为 ``context.services`` 暴露给插件。"""
 
@@ -145,6 +319,7 @@ class PluginServices:
         self.tts = PluginTTSService()
         self.agent = PluginAgentService()
         self.input = PluginInputService()
+        self.resources = PluginResourceService()
 
     def set_backends(
         self,
@@ -163,3 +338,11 @@ class PluginServices:
             self.agent.set_passive_reply_sink(passive_reply_sink)
         if input_text_sink is not None:
             self.input.set_input_text_sink(input_text_sink)
+
+    def set_resource_registry(self, registry: ResourceRegistry) -> None:
+        """宿主注入 App 级资源域。"""
+        self.resources.set_resource_registry(registry)
+
+    def for_plugin(self, plugin_id: str) -> ScopedPluginServices:
+        """构造绑定插件 ID 的服务视图，避免插件看到全局资源门面。"""
+        return ScopedPluginServices(self, plugin_id)

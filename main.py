@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import sys
 import ctypes
+import faulthandler
+import traceback
+from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot, QtMsgType, qInstallMessageHandler
+from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot, QtMsgType, qInstallMessageHandler
 from PySide6.QtGui import QGuiApplication, QPalette, QColor
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QStyleFactory
 
@@ -18,10 +21,12 @@ from app.core.cancellation import CancellationToken, OperationCancelled
 from app.core.debug_log import debug_log
 from app.core.instance import SingleInstanceGuard
 from app.core.selfcheck import run_startup_self_check
+from app.storage.paths import StoragePaths
 from app.config.character_loader import CharacterConfigError
 from app.config.settings_service import AppSettingsService, StartupSettings
 from app.agent.mcp import MCPRuntimeSettings
 from app.agent.proactive_care import ProactiveCareSettings
+from app.agent.runtime_limits import RuntimeLoopSettings
 from app.platforms.launch_at_login import (
     LaunchAtLoginError,
     ensure_launch_at_login_state,
@@ -46,6 +51,56 @@ from app.voice.tts_bundle import (
 
 
 BASE_DIR = Path(__file__).resolve().parent
+
+# 保活 faulthandler 的写入句柄,避免被 GC 关闭后崩溃时写向失效 fd。
+_CRASH_LOG_HANDLE = None
+
+
+def _enable_crash_diagnostics(base_dir: Path) -> None:
+    """启用原生崩溃与未捕获异常的留痕（失败不阻断启动）。
+
+    - faulthandler：段错误时把**所有线程**的原生栈写入 data/logs/sakura-crash.log。
+      原生崩溃（如 TTS provider 与后台预热线程并发拆解服务进程）不会进 runtime
+      日志，这是定位「保存设置闪退」一类问题的唯一手段。
+    - sys.excepthook：未捕获的 Python 异常同时落 crash 日志与 runtime 日志，
+      避免在 PySide6 槽函数里被静默吞掉。
+    """
+    global _CRASH_LOG_HANDLE
+    try:
+        crash_log_path = StoragePaths(base_dir).crash_log_file()
+        crash_log_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = crash_log_path.open("a", encoding="utf-8", buffering=1)
+        handle.write(
+            f"\n===== Sakura 启动 "
+            f"{datetime.now().astimezone().isoformat(timespec='seconds')} =====\n"
+        )
+        handle.flush()
+        _CRASH_LOG_HANDLE = handle
+        faulthandler.enable(file=handle, all_threads=True)
+    except Exception as exc:  # noqa: BLE001
+        debug_log("Startup", "启用 faulthandler 失败", {"error": str(exc)})
+
+    previous_hook = sys.excepthook
+
+    def _log_uncaught(exc_type, exc_value, exc_tb):  # type: ignore[no-untyped-def]
+        if issubclass(exc_type, KeyboardInterrupt):
+            previous_hook(exc_type, exc_value, exc_tb)
+            return
+        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        debug_log("Crash", "未捕获异常", {"error": text})
+        handle = _CRASH_LOG_HANDLE
+        if handle is not None:
+            try:
+                handle.write(
+                    f"\n[{datetime.now().astimezone().isoformat(timespec='seconds')}] "
+                    f"未捕获异常\n{text}\n"
+                )
+                handle.flush()
+            except Exception:  # noqa: BLE001
+                pass
+        previous_hook(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _log_uncaught
 
 
 def _qt_message_handler(msg_type: QtMsgType, context: object, msg: str) -> None:
@@ -305,6 +360,7 @@ class TTSBundleMigrationDialog(QDialog):
 
 
 def main() -> int:
+    _enable_crash_diagnostics(BASE_DIR)
     qInstallMessageHandler(_qt_message_handler)
     _configure_windows_high_dpi()
     app = QApplication(sys.argv)
@@ -417,6 +473,7 @@ def _open_first_run_settings(base_dir: Path) -> AppContext | None:
         proactive_care_settings=settings_service.load_proactive_care_settings(),
         mcp_settings=settings_service.load_mcp_runtime_settings(),
         debug_log_settings=settings_service.load_debug_log_settings(),
+        runtime_loop_settings=settings_service.load_runtime_loop_settings(),
         portrait_scale_percent=PORTRAIT_SCALE_DEFAULT_PERCENT,
         subtitle_typing_interval_ms=SPEECH_TYPING_INTERVAL_MS,
         reply_segment_pause_ms=REPLY_SEGMENT_PAUSE_MS,
@@ -443,6 +500,7 @@ def _open_first_run_settings(base_dir: Path) -> AppContext | None:
         or dialog.result_character_id is None
         or dialog.result_proactive_care_settings is None
         or dialog.result_mcp_settings is None
+        or dialog.result_runtime_loop_settings is None
         or dialog.result_debug_log_settings is None
         or dialog.result_startup_settings is None
         or dialog.result_portrait_scale_percent is None
@@ -462,6 +520,9 @@ def _open_first_run_settings(base_dir: Path) -> AppContext | None:
         dialog.result_proactive_care_settings or ProactiveCareSettings()
     )
     settings_service.save_mcp_runtime_settings(dialog.result_mcp_settings or MCPRuntimeSettings())
+    settings_service.save_runtime_loop_settings(
+        dialog.result_runtime_loop_settings or RuntimeLoopSettings()
+    )
     settings_service.save_debug_log_settings(dialog.result_debug_log_settings)
     if dialog.result_startup_settings != startup_settings:
         _apply_launch_at_login_settings(base_dir, dialog.result_startup_settings)
@@ -492,25 +553,24 @@ def _start_tts_migration_or_deferred(base_dir: Path, pet_window: PetWindow) -> N
         return
 
     dialog = TTSBundleMigrationDialog(base_dir, pet_window)
-    thread = QThread(pet_window)
     worker = TTSBundleMigrationWorker(migrations)
-    worker.moveToThread(thread)
     pet_window.tts_migration_dialog = dialog
-    pet_window.tts_migration_thread = thread
-    pet_window.tts_migration_worker = worker
-
-    thread.started.connect(worker.run)
-    worker.current_item.connect(dialog.set_current_item)
-    worker.progress.connect(dialog.set_progress)
-    worker.finished.connect(dialog.finish_migration)
-    worker.finished.connect(thread.quit)
-    thread.finished.connect(worker.deleteLater)
-    thread.finished.connect(thread.deleteLater)
-    thread.finished.connect(lambda: setattr(pet_window, "tts_migration_thread", None))
-    thread.finished.connect(lambda: setattr(pet_window, "tts_migration_worker", None))
-
     dialog.show()
-    thread.start()
+    # register=False：迁移是启动期一次性任务，退出时不应被 stop_all 打断。
+    pet_window.resource_manager.spawn_qt_worker(
+        worker,
+        parent=pet_window,
+        owner=pet_window,
+        thread_attr="tts_migration_thread",
+        worker_attr="tts_migration_worker",
+        signal_bindings=[
+            (worker.current_item, dialog.set_current_item),
+            (worker.progress, dialog.set_progress),
+            (worker.finished, dialog.finish_migration),
+        ],
+        quit_on=[worker.finished],
+        register=False,
+    )
 
 
 def _pending_startup_tts_migrations(base_dir: Path) -> list[TTSBundleMigration]:
@@ -567,22 +627,19 @@ def _normalize_migrated_tts_config(base_dir: Path) -> None:
 
 
 def _start_deferred_startup(base_dir: Path, pet_window: PetWindow) -> None:
-    thread = QThread(pet_window)
     worker = DeferredStartupWorker(base_dir, pet_window.context)
-    worker.moveToThread(thread)
-    pet_window.deferred_startup_thread = thread
-    pet_window.deferred_startup_worker = worker
-    thread.started.connect(worker.run)
-    worker.finished.connect(pet_window.apply_deferred_services)
-    worker.failed.connect(pet_window.handle_deferred_startup_failed)
-    worker.finished.connect(thread.quit)
-    worker.failed.connect(thread.quit)
-    worker.cancelled.connect(thread.quit)
-    thread.finished.connect(worker.deleteLater)
-    thread.finished.connect(thread.deleteLater)
-    thread.finished.connect(lambda: setattr(pet_window, "deferred_startup_thread", None))
-    thread.finished.connect(lambda: setattr(pet_window, "deferred_startup_worker", None))
-    thread.start()
+    pet_window.resource_manager.spawn_qt_worker(
+        worker,
+        parent=pet_window,
+        owner=pet_window,
+        thread_attr="deferred_startup_thread",
+        worker_attr="deferred_startup_worker",
+        signal_bindings=[
+            (worker.finished, pet_window.apply_deferred_services),
+            (worker.failed, pet_window.handle_deferred_startup_failed),
+        ],
+        quit_on=[worker.finished, worker.failed, worker.cancelled],
+    )
 
 if __name__ == "__main__":
     raise SystemExit(main())

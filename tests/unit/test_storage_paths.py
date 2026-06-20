@@ -108,6 +108,7 @@ class TestStoragePathsSnapshot:
         assert self.paths.chat_history_for("sakura") == self.data / "chat_history" / "sakura.jsonl"
         assert self.paths.legacy_chat_history() == self.data / "chat_history.jsonl"
         assert self.paths.memory_store() == self.data / "memory.json"
+        assert self.paths.memory_core_profiles() == self.data / "memory" / "core_profiles.json"
         assert self.paths.memory_curation_state() == self.data / "memory_curation_state.json"
         assert self.paths.reminders_store() == self.data / "reminders.json"
         assert self.paths.tasks_store() == self.data / "tasks.json"

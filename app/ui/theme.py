@@ -454,6 +454,15 @@ QWidget#settingsNavPage {{
     border: 1px solid {rgba(theme.border_color, 138)};
     border-radius: 8px;
 }}
+QScrollArea#memoryEditorPanel {{
+    background: {rgba(theme.input_background_color, 126)};
+    border: 1px solid {rgba(theme.border_color, 126)};
+    border-radius: 8px;
+}}
+QScrollArea#memoryEditorPanel > QWidget,
+QWidget#memoryEditorContent {{
+    background: transparent;
+}}
 QScrollArea#settingsScrollArea {{
     background: transparent;
     border: none;
@@ -675,6 +684,16 @@ QPushButton:disabled {{
     background: {rgba(theme.primary_color, 107)};
     border: 1px solid {rgba(theme.border_color, 115)};
     color: rgba(255, 255, 255, 0.76);
+}}
+QToolTip {{
+    background: {theme.panel_background_color};
+    color: {theme.text_color};
+    border: 1px solid {rgba(theme.border_color, 190)};
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-family: "Microsoft YaHei", "Yu Gothic UI", sans-serif;
+    font-size: 13px;
+    font-weight: normal;
 }}
 """
 

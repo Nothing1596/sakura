@@ -30,8 +30,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.agent.memory import EmbeddingModelImportResult, MemoryStore
+from app.agent.memory import (
+    DEFAULT_MEMORY_CONFIDENCE,
+    DEFAULT_MEMORY_IMPORTANCE,
+    DEFAULT_MEMORY_LAYER,
+    DEFAULT_MEMORY_SOURCE,
+    MEMORY_LAYER_LABELS,
+    MEMORY_LAYERS,
+    EmbeddingModelImportResult,
+    MemoryStore,
+)
 from app.agent.mcp import MCPRuntimeSettings
+from app.agent.runtime_limits import RuntimeLoopSettings, normalize_runtime_loop_settings
 from app.backchannel.model_cache import (
     DEFAULT_BACKCHANNEL_EMBEDDING_MODEL,
     BackchannelModelImportResult,
@@ -156,8 +166,10 @@ class SettingsDialog(QDialog):
         startup_settings: StartupSettings | None = None,
         bubble_settings: BubbleSettings | None = None,
         backchannel_settings: BackchannelSettings | None = None,
+        runtime_loop_settings: RuntimeLoopSettings | None = None,
         on_layout_preview: Callable[[int, int, int, int, int], None] | None = None,
         proactive_care_settings: ScreenAwarenessSettings | None = None,
+        memory_curation_settings=None,
     ) -> None:
         super().__init__(parent)
         if screen_awareness_settings is None:
@@ -167,6 +179,11 @@ class SettingsDialog(QDialog):
         self.startup_settings = startup_settings or StartupSettings()
         self.bubble_settings = bubble_settings or BubbleSettings()
         self.backchannel_settings = (backchannel_settings or BackchannelSettings()).normalized()
+        self.runtime_loop_settings = normalize_runtime_loop_settings(runtime_loop_settings)
+        # 延迟导入避免与 app.agent 形成导入环（与 settings_service 一致）。
+        from app.agent.memory_curator import MemoryCurationSettings as _MemoryCurationSettings
+
+        self.memory_curation_settings = memory_curation_settings or _MemoryCurationSettings()
         self._initial_api_settings = api_settings
         self._initial_tts_settings = tts_settings
         self._initial_character_id = current_character.id if current_character is not None else None
@@ -218,10 +235,12 @@ class SettingsDialog(QDialog):
         self.result_screen_awareness_settings: ScreenAwarenessSettings | None = None
         self.result_proactive_care_settings: ScreenAwarenessSettings | None = None
         self.result_mcp_settings: MCPRuntimeSettings | None = None
+        self.result_runtime_loop_settings: RuntimeLoopSettings | None = None
         self.result_debug_log_settings: DebugLogSettings | None = None
         self.result_startup_settings: StartupSettings | None = None
         self.result_bubble_settings: BubbleSettings | None = None
         self.result_backchannel_settings: BackchannelSettings | None = None
+        self.result_memory_curation_settings = None
         self.result_theme_settings: ThemeSettings | None = None
         self.result_theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self.result_plugin_config_changed = False
@@ -249,6 +268,13 @@ class SettingsDialog(QDialog):
         self._theme_ai_enabled = self.theme_settings.ai_enabled
         self._theme_write_mode: Literal["unchanged", "manual", "ai", "reset", "character"] = "unchanged"
         self._syncing_theme_controls = False
+        # 上次实际应用到对话框的 QSS,用于跳过内容未变的 setStyleSheet(避免无谓 re-polish)。
+        self._applied_dialog_stylesheet: str | None = None
+        # 颜色输入防抖:连续键入只在停顿后重建一次整张对话框 QSS,避免逐字符卡顿。
+        self._theme_stylesheet_debounce = QTimer(self)
+        self._theme_stylesheet_debounce.setSingleShot(True)
+        self._theme_stylesheet_debounce.setInterval(150)
+        self._theme_stylesheet_debounce.timeout.connect(self._apply_pending_theme_stylesheet)
         self._character_export_thread: QThread | None = None
         self._character_export_worker: settings_workers.CharacterArchiveExportWorker | None = None
         self._memory_reload_pending = False
@@ -281,6 +307,7 @@ class SettingsDialog(QDialog):
                 self._build_scrollable_tab(
                     ToolsSettingsPage(self).build(
                         mcp_settings or MCPRuntimeSettings(),
+                        self.runtime_loop_settings,
                         tools_tab_contributions or [],
                     )
                 ),
@@ -1112,7 +1139,7 @@ class SettingsDialog(QDialog):
             self._editing_memory_id = None
             self._active_memory_id = None
             self._clear_memory_editor()
-            self.memory_editor_container.setVisible(False)
+            self._set_memory_editor_visible(False)
         self.memory_status_label.setText(f"已加载 {len(self._all_memories)} 条记忆")
         self._refresh_memory_table()
 
@@ -1133,20 +1160,43 @@ class SettingsDialog(QDialog):
             self._memory_reload_pending = False
             self._load_memory_entries()
 
+    def _pin_active_memory_to_top(self) -> None:
+        """编辑某条记忆时把它挪到列表首行,避免被底部详情面板遮住、取消还要下拉找回。"""
+        if self._memory_editor_mode != "edit" or not self._active_memory_id:
+            return
+        for index, memory in enumerate(self._visible_memories):
+            if str(memory.get("id", "")) == self._active_memory_id:
+                if index > 0:
+                    self._visible_memories.insert(0, self._visible_memories.pop(index))
+                return
+
     def _refresh_memory_table(self) -> None:
         if not hasattr(self, "memory_table"):
             return
         keyword = self.memory_search_edit.text().strip()
         keyword_lower = keyword.lower()
+        layer_filter = ""
+        layer_combo = getattr(self, "memory_layer_filter_combo", None)
+        if layer_combo is not None:
+            layer_filter = str(layer_combo.currentData() or "")
         if keyword_lower:
             self._visible_memories = [
                 memory
                 for memory in self._all_memories
                 if keyword_lower in str(memory.get("content", "")).lower()
                 or keyword_lower in str(memory.get("id", "")).lower()
+                or keyword_lower in str(memory.get("category", "")).lower()
+                or keyword_lower in str(memory.get("source", "")).lower()
             ]
         else:
             self._visible_memories = list(self._all_memories)
+        if layer_filter:
+            self._visible_memories = [
+                memory
+                for memory in self._visible_memories
+                if str(memory.get("layer") or DEFAULT_MEMORY_LAYER) == layer_filter
+            ]
+        self._pin_active_memory_to_top()
         if not self._visible_memories:
             self._show_memory_placeholder("没有匹配的记忆。" if keyword else "暂无长期记忆。")
             return
@@ -1158,6 +1208,7 @@ class SettingsDialog(QDialog):
         for row, memory in enumerate(self._visible_memories):
             memory_id = str(memory.get("id", ""))
             content = str(memory.get("content", ""))
+            layer = str(memory.get("layer") or DEFAULT_MEMORY_LAYER)
             updated_at = str(memory.get("updated_at") or memory.get("created_at") or "")
             is_checked = memory_id in self._selected_memory_ids
 
@@ -1167,8 +1218,8 @@ class SettingsDialog(QDialog):
 
             values = [
                 content,
+                MEMORY_LAYER_LABELS.get(layer, layer),
                 _format_memory_time(updated_at),
-                _compact_memory_id(memory_id),
             ]
             self.memory_table.setItem(row, 0, select_item)
             self._set_memory_checkbox_widget(row, memory_id, is_checked)
@@ -1176,7 +1227,9 @@ class SettingsDialog(QDialog):
                 item = QTableWidgetItem(value)
                 item.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 if column == 1:
-                    item.setToolTip(content)
+                    item.setToolTip(f"{content}\n\nID: {memory_id}")
+                elif column == 2:
+                    item.setData(Qt.ItemDataRole.UserRole, layer)
                 elif column == 3:
                     item.setToolTip(memory_id)
                     item.setData(Qt.ItemDataRole.UserRole, memory_id)
@@ -1198,9 +1251,9 @@ class SettingsDialog(QDialog):
         item = QTableWidgetItem(text)
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
         self.memory_table.setItem(0, 1, item)
-        self.memory_table.setItem(0, 0, QTableWidgetItem(""))
-        self.memory_table.setItem(0, 2, QTableWidgetItem(""))
-        self.memory_table.setItem(0, 3, QTableWidgetItem(""))
+        for column in range(self.memory_table.columnCount()):
+            if self.memory_table.item(0, column) is None:
+                self.memory_table.setItem(0, column, QTableWidgetItem(""))
         self.memory_table.blockSignals(False)
         self._syncing_memory_selection = False
         self._sync_memory_bulk_actions()
@@ -1238,8 +1291,11 @@ class SettingsDialog(QDialog):
         if not memory_id:
             return
         self._selected_memory_ids = {memory_id}
-        self._refresh_memory_table()
+        # 先进入编辑态(置 _active_memory_id),再刷新表格,refresh 会把该项钉到首行,
+        # 最后滚动到顶部让被编辑项与详情面板同屏可见。
         self._open_memory_editor(row)
+        self._refresh_memory_table()
+        self.memory_table.scrollToTop()
 
     def _handle_memory_select_all_check_changed(self, state: int) -> None:
         if self._syncing_memory_selection:
@@ -1264,6 +1320,12 @@ class SettingsDialog(QDialog):
             self.memory_table.blockSignals(False)
         self._sync_memory_checkbox_widget(row, checked)
         self._apply_memory_row_checked_style(row, checked)
+        if not self._selected_memory_ids and self._memory_editor_mode == "edit":
+            self._memory_editor_mode = None
+            self._editing_memory_id = None
+            self._active_memory_id = None
+            self._clear_memory_editor()
+            self._set_memory_editor_visible(False)
         self._sync_memory_bulk_actions()
 
     def _open_memory_editor(self, row: int) -> None:
@@ -1279,9 +1341,14 @@ class SettingsDialog(QDialog):
         self._editing_memory_id = memory_id
         self._active_memory_id = memory_id
         self.memory_content_edit.setPlainText(str(memory.get("content", "")))
+        _set_combo_current_data(self.memory_layer_combo, str(memory.get("layer") or DEFAULT_MEMORY_LAYER))
+        self.memory_category_edit.setText(str(memory.get("category") or ""))
+        self.memory_source_edit.setText(str(memory.get("source") or DEFAULT_MEMORY_SOURCE))
+        self.memory_importance_spin.setValue(_float_value(memory.get("importance"), DEFAULT_MEMORY_IMPORTANCE))
+        self.memory_confidence_spin.setValue(_float_value(memory.get("confidence"), DEFAULT_MEMORY_CONFIDENCE))
         self.memory_content_edit.setPlaceholderText("编辑长期记忆内容")
         self.memory_save_button.setText("保存修改")
-        self.memory_editor_container.setVisible(True)
+        self._set_memory_editor_visible(True)
         self.memory_preview_label.setText("")
 
     def _set_all_visible_memories_checked(self, checked: bool) -> None:
@@ -1376,16 +1443,21 @@ class SettingsDialog(QDialog):
             self._editing_memory_id = None
             self._active_memory_id = None
             self.memory_content_edit.clear()
+            _set_combo_current_data(self.memory_layer_combo, DEFAULT_MEMORY_LAYER)
+            self.memory_category_edit.clear()
+            self.memory_source_edit.setText(DEFAULT_MEMORY_SOURCE)
+            self.memory_importance_spin.setValue(DEFAULT_MEMORY_IMPORTANCE)
+            self.memory_confidence_spin.setValue(DEFAULT_MEMORY_CONFIDENCE)
             self.memory_content_edit.setPlaceholderText("新增长期记忆内容")
             self.memory_save_button.setText("保存")
             self.memory_preview_label.setText("正在新增记忆")
-            self.memory_editor_container.setVisible(True)
+            self._set_memory_editor_visible(True)
         elif self._memory_editor_mode == "new":
             self._memory_editor_mode = None
             self._editing_memory_id = None
             self._active_memory_id = None
             self._clear_memory_editor()
-            self.memory_editor_container.setVisible(False)
+            self._set_memory_editor_visible(False)
             self._sync_memory_bulk_actions()
         self.memory_new_button.setText("收起新增" if checked else "新增记忆")
 
@@ -1393,6 +1465,12 @@ class SettingsDialog(QDialog):
         if not hasattr(self, "memory_table"):
             return
         self._selected_memory_ids.clear()
+        if self._memory_editor_mode == "edit":
+            self._memory_editor_mode = None
+            self._editing_memory_id = None
+            self._active_memory_id = None
+            self._clear_memory_editor()
+            self._set_memory_editor_visible(False)
         self._refresh_memory_table()
 
     def _sync_memory_bulk_actions(self) -> None:
@@ -1432,6 +1510,41 @@ class SettingsDialog(QDialog):
         if not hasattr(self, "memory_content_edit"):
             return
         self.memory_content_edit.clear()
+        if hasattr(self, "memory_category_edit"):
+            self.memory_category_edit.clear()
+        if hasattr(self, "memory_source_edit"):
+            self.memory_source_edit.setText(DEFAULT_MEMORY_SOURCE)
+        if hasattr(self, "memory_importance_spin"):
+            self.memory_importance_spin.setValue(DEFAULT_MEMORY_IMPORTANCE)
+        if hasattr(self, "memory_confidence_spin"):
+            self.memory_confidence_spin.setValue(DEFAULT_MEMORY_CONFIDENCE)
+        if hasattr(self, "memory_layer_combo"):
+            _set_combo_current_data(self.memory_layer_combo, DEFAULT_MEMORY_LAYER)
+
+    def _set_memory_editor_visible(self, visible: bool) -> None:
+        if not hasattr(self, "memory_editor_container"):
+            return
+        self.memory_editor_container.setVisible(visible)
+        pane = getattr(self, "memory_editor_pane", None)
+        splitter = getattr(self, "memory_list_splitter", None)
+        if pane is None or splitter is None:
+            return
+        # 下窗格(选择行 + 编辑区)在 QSplitter 中:把内容/窗格最大高度都钉到自身 sizeHint,
+        # 这样无论拖手柄还是初始分配都不会被撑出空白;多余纵向空间一律归上方的记忆列表。
+        if visible:
+            content_height = self.memory_editor_content.sizeHint().height()
+            self.memory_editor_container.setMaximumHeight(content_height)
+        pane.setMaximumHeight(16777215)
+        pane_hint = pane.sizeHint().height()
+        pane.setMaximumHeight(pane_hint)
+        if not visible:
+            return
+        total = splitter.height()
+        if total <= 0:
+            return
+        # 默认给下窗格刚好贴合的高度,其余留给列表;用户可再拖手柄进一步加长列表。
+        bottom_height = min(pane_hint, max(80, total - 120))
+        splitter.setSizes([total - bottom_height, bottom_height])
 
     def _save_memory_entry(self) -> None:
         if self.memory_store is None:
@@ -1440,11 +1553,12 @@ class SettingsDialog(QDialog):
         if not content:
             QMessageBox.warning(self, "内容为空", "记忆内容不能为空。")
             return
+        metadata = self._collect_memory_editor_metadata()
         try:
             if self._memory_editor_mode == "edit" and self._editing_memory_id:
                 editing_id = self._editing_memory_id
                 self.memory_store.update_memory(
-                    {"id": editing_id, "content": content, "source": "manual"},
+                    {"id": editing_id, "content": content, **metadata},
                     allow_sensitive=True,
                 )
                 self._selected_memory_ids = {editing_id}
@@ -1452,7 +1566,7 @@ class SettingsDialog(QDialog):
                 success_message = "记忆已更新。"
             else:
                 self.memory_store.create_memory(
-                    {"content": content, "source": "manual"},
+                    {"content": content, **metadata},
                     allow_sensitive=True,
                 )
                 self._memory_editor_mode = None
@@ -1466,6 +1580,37 @@ class SettingsDialog(QDialog):
             return
         self._load_memory_entries()
         QMessageBox.information(self, "保存成功", success_message)
+
+    def _collect_memory_editor_metadata(self) -> dict[str, object]:
+        layer = DEFAULT_MEMORY_LAYER
+        layer_combo = getattr(self, "memory_layer_combo", None)
+        if layer_combo is not None:
+            layer = str(layer_combo.currentData() or DEFAULT_MEMORY_LAYER)
+        if layer not in MEMORY_LAYERS:
+            layer = DEFAULT_MEMORY_LAYER
+        source = DEFAULT_MEMORY_SOURCE
+        source_edit = getattr(self, "memory_source_edit", None)
+        if source_edit is not None:
+            source = source_edit.text().strip() or DEFAULT_MEMORY_SOURCE
+        category = ""
+        category_edit = getattr(self, "memory_category_edit", None)
+        if category_edit is not None:
+            category = category_edit.text().strip()
+        importance = DEFAULT_MEMORY_IMPORTANCE
+        importance_spin = getattr(self, "memory_importance_spin", None)
+        if importance_spin is not None:
+            importance = float(importance_spin.value())
+        confidence = DEFAULT_MEMORY_CONFIDENCE
+        confidence_spin = getattr(self, "memory_confidence_spin", None)
+        if confidence_spin is not None:
+            confidence = float(confidence_spin.value())
+        return {
+            "layer": layer,
+            "category": category,
+            "importance": importance,
+            "confidence": confidence,
+            "source": source,
+        }
 
     def _delete_memory_entry(self) -> None:
         if self.memory_store is None:
@@ -1501,7 +1646,7 @@ class SettingsDialog(QDialog):
             self._editing_memory_id = None
             self._active_memory_id = None
             self._clear_memory_editor()
-            self.memory_editor_container.setVisible(False)
+            self._set_memory_editor_visible(False)
         self._clear_memory_selection()
         self._load_memory_entries()
         if failed:
@@ -1536,7 +1681,14 @@ class SettingsDialog(QDialog):
     def _apply_theme_stylesheet(self, settings: ThemeSettings) -> None:
         theme = settings.normalized()
         self.theme_settings = theme
-        self.setStyleSheet(build_settings_dialog_stylesheet(theme))
+        stylesheet = build_settings_dialog_stylesheet(theme)
+        # QSS 内容未变则跳过:setStyleSheet 会 re-polish 对话框内所有控件(含下拉弹层),
+        # 切角色/只改视觉效果等「配色实际没变」的场景无需重绘。内联 label 颜色同样源自
+        # theme,QSS 相同即这些颜色也相同,一并跳过安全。
+        if stylesheet == self._applied_dialog_stylesheet:
+            return
+        self._applied_dialog_stylesheet = stylesheet
+        self.setStyleSheet(stylesheet)
         inline_styles = {
             "theme_status_label": f"color: {theme.muted_text_color};",
             "memory_status_label": f"color: {theme.muted_text_color};",
@@ -1549,6 +1701,13 @@ class SettingsDialog(QDialog):
             widget = getattr(self, attr, None)
             if isinstance(widget, QLabel):
                 widget.setStyleSheet(style)
+        splitter = getattr(self, "memory_list_splitter", None)
+        if splitter is not None and hasattr(splitter, "set_grip_colors"):
+            grip = QColor(theme.border_color)
+            grip.setAlpha(150)
+            grip_hover = QColor(theme.primary_color)
+            grip_hover.setAlpha(190)
+            splitter.set_grip_colors(grip, grip_hover)
 
     def _choose_theme_color(self, edit: QLineEdit) -> None:
         current_color = QColor(normalize_hex_color(edit.text(), DEFAULT_THEME_SETTINGS.primary_color))
@@ -1571,6 +1730,14 @@ class SettingsDialog(QDialog):
         normalized = normalize_hex_color(edit.text(), "")
         if button is not None and normalized:
             button.setStyleSheet(build_color_button_stylesheet(normalized))
+        # 颜色按钮预览即时更新(便宜);整张对话框 QSS 的重建走防抖,避免逐字符 re-polish
+        # 所有控件造成卡顿。程序化同步(_set_theme_controls)期间不调度,由其末尾统一应用。
+        if not self._syncing_theme_controls:
+            self._theme_stylesheet_debounce.start()
+
+    @Slot()
+    def _apply_pending_theme_stylesheet(self) -> None:
+        # 防抖到点:按当前颜色框的最新值重建并应用一次对话框 QSS。
         theme = self._selected_theme_settings(show_error=False)
         if theme is not None:
             self._apply_theme_stylesheet(theme)
@@ -1799,6 +1966,20 @@ class SettingsDialog(QDialog):
             )
         )
 
+    def _collect_memory_curation_settings(self):
+        from dataclasses import replace
+
+        spin = getattr(self, "memory_trigger_turns_spin", None)
+        if spin is None:
+            # 记忆页未构建时回退到初始值，保留 backfill_limit 等未暴露字段。
+            return self.memory_curation_settings
+        # 自动整理始终开启，设置页只调整触发轮数。
+        return replace(
+            self.memory_curation_settings,
+            enabled=True,
+            trigger_turns=int(spin.value()),
+        )
+
     def _collect_accept_values(self) -> dict[str, object] | None:
         api_settings = self._validated_api_settings()
         if api_settings is None:
@@ -1841,6 +2022,11 @@ class SettingsDialog(QDialog):
             "mcp_settings": MCPRuntimeSettings(
                 windows_enabled=self.windows_mcp_enabled_check.isChecked(),
             ),
+            "runtime_loop_settings": RuntimeLoopSettings(
+                max_agent_steps_per_turn=self.agent_steps_per_turn_spin.value(),
+                max_tool_calls_per_step=self.tool_calls_per_step_spin.value(),
+                max_tool_calls_per_turn=self.tool_calls_per_turn_spin.value(),
+            ).normalized(),
             "debug_log_settings": DebugLogSettings(
                 enabled=self.debug_log_enabled_check.isChecked(),
                 body_enabled=(
@@ -1871,6 +2057,7 @@ class SettingsDialog(QDialog):
                 # timeout_ms 设置页不暴露，保存时保留 YAML 已配置值，避免覆盖回默认。
                 timeout_ms=self.backchannel_settings.timeout_ms,
             ),
+            "memory_curation_settings": self._collect_memory_curation_settings(),
         }
 
     def _complete_accept(self, values: dict[str, object]) -> None:
@@ -1887,10 +2074,12 @@ class SettingsDialog(QDialog):
         theme_settings = values["theme_settings"]
         screen_awareness_settings = values["screen_awareness_settings"]
         mcp_settings = values["mcp_settings"]
+        runtime_loop_settings = values["runtime_loop_settings"]
         debug_log_settings = values["debug_log_settings"]
         startup_settings = values["startup_settings"]
         bubble_settings = values["bubble_settings"]
         backchannel_settings = values["backchannel_settings"]
+        memory_curation_settings = values["memory_curation_settings"]
 
         if not isinstance(api_settings, ApiSettings):
             return
@@ -1910,6 +2099,8 @@ class SettingsDialog(QDialog):
             return
         if not isinstance(mcp_settings, MCPRuntimeSettings):
             return
+        if not isinstance(runtime_loop_settings, RuntimeLoopSettings):
+            return
         if not isinstance(debug_log_settings, DebugLogSettings):
             return
         if not isinstance(startup_settings, StartupSettings):
@@ -1917,6 +2108,9 @@ class SettingsDialog(QDialog):
         if not isinstance(bubble_settings, BubbleSettings):
             return
         if not isinstance(backchannel_settings, BackchannelSettings):
+            return
+        from app.agent.memory_curator import MemoryCurationSettings as _MemoryCurationSettings
+        if not isinstance(memory_curation_settings, _MemoryCurationSettings):
             return
 
         try:
@@ -1952,10 +2146,12 @@ class SettingsDialog(QDialog):
         self.result_screen_awareness_settings = screen_awareness_settings
         self.result_proactive_care_settings = screen_awareness_settings
         self.result_mcp_settings = mcp_settings
+        self.result_runtime_loop_settings = runtime_loop_settings
         self.result_debug_log_settings = debug_log_settings
         self.result_startup_settings = startup_settings
         self.result_bubble_settings = bubble_settings
         self.result_backchannel_settings = backchannel_settings.normalized()
+        self.result_memory_curation_settings = memory_curation_settings
         self.result_plugin_config_changed = plugin_config_changed
         super().accept()
 
@@ -2838,3 +3034,24 @@ def _format_memory_time(value: str) -> str:
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone()
     return parsed.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _format_memory_score(value: object, default: float) -> str:
+    return f"{_float_value(value, default):.2f}"
+
+
+def _float_value(value: object, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return min(1.0, max(0.0, number))
+
+
+def _set_combo_current_data(combo: object, value: str) -> None:
+    finder = getattr(combo, "findData", None)
+    setter = getattr(combo, "setCurrentIndex", None)
+    if not callable(finder) or not callable(setter):
+        return
+    index = finder(value)
+    setter(index if index >= 0 else 0)
