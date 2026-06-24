@@ -1896,6 +1896,8 @@ class SettingsDialog(QDialog):
         active_source = coerce_sensory_source(
             getattr(self, "_active_sensory_source", SensorySource.VISION.value)
         )
+        if successful_sources and hasattr(self, "sensory_enabled_check"):
+            self.sensory_enabled_check.setChecked(True)
         self._load_sensory_source_controls(active_source.value, mark_dirty=False)
         self._sync_sensory_controls()
         message = str(payload.get("message") or "llama.cpp 音频后端已准备。").strip()

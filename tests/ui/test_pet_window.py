@@ -5023,7 +5023,7 @@ def test_settings_dialog_llama_runtime_success_updates_all_audio_sources(monkeyp
     if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QMessageBox")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
-    from app.sensory.models import SensorySource
+    from app.sensory.models import SensoryProviderMode, SensorySource
 
     monkeypatch.setattr(qtwidgets.QMessageBox, "information", lambda *args, **kwargs: None)
     dialog, app = _build_api_settings_dialog("sensory_llama_runtime_all_success")
@@ -5083,6 +5083,24 @@ def test_settings_dialog_llama_runtime_success_updates_all_audio_sources(monkeyp
     assert state[SensorySource.SOUND.value]["endpoint"] == "http://127.0.0.1:18080/v1"
     assert state[SensorySource.SOUND.value]["llama_runtime_install_dir"] == install_dir
     assert dialog.sensory_model_edit.text() == speech_model
+    assert dialog.sensory_enabled_check.isChecked()
+
+    selected = dialog._selected_sensory_settings()
+
+    assert selected is not None
+    assert selected.enabled is True
+    assert selected.sources[SensorySource.SPEECH].mode == SensoryProviderMode.LOCAL
+    assert selected.sources[SensorySource.SOUND].mode == SensoryProviderMode.LOCAL
+    assert selected.sources[SensorySource.SPEECH].provider_id == "speech_local"
+    assert selected.sources[SensorySource.SOUND].provider_id == "sound_local"
+    assert selected.providers["speech_local"].model == speech_model
+    assert selected.providers["sound_local"].model == sound_model
+    assert selected.providers["speech_local"].endpoint == "http://127.0.0.1:18080/v1"
+    assert selected.providers["sound_local"].endpoint == "http://127.0.0.1:18080/v1"
+    assert selected.providers["speech_local"].extra["backend"] == "llama"
+    assert selected.providers["sound_local"].extra["managed_runtime"] == "llama.cpp"
+    assert selected.providers["speech_local"].extra["llama_binary_path"] == binary
+    assert selected.providers["sound_local"].extra["llama_runtime_install_dir"] == install_dir
 
     dialog.deleteLater()
     app.processEvents()

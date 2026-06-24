@@ -15,7 +15,7 @@ from typing import Any
 from app.agent.actions import PendingToolAction
 from app.agent.tools import ToolRegistry
 from app.agent.runtime import AgentRuntime
-from app.llm.api_client import ChatMessage
+from app.llm.api_client import ChatCompletionTurn, ChatMessage, NativeToolCall
 from app.llm.prompts.types import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
 from app.sensory import audio_capture as audio_capture_module
@@ -1529,6 +1529,90 @@ def test_runtime_exposes_sensory_tool_only_when_provider_is_configured(tmp_path:
     assert OBSERVE_ENVIRONMENT_SOUND_TOOL_NAME not in disabled_tool_names
 
 
+def test_agent_runtime_sensory_audio_tool_result_returns_to_model_after_confirmation(
+    tmp_path: Path,
+) -> None:
+    settings = SensorySettings(
+        enabled=True,
+        sources={
+            SensorySource.SPEECH: SensorySourceSettings(
+                mode=SensoryProviderMode.LOCAL,
+                provider_id="speech_fake",
+            )
+        },
+        providers={
+            "speech_fake": SensoryProviderConfig(
+                provider_id="speech_fake",
+                source=SensorySource.SPEECH,
+                mode=SensoryProviderMode.LOCAL,
+                endpoint="http://127.0.0.1:9000/v1",
+                model="tiny-asr",
+            )
+        },
+    ).normalized()
+
+    def factory(request: SensoryRequest) -> SensoryObservation:
+        assert Path(request.media_ref).is_file()
+        assert request.metadata["capture_source"] == "system_audio"
+        return SensoryObservation(
+            id="obs_runtime_audio",
+            source=SensorySource.SPEECH,
+            created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            summary="系统音频中有人说：测试增强感知。",
+            details={"transcript": "测试增强感知"},
+            confidence=0.92,
+            provider_id="speech_fake",
+            mode=SensoryProviderMode.LOCAL,
+            event_type=request.event_type,
+        )
+
+    pipeline = SensoryPipeline(
+        settings=settings,
+        store=SensoryObservationStore(tmp_path / "sensory.jsonl"),
+        providers={
+            "speech_fake": FakeSensoryProvider(
+                provider_id="speech_fake",
+                source=SensorySource.SPEECH,
+                factory=factory,
+            )
+        },
+        system_audio_capture=_FakeSystemAudioCapture(tmp_path),
+    )
+    registry = ToolRegistry(create_sensory_audio_observation_tools(lambda: pipeline))
+    client = _NativeSensoryToolClient(
+        [
+            _native_tool_turn(
+                "call_speech",
+                OBSERVE_SYSTEM_SPEECH_TOOL_NAME,
+                {"duration_seconds": 1.0, "event_type": "user_message"},
+            ),
+            _native_final_turn("听到有人说“测试增强感知”。"),
+        ]
+    )
+    runtime = AgentRuntime(client, "基础提示", tools=registry, memory=object())
+    runtime.set_sensory_pipeline(pipeline)
+
+    pending_result = runtime.handle_user_message(
+        [ChatMessage(role="user", content="刚才电脑里说了什么？")]
+    )
+    pending_actions = [
+        action.payload for action in pending_result.actions if action.type == "pending_action"
+    ]
+    assert len(pending_actions) == 1
+    pending = PendingToolAction.from_dict(pending_actions[0])
+
+    confirmed_result = runtime.handle_confirmed_action(pending)
+
+    assert confirmed_result.reply.translation == "听到有人说“测试增强感知”。"
+    assert pipeline.store.recent(limit=1)[0].summary == "系统音频中有人说：测试增强感知。"
+    assert len(client.calls) == 2
+    second_messages = client.calls[1]["messages"]
+    tool_message = next(message for message in second_messages if message.get("role") == "tool")
+    assert tool_message["tool_call_id"] == "call_speech"
+    assert OBSERVE_SYSTEM_SPEECH_TOOL_NAME == tool_message["name"]
+    assert "系统音频中有人说：测试增强感知。" in tool_message["content"]
+
+
 def test_lmstudio_provider_posts_openai_compatible_vision_payload(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     captured: dict[str, Any] = {}
 
@@ -2085,3 +2169,76 @@ class _CaptureToolClient:
             runtime_context_role = "system"
 
         return Turn()
+
+
+class _NativeSensoryToolClient:
+    def __init__(self, turns: list[ChatCompletionTurn]) -> None:
+        self.turns = turns
+        self.calls: list[dict[str, Any]] = []
+
+    def resolve_dialogue_params(self):  # type: ignore[no-untyped-def]
+        return 0.8, {}
+
+    def complete_with_tools(self, system_prompt, messages, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "messages": [dict(message) for message in messages],
+                "kwargs": kwargs,
+            }
+        )
+        return self.turns.pop(0)
+
+    def chat(self, _system_prompt, _messages, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("sensory native tool flow should not use legacy chat fallback")
+
+
+def _native_reply(text: str) -> str:
+    return json.dumps(
+        {
+            "segments": [
+                {
+                    "ja": "聞こえたよ。",
+                    "zh": text,
+                    "tone": "中性",
+                    "portrait": "站立待机",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
+def _native_tool_turn(call_id: str, name: str, arguments: dict[str, Any]) -> ChatCompletionTurn:
+    arguments_json = json.dumps(arguments, ensure_ascii=False)
+    return ChatCompletionTurn(
+        content="",
+        tool_calls=[
+            NativeToolCall(
+                id=call_id,
+                name=name,
+                arguments=arguments,
+                arguments_json=arguments_json,
+            )
+        ],
+        message={
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments_json},
+                }
+            ],
+        },
+    )
+
+
+def _native_final_turn(text: str) -> ChatCompletionTurn:
+    content = _native_reply(text)
+    return ChatCompletionTurn(
+        content=content,
+        tool_calls=[],
+        message={"role": "assistant", "content": content},
+    )
