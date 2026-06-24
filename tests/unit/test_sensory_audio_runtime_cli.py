@@ -196,6 +196,15 @@ def test_audio_runtime_cli_cleanup_cache_yes_removes_managed_cache_only(
     runtime_dir = paths.llama_cpp_runtime_for("b1")
     runtime_dir.mkdir(parents=True)
     (runtime_dir / "llama-server").write_text("runtime", encoding="utf-8")
+    archives_dir = paths.llama_cpp_runtime_dir / "archives"
+    archives_dir.mkdir(parents=True)
+    (archives_dir / "llama.tar.gz").write_text("archive", encoding="utf-8")
+    downloads_dir = paths.llama_cpp_runtime_dir / "_downloads"
+    downloads_dir.mkdir(parents=True)
+    (downloads_dir / "llama.tar.gz").write_text("download", encoding="utf-8")
+    staging_dir = paths.llama_cpp_runtime_dir / ".b1.extracting"
+    staging_dir.mkdir(parents=True)
+    (staging_dir / "partial").write_text("partial", encoding="utf-8")
     manual_binary = paths.llama_cpp_runtime_dir / "llama-server"
     manual_binary.write_text("manual", encoding="utf-8")
     manifest = paths.llama_cpp_runtime_dir / "runtime_manifest.json"
@@ -216,6 +225,9 @@ def test_audio_runtime_cli_cleanup_cache_yes_removes_managed_cache_only(
     assert payload["ok"] is True
     assert payload["dry_run"] is False
     assert runtime_dir.exists() is False
+    assert archives_dir.exists()
+    assert downloads_dir.exists()
+    assert staging_dir.exists()
     assert speech_cache.exists() is False
     assert manual_binary.exists()
     assert manifest.exists()

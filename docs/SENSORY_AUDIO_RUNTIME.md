@@ -287,9 +287,11 @@ data/logs/sensory-llama-server.log
 
 不带 `--allow-model-download` 时，`smoke --source all --managed-llama-defaults` 会一次构建 `speech` 与 `sound` 的计划并返回 `blocked_sources`，但不会启动 sidecar，也不会拉取 GGUF 模型。
 
-高级维护命令默认只预览 Sakura 管理的 llama.cpp audio runtime 与推荐音频模型缓存；只有传入 `--yes` 才会删除。该命令不会删除 runtime manifest，也不会清理视觉模型缓存：
+高级维护命令默认只预览 Sakura 管理的 llama.cpp audio runtime 与推荐音频模型缓存；只有传入 `--yes` 才会删除。该命令不会删除 runtime manifest、`archives/` 离线包目录、下载缓存、运行中的 root `llama-server`，也不会清理视觉模型缓存。Windows 上如果 sidecar 正在运行，删除占用中的 runtime 可能失败；先关闭 Sakura 或重启后再清理：
 
 ```bash
 .venv/bin/python -m app.sensory.audio_runtime_cli cleanup-cache --target all --dry-run --pretty
 .venv/bin/python -m app.sensory.audio_runtime_cli cleanup-cache --target all --yes --pretty
 ```
+
+发布前门禁：在 macOS arm64、Windows x64、Linux x64 各跑一次真实安装验证，确认官方 llama.cpp runtime 包在 `filter="data"` 下可完整解压；随后用推荐 `speech` / `sound` 模型各跑一次真实 `smoke --allow-model-download`。若任一平台失败，发布前需要固定到已验证 manifest 或回退解压策略。

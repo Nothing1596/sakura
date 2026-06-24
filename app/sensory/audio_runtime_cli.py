@@ -795,9 +795,16 @@ def _runtime_cleanup_targets(paths: StoragePaths) -> list[Path]:
     except OSError:
         return []
     for child in children:
-        if child.is_dir():
+        if child.is_dir() and _is_runtime_install_cache_dir(child):
             targets.append(child)
     return targets
+
+
+def _is_runtime_install_cache_dir(path: Path) -> bool:
+    name = path.name
+    if name in {"archives", "_downloads"} or name.startswith("."):
+        return False
+    return True
 
 
 def _model_cleanup_targets(paths: StoragePaths) -> list[Path]:
