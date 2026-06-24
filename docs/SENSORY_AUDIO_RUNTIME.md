@@ -5,7 +5,7 @@
 ## 运行时边界
 
 - 默认不启动、不下载、不采集音频。
-- 只有用户在设置页选择“本机运行框架”与 `llama.cpp` 后端，并点击“准备 llama.cpp 音频后端”且确认下载提示时，才会准备本机运行时与推荐模型缓存。
+- 只有用户在设置页选择“本机运行框架”与 `llama.cpp` 后端，并点击“准备本机音频增强”且确认下载提示时，才会准备本机运行时与推荐模型缓存。
 - Sakura 优先复用已存在的 `llama-server`：
   - `SAKURA_LLAMA_SERVER`
   - `data/local_runtimes/llama_cpp/`
@@ -133,7 +133,7 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 }
 ```
 
-`url` 只支持本地相对路径、绝对路径或 `file://` URI，不支持新的远端下载源。相对路径按 manifest 所在目录解析。文件名必须匹配推荐 include patterns；缺文件、大小不匹配或 `sha256` 不匹配时会 fail closed。命中本地音频模型 manifest 时，“准备 llama.cpp 音频后端”会复制文件到标准缓存目录，再把模型字段指向缓存目录。
+`url` 只支持本地相对路径、绝对路径或 `file://` URI，不支持新的远端下载源。相对路径按 manifest 所在目录解析。文件名必须匹配推荐 include patterns；缺文件、大小不匹配或 `sha256` 不匹配时会 fail closed。命中本地音频模型 manifest 时，“准备本机音频增强”会复制文件到标准缓存目录，再把模型字段指向缓存目录。
 
 发布前校验音频模型 manifest，不复制、不下载：
 
@@ -174,7 +174,7 @@ manifest 用于发布版固定 llama.cpp 运行时版本、使用内网镜像、
 
 ## 一键准备与模型默认值
 
-设置页“准备 llama.cpp 音频后端”会先在后台执行 dry-run 预检，展示当前平台运行时包、下载量、运行时/模型磁盘空间结果，再让用户确认。用户确认后会一次准备 `speech` 与 `sound` 两个音频源，并复用同一个本机 llama.cpp runtime：
+设置页“准备本机音频增强”是普通用户入口。它会先在后台执行 dry-run 预检，展示当前平台运行时包、下载量、运行时/模型磁盘空间结果，再让用户确认。用户确认后会一次准备 `speech` 与 `sound` 两个音频源，并复用同一个本机 llama.cpp runtime：
 
 1. 优先复用已存在的 `llama-server`，找不到时按 runtime manifest 或 GitHub latest 安装当前平台包。
 2. 检查推荐 GGUF 模型是否已在 `data/cache/sensory_models/<source>/...` 缓存。
@@ -263,7 +263,7 @@ data/logs/sensory-llama-server.log
 
 `doctor` 会汇总当前平台、`llama-server` 是否可用、Hugging Face CLI 是否可用、内置推荐文件下载是否可用、本地 runtime manifest 候选、本地推荐模型缓存、推荐模型磁盘空间预检、语音/声音默认模型 smoke plan、以及下一步动作建议。
 
-设置页在“本机运行框架 + llama.cpp”后端下也提供“诊断 llama.cpp”按钮，使用同一套检查逻辑，不下载、不安装、不启动 sidecar。
+设置页在“本机运行框架 + llama.cpp”后端下也提供“诊断”按钮，使用同一套检查逻辑，不下载、不安装、不启动 sidecar。
 
 `plan` 输出中几个字段用于发布预检：
 
@@ -286,3 +286,10 @@ data/logs/sensory-llama-server.log
 ```
 
 不带 `--allow-model-download` 时，`smoke --source all --managed-llama-defaults` 会一次构建 `speech` 与 `sound` 的计划并返回 `blocked_sources`，但不会启动 sidecar，也不会拉取 GGUF 模型。
+
+高级维护命令默认只预览 Sakura 管理的 llama.cpp audio runtime 与推荐音频模型缓存；只有传入 `--yes` 才会删除。该命令不会删除 runtime manifest，也不会清理视觉模型缓存：
+
+```bash
+.venv/bin/python -m app.sensory.audio_runtime_cli cleanup-cache --target all --dry-run --pretty
+.venv/bin/python -m app.sensory.audio_runtime_cli cleanup-cache --target all --yes --pretty
+```

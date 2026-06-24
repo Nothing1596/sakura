@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tarfile
 import zipfile
 import io
@@ -242,6 +243,42 @@ def test_llama_cpp_runtime_manager_reuses_existing_healthy_endpoint(tmp_path: Pa
     assert status.healthy is True
     assert status.managed is False
     assert status.model_id == "already-running"
+
+
+def test_llama_cpp_runtime_manager_cleans_up_failed_start(tmp_path: Path) -> None:
+    binary = _executable(tmp_path / "llama-server")
+    stdout_handles: list[object] = []
+    process = _FakeProcess(pid=4321)
+
+    def fake_popen(_args: list[str], **kwargs: Any) -> _FakeProcess:
+        stdout_handles.append(kwargs["stdout"])
+        return process
+
+    def fake_urlopen(_request: object, timeout: float) -> _FakeHTTPResponse:
+        del timeout
+        raise OSError("not ready")
+
+    registry = ResourceRegistry()
+    manager = LlamaCppRuntimeManager(
+        base_dir=tmp_path,
+        resource_registry=registry,
+        popen_factory=fake_popen,
+        urlopen=fake_urlopen,
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(LlamaCppRuntimeError, match="未在"):
+        manager.start(
+            LlamaCppLaunchConfig(
+                binary_path=str(binary),
+                hf_repo="ggml-org/Qwen3-ASR-0.6B-GGUF",
+                timeout_seconds=0.01,
+            )
+        )
+
+    assert process.terminated is True
+    assert stdout_handles and getattr(stdout_handles[0], "closed", False)
+    assert registry._resources == []
 
 
 def test_llama_cpp_platform_key_normalizes_common_platforms() -> None:
@@ -574,6 +611,21 @@ def test_install_llama_cpp_runtime_package_rejects_tar_symlink_traversal(tmp_pat
             package,
             urlopen=lambda _request, timeout: _FakeBinaryResponse(archive_bytes),
         )
+
+
+def test_extractall_tar_checked_uses_data_filter_on_python_312(tmp_path: Path) -> None:
+    if sys.version_info < (3, 12):
+        pytest.skip("tarfile extraction filters are available on Python 3.12+")
+
+    calls: list[tuple[Path, str | None]] = []
+
+    class FakeArchive:
+        def extractall(self, target_dir: Path, *, filter: str | None = None) -> None:  # type: ignore[no-untyped-def]
+            calls.append((target_dir, filter))
+
+    llama_cpp_runtime._extractall_tar_checked(FakeArchive(), tmp_path)  # type: ignore[arg-type]
+
+    assert calls == [(tmp_path, "data")]
 
 
 def _executable(path: Path) -> Path:

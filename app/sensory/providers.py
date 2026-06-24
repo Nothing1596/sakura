@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -126,6 +127,7 @@ class ManagedLlamaCppSensoryProvider:
             _with_model(self.config, _llama_cpp_model_alias(self.config.model))
         )
         self._runtime_ready = False
+        self._runtime_lock = threading.Lock()
 
     def observe(self, request: SensoryRequest) -> SensoryObservation:
         self._ensure_runtime()
@@ -134,13 +136,16 @@ class ManagedLlamaCppSensoryProvider:
     def _ensure_runtime(self) -> None:
         if self._runtime_ready:
             return
-        try:
-            status = self._runtime_manager.start(_llama_cpp_launch_config_from_provider(self.config))
-        except LlamaCppRuntimeError as exc:
-            raise SensoryProviderUnavailable(str(exc)) from exc
-        if not status.healthy:
-            raise SensoryProviderUnavailable("llama.cpp sensory runtime is not healthy")
-        self._runtime_ready = status.healthy
+        with self._runtime_lock:
+            if self._runtime_ready:
+                return
+            try:
+                status = self._runtime_manager.start(_llama_cpp_launch_config_from_provider(self.config))
+            except LlamaCppRuntimeError as exc:
+                raise SensoryProviderUnavailable(str(exc)) from exc
+            if not status.healthy:
+                raise SensoryProviderUnavailable("llama.cpp sensory runtime is not healthy")
+            self._runtime_ready = status.healthy
 
 
 class OllamaSensoryProvider:

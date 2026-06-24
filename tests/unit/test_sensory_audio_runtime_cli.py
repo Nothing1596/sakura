@@ -165,6 +165,63 @@ def test_audio_runtime_cli_smoke_all_runs_sources_with_explicit_allow(
     assert payload["results"]["sound"]["message"] == "ok sound"
 
 
+def test_audio_runtime_cli_cleanup_cache_defaults_to_dry_run(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    paths = StoragePaths(tmp_path)
+    runtime_dir = paths.llama_cpp_runtime_for("b1")
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / "llama-server").write_text("runtime", encoding="utf-8")
+    manifest = paths.llama_cpp_runtime_dir / "runtime_manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    speech_cache = paths.sensory_model_cache_for("speech", "ggml-org/Qwen3-ASR-0.6B-GGUF")
+    speech_cache.mkdir(parents=True)
+    (speech_cache / "Qwen3-ASR-0.6B-Q8_0.gguf").write_text("model", encoding="utf-8")
+
+    code = audio_runtime_cli.main(["--base-dir", str(tmp_path), "cleanup-cache", "--target", "all"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["dry_run"] is True
+    assert {Path(item["path"]) for item in payload["paths"]} >= {runtime_dir, speech_cache}
+    assert runtime_dir.exists()
+    assert speech_cache.exists()
+    assert manifest.exists()
+
+
+def test_audio_runtime_cli_cleanup_cache_yes_removes_managed_cache_only(
+    tmp_path: Path,
+    capsys,
+) -> None:  # type: ignore[no-untyped-def]
+    paths = StoragePaths(tmp_path)
+    runtime_dir = paths.llama_cpp_runtime_for("b1")
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / "llama-server").write_text("runtime", encoding="utf-8")
+    manual_binary = paths.llama_cpp_runtime_dir / "llama-server"
+    manual_binary.write_text("manual", encoding="utf-8")
+    manifest = paths.llama_cpp_runtime_dir / "runtime_manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    speech_cache = paths.sensory_model_cache_for("speech", "ggml-org/Qwen3-ASR-0.6B-GGUF")
+    speech_cache.mkdir(parents=True)
+    (speech_cache / "Qwen3-ASR-0.6B-Q8_0.gguf").write_text("model", encoding="utf-8")
+    unrelated_cache = paths.sensory_model_cache_for("vision", "example/Vision-GGUF")
+    unrelated_cache.mkdir(parents=True)
+    (unrelated_cache / "vision.gguf").write_text("vision", encoding="utf-8")
+
+    code = audio_runtime_cli.main(
+        ["--base-dir", str(tmp_path), "cleanup-cache", "--target", "all", "--yes"]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["dry_run"] is False
+    assert runtime_dir.exists() is False
+    assert speech_cache.exists() is False
+    assert manual_binary.exists()
+    assert manifest.exists()
+    assert unrelated_cache.exists()
+
+
 def test_audio_runtime_cli_install_runtime_requires_yes_before_download(
     tmp_path: Path,
     capsys,

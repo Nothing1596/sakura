@@ -4736,8 +4736,8 @@ def test_settings_dialog_sensory_has_huggingface_download_action() -> None:
 
     assert dialog.sensory_hf_download_button.text() == "从 Hugging Face 下载"
     assert dialog.sensory_hf_download_button.isEnabled()
-    assert dialog.sensory_llama_runtime_button.text() == "准备 llama.cpp 音频后端"
-    assert dialog.sensory_llama_doctor_button.text() == "诊断 llama.cpp"
+    assert dialog.sensory_llama_runtime_button.text() == "准备本机音频增强"
+    assert dialog.sensory_llama_doctor_button.text() == "诊断"
     assert not dialog.sensory_llama_runtime_button.isEnabled()
     assert not dialog.sensory_llama_doctor_button.isEnabled()
 
@@ -5188,7 +5188,7 @@ def test_settings_dialog_sensory_status_guides_local_llama_setup() -> None:
     dialog.sensory_model_edit.setText("ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0")
     app.processEvents()
 
-    assert "准备 llama.cpp 音频后端" in dialog.sensory_status_label.text()
+    assert "准备本机音频增强" in dialog.sensory_status_label.text()
 
     llama_binary = dialog.base_dir / "llama-server"
     _write_fake_runtime_python(llama_binary, "#!/bin/sh\n")
@@ -5249,7 +5249,7 @@ def test_settings_dialog_sensory_llama_doctor_success_updates_status(monkeypatch
     assert "Hugging Face CLI：/usr/local/bin/hf" in messages[0]
     assert "本地模型 manifest：speech" in messages[0]
     assert "模型下载空间不足：speech" in messages[0]
-    assert dialog.sensory_status_label.text() == "平台：macos-arm64"
+    assert dialog.sensory_status_label.text() == "本机音频增强：已准备"
 
     dialog.deleteLater()
     app.processEvents()

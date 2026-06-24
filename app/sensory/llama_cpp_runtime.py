@@ -966,7 +966,7 @@ def _validate_archive_link(member: tarfile.TarInfo, target_dir: Path) -> None:
 
 def _extractall_tar_checked(archive: tarfile.TarFile, target_dir: Path) -> None:
     if sys.version_info >= (3, 12):
-        archive.extractall(target_dir, filter="fully_trusted")
+        archive.extractall(target_dir, filter="data")
     else:
         archive.extractall(target_dir)
 

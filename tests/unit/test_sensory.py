@@ -4,6 +4,8 @@ import base64
 import io
 import json
 import sys
+import threading
+import time
 import wave
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -447,6 +449,73 @@ def test_managed_llama_provider_starts_runtime_before_audio_observation(monkeypa
     launch_config = starts[0]
     assert getattr(launch_config, "hf_repo") == "ggml-org/Qwen3-ASR-0.6B-GGUF"
     assert getattr(launch_config, "port") == 18080
+
+
+def test_managed_llama_provider_serializes_first_runtime_start(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    starts: list[object] = []
+    first_start_entered = threading.Event()
+    release_start = threading.Event()
+
+    class FakeRuntimeManager:
+        def __init__(self, *, base_dir: Path, resource_registry: object | None = None) -> None:
+            del base_dir, resource_registry
+
+        def start(self, config: object) -> object:
+            starts.append(config)
+            first_start_entered.set()
+            assert release_start.wait(timeout=2)
+            return SimpleNamespace(healthy=True, model_id="ggml-org/Qwen3-ASR-0.6B-GGUF")
+
+    def fake_post_json(
+        url: str,
+        payload: dict[str, object],
+        *,
+        headers: dict[str, str],
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        del url, payload, headers, timeout_seconds
+        return {"choices": [{"message": {"content": '{"summary":"ok","confidence":0.9}'}}]}
+
+    monkeypatch.setattr(providers_module, "LlamaCppRuntimeManager", FakeRuntimeManager)
+    monkeypatch.setattr(providers_module, "_post_json", fake_post_json)
+    provider = provider_from_config(
+        SensoryProviderConfig(
+            provider_id="speech_local",
+            source=SensorySource.SPEECH,
+            mode=SensoryProviderMode.LOCAL,
+            endpoint="http://127.0.0.1:18080/v1",
+            model="ggml-org/Qwen3-ASR-0.6B-GGUF",
+            extra={"backend": "llama", "managed_runtime": "llama.cpp"},
+        ),
+        base_dir=tmp_path,
+    )
+    request = SensoryRequest(
+        id="req_audio",
+        source=SensorySource.SPEECH,
+        media_ref="data:audio/wav;base64,AAAA",
+    )
+    observations: list[str] = []
+    errors: list[BaseException] = []
+
+    def run_observe() -> None:
+        try:
+            observations.append(provider.observe(request).summary)
+        except BaseException as exc:  # pragma: no cover - surfaced after join
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run_observe), threading.Thread(target=run_observe)]
+    for thread in threads:
+        thread.start()
+    assert first_start_entered.wait(timeout=2)
+    time.sleep(0.05)
+    assert len(starts) == 1
+    release_start.set()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert errors == []
+    assert observations == ["ok", "ok"]
+    assert len(starts) == 1
 
 
 def test_managed_llama_provider_uses_local_gguf_directory_alias(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]

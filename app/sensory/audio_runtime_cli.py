@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -17,7 +18,7 @@ from app.sensory.audio_deployment import (
     prepare_llama_cpp_audio_backend,
 )
 from app.sensory.audio_model_manifest import validate_llama_cpp_audio_model_manifest
-from app.sensory.audio_models import recommended_llama_cpp_audio_model
+from app.sensory.audio_models import llama_cpp_audio_model_repo_id, recommended_llama_cpp_audio_model
 from app.sensory.audio_smoke import (
     SensoryAudioSmokePlan,
     build_sensory_audio_smoke_plan,
@@ -39,6 +40,7 @@ from app.sensory.llama_cpp_runtime import (
 )
 from app.sensory.models import SensoryProviderMode, SensorySource, coerce_sensory_source
 from app.sensory.settings import SensoryProviderConfig
+from app.storage.paths import StoragePaths
 
 
 class SensoryAudioRuntimeCliError(RuntimeError):
@@ -73,6 +75,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_deployment_check(args)
         if args.command == "doctor":
             return _run_doctor(args)
+        if args.command == "cleanup-cache":
+            return _run_cleanup_cache(args)
         if args.command == "prepare-backend":
             return _run_prepare_backend(args)
         if args.command == "smoke":
@@ -263,6 +267,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Summarize audio runtime readiness without installing or downloading.",
     )
     _add_pretty_arg(doctor)
+
+    cleanup_cache = subparsers.add_parser(
+        "cleanup-cache",
+        help="Preview or remove Sakura-managed llama.cpp runtime/model caches.",
+    )
+    _add_pretty_arg(cleanup_cache)
+    cleanup_cache.add_argument(
+        "--target",
+        choices=["runtime", "models", "all"],
+        default="all",
+        help="Cache group to clean. Defaults to all Sakura-managed llama.cpp audio caches.",
+    )
+    cleanup_mode = cleanup_cache.add_mutually_exclusive_group()
+    cleanup_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview cache paths without deleting them. This is the default.",
+    )
+    cleanup_mode.add_argument(
+        "--yes",
+        action="store_true",
+        help="Actually delete the selected Sakura-managed cache paths.",
+    )
 
     parser.set_defaults(
         command="plan",
@@ -617,6 +644,37 @@ def _run_doctor(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_cleanup_cache(args: argparse.Namespace) -> int:
+    target = str(args.target or "all").strip().lower()
+    dry_run = not bool(args.yes)
+    targets = _cleanup_cache_targets(Path(args.base_dir), target)
+    paths = [_cleanup_cache_path_info(path) for path in targets]
+    issues: list[str] = []
+    deleted: list[str] = []
+    if not dry_run:
+        for path in targets:
+            try:
+                _delete_cleanup_target(path)
+                deleted.append(str(path))
+            except OSError as exc:
+                issues.append(f"{path}: {exc}")
+    payload = {
+        "ok": not issues,
+        "target": target,
+        "dry_run": dry_run,
+        "paths": paths,
+        "deleted": deleted,
+        "issues": issues,
+        "message": (
+            "仅预览 Sakura 管理的 llama.cpp 音频缓存，未删除任何文件。"
+            if dry_run
+            else ("已清理 Sakura 管理的 llama.cpp 音频缓存。" if not issues else "部分缓存清理失败。")
+        ),
+    }
+    _print_payload(payload, pretty=bool(args.pretty))
+    return 0 if bool(payload["ok"]) else 1
+
+
 def _run_prepare_backend(args: argparse.Namespace) -> int:
     base_dir = Path(args.base_dir)
     sources = _prepare_backend_sources(args.source)
@@ -715,6 +773,90 @@ def _prepare_multiple_audio_backends(
         "issues": issues,
         "message": "llama.cpp 音频后端已准备好。" if not issues else "部分 llama.cpp 音频后端准备失败。",
     }
+
+
+def _cleanup_cache_targets(base_dir: Path, target: str) -> list[Path]:
+    paths = StoragePaths(base_dir)
+    targets: list[Path] = []
+    if target in {"runtime", "all"}:
+        targets.extend(_runtime_cleanup_targets(paths))
+    if target in {"models", "all"}:
+        targets.extend(_model_cleanup_targets(paths))
+    return _dedupe_paths(path for path in targets if path.exists())
+
+
+def _runtime_cleanup_targets(paths: StoragePaths) -> list[Path]:
+    root = paths.llama_cpp_runtime_dir
+    if not root.is_dir():
+        return []
+    targets: list[Path] = []
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return []
+    for child in children:
+        if child.is_dir():
+            targets.append(child)
+    return targets
+
+
+def _model_cleanup_targets(paths: StoragePaths) -> list[Path]:
+    targets: list[Path] = []
+    for source in _AUDIO_PREPARE_SOURCES:
+        recommendation = recommended_llama_cpp_audio_model(source)
+        if recommendation is None:
+            continue
+        repo_id = llama_cpp_audio_model_repo_id(recommendation.model)
+        if repo_id:
+            targets.append(paths.sensory_model_cache_for(source.value, repo_id))
+    return targets
+
+
+def _cleanup_cache_path_info(path: Path) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "is_dir": path.is_dir(),
+        "size_bytes": _path_size_bytes(path),
+    }
+
+
+def _delete_cleanup_target(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def _path_size_bytes(path: Path) -> int:
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        if not path.is_dir():
+            return 0
+        total = 0
+        for child in path.rglob("*"):
+            try:
+                if child.is_file():
+                    total += child.stat().st_size
+            except OSError:
+                continue
+        return total
+    except OSError:
+        return 0
+
+
+def _dedupe_paths(paths: Any) -> list[Path]:
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for raw_path in paths:
+        path = Path(raw_path)
+        key = path.resolve() if path.exists() else path.absolute()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
 
 
 def _provider_config_from_args(
