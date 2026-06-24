@@ -7,19 +7,13 @@
 
 from __future__ import annotations
 
-import base64
-import io
 import json
-import math
 import mimetypes
-import shutil
-import struct
-import subprocess
 import urllib.error
 import urllib.request
-import wave
+import base64
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal, Sequence
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -37,7 +31,26 @@ from app.config.character_loader import CharacterProfile
 from app.core.debug_log import debug_log
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.llm.prompts.recipes import build_theme_color_system_prompt
+from app.sensory.audio_smoke import (
+    build_sensory_audio_smoke_data_url,
+    run_sensory_audio_smoke_test,
+)
+from app.sensory.audio_runtime_doctor import build_sensory_audio_runtime_doctor_report
+from app.sensory.audio_deployment import (
+    build_llama_cpp_audio_prepare_requirement,
+    build_llama_cpp_runtime_download_preflight,
+    ensure_llama_cpp_runtime,
+    prepare_llama_cpp_audio_backend,
+)
+from app.sensory.huggingface import (
+    HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+    download_huggingface_model,
+    run_hf_command,
+)
 from app.sensory.models import SensoryRequest, SensorySource
+from app.sensory.llama_cpp_runtime import (
+    LlamaCppRuntimeError,
+)
 from app.sensory.providers import (
     DEFAULT_LLAMA_CPP_ENDPOINT,
     DEFAULT_LMSTUDIO_ENDPOINT,
@@ -51,43 +64,17 @@ from app.voice.factory import create_tts_provider
 from app.voice.tts_settings import GPTSoVITSTTSSettings
 
 
+_LLAMA_AUDIO_PREPARE_SOURCES = (SensorySource.SPEECH, SensorySource.SOUND)
 _SENSORY_TEST_IMAGE_DATA_URL = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAACXBIWXMAAA9hAAAPYQGoP6dp"
     "AAAAGUlEQVQokWO84+DAQApgIkn1qIZRDUNKAwBb8AF8KOWdWAAAAABJRU5ErkJggg=="
 )
-_SENSORY_TEST_AUDIO_DATA_URL = ""
-HF_CLI_INSTALL_HINT = (
-    "未找到 Hugging Face CLI `hf`。请先安装："
-    "macOS/Linux 运行 `curl -LsSf https://hf.co/cli/install.sh | bash`；"
-    "Windows 运行 `powershell -ExecutionPolicy ByPass -c \"irm https://hf.co/cli/install.ps1 | iex\"`。"
-)
+_SENSORY_TEST_AUDIO_DATA_URL = build_sensory_audio_smoke_data_url()
 HF_MODEL_SEARCH_LIMIT = 20
-HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS = 60 * 60
 HF_COMPATIBILITY_CLEAR = "clear"
 HF_COMPATIBILITY_POSSIBLE = "possible"
 HF_COMPATIBILITY_UNKNOWN = "unknown"
-
-
-def _build_sensory_test_audio_data_url() -> str:
-    sample_rate = 16000
-    duration_seconds = 0.35
-    frequency = 880.0
-    amplitude = 0.28
-    frame_count = int(sample_rate * duration_seconds)
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        for index in range(frame_count):
-            value = int(32767 * amplitude * math.sin(2 * math.pi * frequency * index / sample_rate))
-            wav.writeframesraw(struct.pack("<h", value))
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:audio/wav;base64,{encoded}"
-
-
-_SENSORY_TEST_AUDIO_DATA_URL = _build_sensory_test_audio_data_url()
 
 
 def _image_file_to_data_url(path: Path) -> str:
@@ -167,15 +154,35 @@ class SensoryModelTestWorker(QObject):
     failed = Signal(str)
     finished = Signal()
 
-    def __init__(self, config: SensoryProviderConfig, source: SensorySource) -> None:
+    def __init__(
+        self,
+        config: SensoryProviderConfig,
+        source: SensorySource,
+        *,
+        base_dir: Path | None = None,
+    ) -> None:
         super().__init__()
         self.config = config.normalized()
         self.source = source
+        self.base_dir = base_dir
 
     @Slot()
     def run(self) -> None:
         try:
-            provider = provider_from_config(self.config)
+            if self.source in {SensorySource.SPEECH, SensorySource.SOUND}:
+                result = run_sensory_audio_smoke_test(
+                    self.config,
+                    base_dir=self.base_dir,
+                    source=self.source,
+                )
+                if not result.ok:
+                    raise RuntimeError(result.message)
+                observation = result.observation
+                if observation is None:
+                    raise RuntimeError("音频推理 smoke test 未返回观察结果。")
+                self.succeeded.emit(observation.to_dict())
+                return
+            provider = provider_from_config(self.config, base_dir=self.base_dir)
             request = SensoryRequest(
                 id="settings_test",
                 source=self.source,
@@ -268,6 +275,190 @@ class HuggingFaceModelDownloadWorker(QObject):
             self.succeeded.emit(result)
         finally:
             self.finished.emit()
+
+
+class LlamaCppRuntimeInstallWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        base_dir: Path,
+        *,
+        timeout_seconds: int = HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+    ) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+        self.timeout_seconds = timeout_seconds
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            payload = ensure_llama_cpp_runtime(
+                self.base_dir,
+                timeout_seconds=self.timeout_seconds,
+            )
+        except (LlamaCppRuntimeError, RuntimeError, OSError) as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(payload)
+        finally:
+            self.finished.emit()
+
+
+class LlamaCppAudioBackendPrepareWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        base_dir: Path,
+        source: SensorySource | Sequence[SensorySource],
+        *,
+        timeout_seconds: int = HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
+    ) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+        self.sources = _llama_audio_prepare_sources(source)
+        self.source = self.sources[0]
+        self.timeout_seconds = timeout_seconds
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            if len(self.sources) == 1:
+                payload = prepare_llama_cpp_audio_backend(
+                    self.base_dir,
+                    self.source,
+                    download_model=True,
+                    timeout_seconds=self.timeout_seconds,
+                )
+            else:
+                payload = _prepare_multiple_llama_audio_backends(
+                    self.base_dir,
+                    self.sources,
+                    timeout_seconds=self.timeout_seconds,
+                )
+        except (LlamaCppRuntimeError, RuntimeError, OSError) as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(payload)
+        finally:
+            self.finished.emit()
+
+
+class LlamaCppAudioBackendPreflightWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, base_dir: Path, source: SensorySource | Sequence[SensorySource]) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+        self.sources = _llama_audio_prepare_sources(source)
+        self.source = self.sources[0]
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            report = build_sensory_audio_runtime_doctor_report(self.base_dir)
+            runtime = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
+            runtime_preflight = (
+                build_llama_cpp_runtime_download_preflight(self.base_dir)
+                if not bool(runtime.get("binary_found"))
+                else {}
+            )
+            requirements = {
+                source.value: build_llama_cpp_audio_prepare_requirement(
+                    report,
+                    source,
+                    runtime_preflight=runtime_preflight,
+                )
+                for source in self.sources
+            }
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(
+                {
+                    "source": "all" if len(self.sources) > 1 else self.source.value,
+                    "doctor": report,
+                    "requirement": requirements[self.source.value] if len(self.sources) == 1 else {},
+                    "requirements": requirements,
+                }
+            )
+        finally:
+            self.finished.emit()
+
+
+class LlamaCppRuntimeDoctorWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, base_dir: Path) -> None:
+        super().__init__()
+        self.base_dir = base_dir
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            report = build_sensory_audio_runtime_doctor_report(self.base_dir)
+        except Exception as exc:  # UI 边界统一转成可读错误。
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(report)
+        finally:
+            self.finished.emit()
+
+
+def _llama_audio_prepare_sources(source: SensorySource | Sequence[SensorySource]) -> tuple[SensorySource, ...]:
+    if isinstance(source, SensorySource):
+        return (source,)
+    sources: list[SensorySource] = []
+    seen: set[SensorySource] = set()
+    for item in source:
+        if item not in _LLAMA_AUDIO_PREPARE_SOURCES or item in seen:
+            continue
+        seen.add(item)
+        sources.append(item)
+    return tuple(sources) or _LLAMA_AUDIO_PREPARE_SOURCES
+
+
+def _prepare_multiple_llama_audio_backends(
+    base_dir: Path,
+    sources: tuple[SensorySource, ...],
+    *,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    issues: list[str] = []
+    for source in sources:
+        try:
+            results[source.value] = prepare_llama_cpp_audio_backend(
+                base_dir,
+                source,
+                download_model=True,
+                timeout_seconds=timeout_seconds,
+            )
+        except (LlamaCppRuntimeError, RuntimeError, OSError) as exc:
+            message = str(exc)
+            issues.append(f"{source.value}: {message}")
+            results[source.value] = {
+                "ok": False,
+                "source": source.value,
+                "message": message,
+            }
+    return {
+        "ok": not issues,
+        "source": "all",
+        "sources": [source.value for source in sources],
+        "results": results,
+        "issues": issues,
+        "message": "llama.cpp 音频后端已准备好。" if not issues else "部分 llama.cpp 音频后端准备失败。",
+    }
 
 
 class TTSTestWorker(QObject):
@@ -413,62 +604,8 @@ def _run_huggingface_model_search(
     ]
     if task_filter:
         args.extend(["--filter", task_filter])
-    completed = _run_hf_command(args, timeout_seconds=timeout_seconds)
+    completed = run_hf_command(args, timeout_seconds=timeout_seconds)
     return _parse_huggingface_model_results(completed.stdout)
-
-
-def download_huggingface_model(
-    repo_id: str,
-    local_dir: Path,
-    *,
-    timeout_seconds: int = HF_MODEL_DOWNLOAD_TIMEOUT_SECONDS,
-) -> dict[str, object]:
-    normalized_repo_id = repo_id.strip()
-    if not normalized_repo_id or "/" not in normalized_repo_id:
-        raise RuntimeError("请选择有效的 Hugging Face 模型仓库 ID。")
-    target = Path(local_dir)
-    target.mkdir(parents=True, exist_ok=True)
-    completed = _run_hf_command(
-        [
-            "download",
-            normalized_repo_id,
-            "--local-dir",
-            str(target),
-        ],
-        timeout_seconds=timeout_seconds,
-    )
-    return {
-        "repo_id": normalized_repo_id,
-        "local_dir": str(target),
-        "message": (completed.stdout or completed.stderr or "").strip(),
-    }
-
-
-def _run_hf_command(
-    args: list[str],
-    *,
-    timeout_seconds: int,
-) -> subprocess.CompletedProcess[str]:
-    executable = shutil.which("hf")
-    if not executable:
-        raise RuntimeError(HF_CLI_INSTALL_HINT)
-    command = [executable, *args]
-    try:
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("Hugging Face 操作超时，请检查网络或稍后重试。") from exc
-    except OSError as exc:
-        raise RuntimeError(str(exc)) from exc
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip()
-        raise RuntimeError(detail or f"`hf {' '.join(args)}` 执行失败。")
-    return completed
 
 
 def _parse_huggingface_model_results(raw_text: str) -> list[dict[str, object]]:

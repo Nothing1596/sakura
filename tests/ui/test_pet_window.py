@@ -4727,13 +4727,176 @@ def test_settings_dialog_model_probe_busy_state_disables_actions() -> None:
 
 def test_settings_dialog_sensory_has_huggingface_download_action() -> None:
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
-    if not hasattr(qtwidgets, "QApplication"):
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget")):
         pytest.skip("当前测试环境只提供了 PySide6 stub。")
 
     dialog, app = _build_api_settings_dialog("sensory_hf_download_action")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+    assert table is not None
 
     assert dialog.sensory_hf_download_button.text() == "从 Hugging Face 下载"
     assert dialog.sensory_hf_download_button.isEnabled()
+    assert dialog.sensory_llama_runtime_button.text() == "准备本机音频增强"
+    assert dialog.sensory_llama_doctor_button.text() == "诊断"
+    assert not dialog.sensory_llama_runtime_button.isEnabled()
+    assert not dialog.sensory_llama_doctor_button.isEnabled()
+
+    table.setCurrentCell(0, 1)
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
+    app.processEvents()
+
+    assert dialog.sensory_llama_runtime_button.isEnabled()
+    assert dialog.sensory_llama_doctor_button.isEnabled()
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_llama_prepare_confirmation_mentions_disk_preflight(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QMessageBox")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    dialog, app = _build_api_settings_dialog("sensory_llama_prepare_disk_preflight")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+    assert table is not None
+    table.setCurrentCell(0, 1)
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
+    app.processEvents()
+
+    questions: list[str] = []
+
+    def fake_question(_parent, _title, text):  # type: ignore[no-untyped-def]
+        questions.append(text)
+        return qtwidgets.QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(qtwidgets.QMessageBox, "question", fake_question)
+
+    dialog._handle_sensory_llama_preflight_success(
+        {
+            "source": "speech",
+            "requirement": {
+                "runtime_preflight": {
+                    "required": True,
+                    "message": "将下载 llama.cpp b1 macOS（10.0 MB）。",
+                    "disk_space": {
+                        "ok": True,
+                        "needed_bytes": 2048,
+                        "available_bytes": 4096,
+                    },
+                },
+                "disk_space": {
+                    "ok": True,
+                    "needed_bytes": 1024,
+                    "available_bytes": 4096,
+                },
+                "model_manifest": {
+                    "manifest_path": "/tmp/audio_model_manifest.json",
+                },
+            },
+        }
+    )
+
+    assert questions
+    assert "将下载 llama.cpp b1 macOS" in questions[0]
+    assert "本地音频模型 manifest" in questions[0]
+    assert "运行时空间" in questions[0]
+    assert "模型空间" in questions[0]
+    assert dialog._sensory_llama_runtime_thread is None
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_llama_prepare_confirmation_covers_all_audio_sources(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QMessageBox")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.sensory.models import SensorySource
+
+    dialog, app = _build_api_settings_dialog("sensory_llama_prepare_all_preflight")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+    assert table is not None
+    table.setCurrentCell(0, 1)
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
+    app.processEvents()
+
+    questions: list[str] = []
+
+    def fake_question(_parent, _title, text):  # type: ignore[no-untyped-def]
+        questions.append(text)
+        return qtwidgets.QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(qtwidgets.QMessageBox, "question", fake_question)
+
+    dialog._handle_sensory_llama_preflight_success(
+        {
+            "source": "all",
+            "sources": ["speech", "sound"],
+            "requirements": {
+                "speech": {
+                    "source": "speech",
+                    "runtime_preflight": {},
+                    "disk_space": {"ok": True, "needed_bytes": 1024, "available_bytes": 4096},
+                },
+                "sound": {
+                    "source": "sound",
+                    "runtime_preflight": {},
+                    "disk_space": {"ok": True, "needed_bytes": 2048, "available_bytes": 4096},
+                },
+            },
+        }
+    )
+
+    assert questions
+    assert "范围：语音、声音事件" in questions[0]
+    assert "语音推荐模型" in questions[0]
+    assert "声音事件推荐模型" in questions[0]
+    assert dialog._pending_sensory_llama_prepare_sources == (
+        SensorySource.SPEECH,
+        SensorySource.SOUND,
+    )
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_llama_prepare_blocks_low_disk_preflight(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QMessageBox")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    dialog, app = _build_api_settings_dialog("sensory_llama_prepare_low_disk")
+    warnings: list[str] = []
+    questions: list[str] = []
+
+    monkeypatch.setattr(qtwidgets.QMessageBox, "warning", lambda _parent, _title, text: warnings.append(text))
+    monkeypatch.setattr(qtwidgets.QMessageBox, "question", lambda _parent, _title, text: questions.append(text))
+
+    dialog._handle_sensory_llama_preflight_success(
+        {
+            "source": "speech",
+            "requirement": {
+                "runtime_preflight": {
+                    "required": True,
+                    "disk_space": {
+                        "ok": False,
+                        "needed_bytes": 2048,
+                        "available_bytes": 1024,
+                    },
+                },
+                "disk_space": {"ok": True},
+            },
+        }
+    )
+
+    assert warnings and "运行时磁盘空间不足" in warnings[0]
+    assert questions == []
+    assert dialog._pending_sensory_llama_prepare_sources is None
 
     dialog.deleteLater()
     app.processEvents()
@@ -4797,6 +4960,314 @@ def test_settings_dialog_sensory_source_table_preserves_parallel_source_configs(
     assert selected.providers["speech_local"].model == "speech-model"
     assert table.item(2, 0).text() == "vision-model"
     assert table.item(2, 1).text() == "speech-model"
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_llama_runtime_success_fills_audio_model_defaults(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QMessageBox")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.sensory.models import SensorySource
+
+    monkeypatch.setattr(qtwidgets.QMessageBox, "information", lambda *args, **kwargs: None)
+    dialog, app = _build_api_settings_dialog("sensory_llama_runtime_defaults")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+    assert table is not None
+
+    table.setCurrentCell(0, 1)
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
+    dialog.sensory_model_edit.setText("")
+    app.processEvents()
+
+    dialog._handle_sensory_llama_runtime_success(
+        {
+            "runtime": {
+                "binary_path": str(dialog.base_dir / "data" / "local_runtimes" / "llama_cpp" / "llama-server"),
+                "install_dir": str(dialog.base_dir / "data" / "local_runtimes" / "llama_cpp"),
+            },
+            "model": {
+                "local_dir": str(dialog.base_dir / "data" / "sensory_models" / "speech" / "qwen"),
+                "downloaded": True,
+            },
+            "message": "已找到可用的 llama-server。",
+        }
+    )
+
+    assert getattr(dialog, "_active_sensory_source") == SensorySource.SPEECH.value
+    assert dialog.sensory_model_edit.text() == str(
+        dialog.base_dir / "data" / "sensory_models" / "speech" / "qwen"
+    )
+    assert dialog.sensory_endpoint_edit.text() == "http://127.0.0.1:18080/v1"
+
+    table.setCurrentCell(0, 0)
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
+    dialog.sensory_model_edit.setText("")
+    app.processEvents()
+
+    dialog._handle_sensory_llama_runtime_success({"message": "ok"})
+
+    assert getattr(dialog, "_active_sensory_source") == SensorySource.VISION.value
+    assert dialog.sensory_model_edit.text() == ""
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_llama_runtime_success_updates_all_audio_sources(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QMessageBox")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.sensory.models import SensoryProviderMode, SensorySource
+
+    monkeypatch.setattr(qtwidgets.QMessageBox, "information", lambda *args, **kwargs: None)
+    dialog, app = _build_api_settings_dialog("sensory_llama_runtime_all_success")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+    assert table is not None
+
+    table.setCurrentCell(0, 1)
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
+    app.processEvents()
+
+    binary = str(dialog.base_dir / "llama-server")
+    install_dir = str(dialog.base_dir / "runtime")
+    speech_model = str(dialog.base_dir / "models" / "speech")
+    sound_model = str(dialog.base_dir / "models" / "sound")
+
+    dialog._handle_sensory_llama_runtime_success(
+        {
+            "ok": True,
+            "source": "all",
+            "sources": ["speech", "sound"],
+            "message": "prepared",
+            "results": {
+                "speech": {
+                    "ok": True,
+                    "source": "speech",
+                    "runtime": {
+                        "binary_path": binary,
+                        "install_dir": install_dir,
+                        "package": {"package_id": "pkg"},
+                    },
+                    "model": {"local_dir": speech_model, "downloaded": True},
+                },
+                "sound": {
+                    "ok": True,
+                    "source": "sound",
+                    "runtime": {
+                        "binary_path": binary,
+                        "install_dir": install_dir,
+                        "package": {"package_id": "pkg"},
+                    },
+                    "model": {"local_dir": sound_model, "downloaded": True},
+                },
+            },
+        }
+    )
+
+    state = getattr(dialog, "_sensory_source_state")
+    assert state[SensorySource.SPEECH.value]["mode_ui"] == "local"
+    assert state[SensorySource.SPEECH.value]["backend"] == "llama"
+    assert state[SensorySource.SPEECH.value]["model"] == speech_model
+    assert state[SensorySource.SPEECH.value]["endpoint"] == "http://127.0.0.1:18080/v1"
+    assert state[SensorySource.SPEECH.value]["llama_binary_path"] == binary
+    assert state[SensorySource.SOUND.value]["mode_ui"] == "local"
+    assert state[SensorySource.SOUND.value]["backend"] == "llama"
+    assert state[SensorySource.SOUND.value]["model"] == sound_model
+    assert state[SensorySource.SOUND.value]["endpoint"] == "http://127.0.0.1:18080/v1"
+    assert state[SensorySource.SOUND.value]["llama_runtime_install_dir"] == install_dir
+    assert dialog.sensory_model_edit.text() == speech_model
+    assert dialog.sensory_enabled_check.isChecked()
+
+    selected = dialog._selected_sensory_settings()
+
+    assert selected is not None
+    assert selected.enabled is True
+    assert selected.sources[SensorySource.SPEECH].mode == SensoryProviderMode.LOCAL
+    assert selected.sources[SensorySource.SOUND].mode == SensoryProviderMode.LOCAL
+    assert selected.sources[SensorySource.SPEECH].provider_id == "speech_local"
+    assert selected.sources[SensorySource.SOUND].provider_id == "sound_local"
+    assert selected.providers["speech_local"].model == speech_model
+    assert selected.providers["sound_local"].model == sound_model
+    assert selected.providers["speech_local"].endpoint == "http://127.0.0.1:18080/v1"
+    assert selected.providers["sound_local"].endpoint == "http://127.0.0.1:18080/v1"
+    assert selected.providers["speech_local"].extra["backend"] == "llama"
+    assert selected.providers["sound_local"].extra["managed_runtime"] == "llama.cpp"
+    assert selected.providers["speech_local"].extra["llama_binary_path"] == binary
+    assert selected.providers["sound_local"].extra["llama_runtime_install_dir"] == install_dir
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_llama_audio_test_confirms_large_model_download(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QMessageBox")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    dialog, app = _build_api_settings_dialog("sensory_llama_download_confirm")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+    assert table is not None
+    table.setCurrentCell(0, 1)
+    dialog.sensory_enabled_check.setChecked(True)
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
+    dialog.sensory_endpoint_edit.setText("http://127.0.0.1:18080/v1")
+    dialog.sensory_model_edit.setText("ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0")
+    llama_binary = dialog.base_dir / "llama-server"
+    _write_fake_runtime_python(llama_binary, "#!/bin/sh\n")
+    getattr(dialog, "_sensory_source_state")["speech"].update(
+        {
+            "managed_runtime": "llama.cpp",
+            "llama_binary_path": str(llama_binary),
+        }
+    )
+    app.processEvents()
+
+    questions: list[str] = []
+
+    def fake_question(_parent, _title, text):  # type: ignore[no-untyped-def]
+        questions.append(text)
+        return qtwidgets.QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(qtwidgets.QMessageBox, "question", fake_question)
+
+    dialog._test_sensory_model()
+
+    assert questions
+    assert "约 1.0 GB" in questions[0]
+    assert dialog._sensory_model_test_thread is None
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_llama_audio_test_confirms_unknown_hf_model_download(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget", "QMessageBox")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    dialog, app = _build_api_settings_dialog("sensory_llama_unknown_download_confirm")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+    assert table is not None
+    table.setCurrentCell(0, 1)
+    dialog.sensory_enabled_check.setChecked(True)
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
+    dialog.sensory_endpoint_edit.setText("http://127.0.0.1:18080/v1")
+    dialog.sensory_model_edit.setText("example/audio-gguf:Q4_K_M")
+    llama_binary = dialog.base_dir / "llama-server"
+    _write_fake_runtime_python(llama_binary, "#!/bin/sh\n")
+    getattr(dialog, "_sensory_source_state")["speech"].update(
+        {
+            "managed_runtime": "llama.cpp",
+            "llama_binary_path": str(llama_binary),
+        }
+    )
+    app.processEvents()
+
+    questions: list[str] = []
+
+    def fake_question(_parent, _title, text):  # type: ignore[no-untyped-def]
+        questions.append(text)
+        return qtwidgets.QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(qtwidgets.QMessageBox, "question", fake_question)
+
+    dialog._test_sensory_model()
+
+    assert questions
+    assert "从 Hugging Face 下载模型与 mmproj" in questions[0]
+    assert "下载量取决于模型仓库" in questions[0]
+    assert dialog._sensory_model_test_thread is None
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_sensory_status_guides_local_llama_setup() -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QTableWidget")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    dialog, app = _build_api_settings_dialog("sensory_llama_status_hint")
+    table = dialog.findChild(qtwidgets.QTableWidget, "sensorySourceTable")
+    assert table is not None
+    table.setCurrentCell(0, 1)
+    dialog.sensory_enabled_check.setChecked(True)
+    dialog.sensory_mode_combo.setCurrentIndex(dialog.sensory_mode_combo.findData("local"))
+    dialog.sensory_backend_combo.setCurrentIndex(dialog.sensory_backend_combo.findData("llama"))
+    dialog.sensory_model_edit.setText("ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0")
+    app.processEvents()
+
+    assert "准备本机音频增强" in dialog.sensory_status_label.text()
+
+    llama_binary = dialog.base_dir / "llama-server"
+    _write_fake_runtime_python(llama_binary, "#!/bin/sh\n")
+    getattr(dialog, "_sensory_source_state")["speech"].update(
+        {
+            "managed_runtime": "llama.cpp",
+            "llama_binary_path": str(llama_binary),
+        }
+    )
+    dialog._handle_sensory_control_changed()
+
+    assert "首次测试会确认预计下载 约 1.0 GB" in dialog.sensory_status_label.text()
+
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_dialog_sensory_llama_doctor_success_updates_status(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    dialog, app = _build_api_settings_dialog("sensory_llama_doctor_success")
+    messages: list[str] = []
+
+    def fake_information(_parent, _title, text):  # type: ignore[no-untyped-def]
+        messages.append(text)
+        return qtwidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(qtwidgets.QMessageBox, "information", fake_information)
+
+    dialog._handle_sensory_llama_doctor_success(
+        {
+            "platform_key": "macos-arm64",
+            "runtime": {
+                "binary_found": True,
+                "binary_path": "/tmp/llama-server",
+                "manifest_candidates": [{"exists": False}],
+            },
+            "huggingface": {
+                "hf_cli_found": True,
+                "hf_cli_path": "/usr/local/bin/hf",
+            },
+            "ready_for_smoke": True,
+            "model_cache": {
+                "speech": {
+                    "used_for_plan": False,
+                    "model_manifest": {"manifest_path": "/tmp/audio_model_manifest.json"},
+                    "disk_space": {"ok": False},
+                }
+            },
+            "next_actions": ["speech 首次真实 smoke 需要确认 GGUF 模型下载：约 1.0 GB。"],
+        }
+    )
+
+    assert "平台：macos-arm64" in messages[0]
+    assert "llama-server：/tmp/llama-server" in messages[0]
+    assert "Hugging Face CLI：/usr/local/bin/hf" in messages[0]
+    assert "本地模型 manifest：speech" in messages[0]
+    assert "模型下载空间不足：speech" in messages[0]
+    assert dialog.sensory_status_label.text() == "本机音频增强：已准备"
 
     dialog.deleteLater()
     app.processEvents()
