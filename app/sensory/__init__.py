@@ -1,10 +1,27 @@
 """Sensory middleware framework for multimodal observations."""
 
 from app.sensory.audio_capture import (
+    AudioInputSource,
     CapturedAudio,
+    MicrophoneAudioCapture,
     SystemAudioCapture,
     SystemAudioCaptureError,
+    create_microphone_audio_capture,
     create_system_audio_capture,
+)
+from app.sensory.audio_inference import (
+    BUILTIN_AUDIO_RUNTIME,
+    OFFICIAL_AUDIO_FRAMEWORK_ID,
+    OFFICIAL_AUDIO_FRAMEWORK_LABEL,
+    SIDECAR_AUDIO_RUNTIME,
+    AudioInferenceEngine,
+    AudioInferenceFrameworkSpec,
+    AudioInferenceRequest,
+    AudioInferenceResult,
+    AudioInferenceTask,
+    ShortAudioInferenceEngine,
+    create_default_audio_inference_engine,
+    official_audio_inference_framework,
 )
 from app.sensory.context import SensoryContextProvider
 from app.sensory.models import (
@@ -32,20 +49,42 @@ from app.sensory.settings import (
 )
 from app.sensory.store import SensoryObservationStore
 from app.sensory.tools import (
+    OBSERVE_ENVIRONMENT_SOUND_TOOL_NAME,
+    OBSERVE_ENVIRONMENT_SPEECH_TOOL_NAME,
+    OBSERVE_SYSTEM_SOUND_TOOL_NAME,
+    OBSERVE_SYSTEM_SPEECH_TOOL_NAME,
+    SENSORY_SOUND_OBSERVATION_CAPABILITY,
     SENSORY_OBSERVATION_CAPABILITY,
     SENSORY_OBSERVATION_TOOL_NAME,
+    SENSORY_SPEECH_OBSERVATION_CAPABILITY,
+    configured_sensory_capabilities,
+    create_sensory_audio_observation_tools,
     create_sensory_observation_tool,
 )
 
 __all__ = [
     "ApiSensoryProvider",
+    "AudioInputSource",
+    "AudioInferenceEngine",
+    "AudioInferenceFrameworkSpec",
+    "AudioInferenceRequest",
+    "AudioInferenceResult",
+    "AudioInferenceTask",
+    "BUILTIN_AUDIO_RUNTIME",
     "CapturedAudio",
     "DisabledProvider",
     "FakeSensoryProvider",
     "LlamaCppSensoryProvider",
     "LmStudioSensoryProvider",
     "LocalSensoryProvider",
+    "MicrophoneAudioCapture",
     "OllamaSensoryProvider",
+    "OBSERVE_ENVIRONMENT_SOUND_TOOL_NAME",
+    "OBSERVE_ENVIRONMENT_SPEECH_TOOL_NAME",
+    "OBSERVE_SYSTEM_SOUND_TOOL_NAME",
+    "OBSERVE_SYSTEM_SPEECH_TOOL_NAME",
+    "OFFICIAL_AUDIO_FRAMEWORK_ID",
+    "OFFICIAL_AUDIO_FRAMEWORK_LABEL",
     "SensoryContextProvider",
     "SensoryObservation",
     "SensoryObservationStore",
@@ -58,10 +97,19 @@ __all__ = [
     "SensorySettings",
     "SensorySource",
     "SensorySourceSettings",
+    "ShortAudioInferenceEngine",
+    "SIDECAR_AUDIO_RUNTIME",
     "SystemAudioCapture",
     "SystemAudioCaptureError",
+    "SENSORY_SOUND_OBSERVATION_CAPABILITY",
     "SENSORY_OBSERVATION_CAPABILITY",
     "SENSORY_OBSERVATION_TOOL_NAME",
+    "SENSORY_SPEECH_OBSERVATION_CAPABILITY",
+    "create_default_audio_inference_engine",
+    "configured_sensory_capabilities",
+    "create_microphone_audio_capture",
+    "create_sensory_audio_observation_tools",
     "create_sensory_observation_tool",
     "create_system_audio_capture",
+    "official_audio_inference_framework",
 ]

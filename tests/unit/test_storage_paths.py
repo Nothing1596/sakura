@@ -115,6 +115,7 @@ class TestStoragePathsSnapshot:
         assert self.paths.tasks_store() == self.data / "tasks.json"
         assert self.paths.notes_dir == self.data / "notes"
         assert self.paths.system_audio_cache_dir == self.data / "cache" / "system_audio"
+        assert self.paths.microphone_audio_cache_dir == self.data / "cache" / "microphone_audio"
         assert (
             self.paths.system_audio_capture_helper()
             == self.data / "cache" / "system_audio" / "macos_system_audio_capture"
@@ -123,6 +124,12 @@ class TestStoragePathsSnapshot:
         assert (
             self.paths.sensory_model_cache_for("vision", "Qwen/Qwen3-VL-4B-Instruct")
             == self.data / "cache" / "sensory_models" / "vision" / "Qwen_Qwen3-VL-4B-Instruct"
+        )
+        assert self.paths.audio_inference_dir == self.data / "audio_inference"
+        assert self.paths.audio_inference_frameworks_dir == self.data / "audio_inference" / "frameworks"
+        assert (
+            self.paths.audio_inference_framework_for("sakura_official_short")
+            == self.data / "audio_inference" / "frameworks" / "sakura_official_short"
         )
 
     def test_trailing_dot_character_id_mapping_unchanged(self) -> None:
@@ -148,6 +155,7 @@ class TestStoragePathsSnapshot:
         assert self.paths.cache_dir == self.data / "cache"
         assert self.paths.tts_cache_dir == self.data / "cache" / "tts"
         assert self.paths.system_audio_cache_dir == self.data / "cache" / "system_audio"
+        assert self.paths.microphone_audio_cache_dir == self.data / "cache" / "microphone_audio"
         assert self.paths.logs_dir == self.data / "logs"
         assert self.paths.runtime_log_file() == self.data / "logs" / "sakura-runtime.log"
         assert self.paths.tts_bundles_dir == self.data / "tts_bundles"
@@ -200,7 +208,9 @@ class TestEnsureDirs:
             paths.notes_dir,
             paths.tts_cache_dir,
             paths.system_audio_cache_dir,
+            paths.microphone_audio_cache_dir,
             paths.sensory_models_cache_dir,
+            paths.audio_inference_frameworks_dir,
             paths.logs_dir,
         ]:
             assert d.is_dir()

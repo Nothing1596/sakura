@@ -151,6 +151,10 @@ class StoragePaths:
     def system_audio_cache_dir(self) -> Path:
         return self.cache_dir / "system_audio"
 
+    @property
+    def microphone_audio_cache_dir(self) -> Path:
+        return self.cache_dir / "microphone_audio"
+
     def system_audio_capture_helper(self) -> Path:
         return self.system_audio_cache_dir / "macos_system_audio_capture"
 
@@ -165,6 +169,17 @@ class StoragePaths:
             / sanitize_file_stem(source_value)
             / sanitize_file_stem(repo_id)
         )
+
+    @property
+    def audio_inference_dir(self) -> Path:
+        return self._data / "audio_inference"
+
+    @property
+    def audio_inference_frameworks_dir(self) -> Path:
+        return self.audio_inference_dir / "frameworks"
+
+    def audio_inference_framework_for(self, framework_id: str) -> Path:
+        return self.audio_inference_frameworks_dir / sanitize_file_stem(framework_id)
 
     # ---- 日志 ----
     @property
@@ -235,7 +250,9 @@ class StoragePaths:
             self.notes_dir,
             self.tts_cache_dir,
             self.system_audio_cache_dir,
+            self.microphone_audio_cache_dir,
             self.sensory_models_cache_dir,
+            self.audio_inference_frameworks_dir,
             self.logs_dir,
         ]:
             d.mkdir(parents=True, exist_ok=True)
