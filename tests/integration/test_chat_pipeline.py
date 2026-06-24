@@ -381,6 +381,7 @@ def test_chat_pipeline_uses_sensory_provider_for_visual_summary_bridge() -> None
         visual_path.unlink(missing_ok=True)
         sensory_path.unlink(missing_ok=True)
 
+
 def test_chat_pipeline_injects_sensory_context_into_agent_runtime() -> None:
     class Client:
         def __init__(self) -> None:
