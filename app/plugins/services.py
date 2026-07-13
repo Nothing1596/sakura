@@ -3,8 +3,8 @@
 为了让高级插件能做有限交互，但又不直接拿到 Sakura 内部对象（主窗口、TTS
 manager、LLM client 等），这里提供一组安全的门面服务。
 
-本轮只实现最小安全方法：默认写 debug log（空实现），并预留 ``set_backends``
-注入接口（seam），宿主后续可在装配处注入真实后端。插件永远只拿到本门面，
+本轮只实现最小安全方法：默认写运行日志（空实现），并预留 ``set_backends``
+注入接口，宿主后续可在装配处注入真实后端。插件永远只拿到本门面，
 不接触内部实例。
 
 线程说明：事件可能在 worker 线程派发，handler 调用这些服务时也在该线程。
@@ -17,13 +17,14 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.core.resource_manager import (
     DEFAULT_THREAD_SHUTDOWN_WAIT_MS,
     ResourceRegistry,
     ServiceResource,
     ThreadGroupResource,
 )
+from app.plugins.models import PERMISSION_MOBILE_CHAT
 
 
 class PluginUIService:
@@ -43,13 +44,13 @@ class PluginUIService:
             if self._bubble_sink is not None:
                 self._bubble_sink(text, source)
                 return
-            debug_log(
+            log_event(
                 "PluginUIService",
                 "show_bubble（未接后端，空实现）",
                 {"source": source, "text": text},
             )
         except Exception as exc:  # noqa: BLE001 — 服务调用不得影响插件或宿主
-            debug_log("PluginUIService", "show_bubble 失败", {"error": str(exc)})
+            log_event("PluginUIService", "show_bubble 失败", {"error": str(exc)})
 
 
 class PluginTTSService:
@@ -69,13 +70,13 @@ class PluginTTSService:
             if self._tts_sink is not None:
                 self._tts_sink(text, interrupt)
                 return
-            debug_log(
+            log_event(
                 "PluginTTSService",
                 "speak（未接后端，空实现）",
                 {"interrupt": interrupt, "text": text},
             )
         except Exception as exc:  # noqa: BLE001
-            debug_log("PluginTTSService", "speak 失败", {"error": str(exc)})
+            log_event("PluginTTSService", "speak 失败", {"error": str(exc)})
 
 
 class PluginAgentService:
@@ -102,13 +103,13 @@ class PluginAgentService:
             if self._passive_reply_sink is not None:
                 self._passive_reply_sink(reason, context)
                 return
-            debug_log(
+            log_event(
                 "PluginAgentService",
                 "request_passive_reply（未接后端，仅记录）",
                 {"reason": reason, "context": context or {}},
             )
         except Exception as exc:  # noqa: BLE001
-            debug_log("PluginAgentService", "request_passive_reply 失败", {"error": str(exc)})
+            log_event("PluginAgentService", "request_passive_reply 失败", {"error": str(exc)})
 
 
 class PluginInputService:
@@ -136,13 +137,64 @@ class PluginInputService:
             if self._input_text_sink is not None:
                 self._input_text_sink(text)
                 return
-            debug_log(
+            log_event(
                 "PluginInputService",
                 "set_input_text（未接后端，空实现）",
                 {"text": text},
             )
         except Exception as exc:  # noqa: BLE001 — 服务调用不得影响插件或宿主
-            debug_log("PluginInputService", "set_input_text 失败", {"error": str(exc)})
+            log_event("PluginInputService", "set_input_text 失败", {"error": str(exc)})
+
+
+class PluginMobileService:
+    """供远程聊天入口复用宿主对话、历史与记忆的受控门面。"""
+
+    def __init__(self) -> None:
+        self._characters_sink: Callable[[], list[dict[str, str]]] | None = None
+        self._history_sink: Callable[[str, int], list[dict[str, str]]] | None = None
+        self._chat_sink: Callable[[str, str, str], dict[str, Any]] | None = None
+        self._theme_sink: Callable[[], dict[str, object]] | None = None
+
+    def set_backends(
+        self,
+        *,
+        characters_sink: Callable[[], list[dict[str, str]]] | None = None,
+        history_sink: Callable[[str, int], list[dict[str, str]]] | None = None,
+        chat_sink: Callable[[str, str, str], dict[str, Any]] | None = None,
+        theme_sink: Callable[[], dict[str, object]] | None = None,
+    ) -> None:
+        if characters_sink is not None:
+            self._characters_sink = characters_sink
+        if history_sink is not None:
+            self._history_sink = history_sink
+        if chat_sink is not None:
+            self._chat_sink = chat_sink
+        if theme_sink is not None:
+            self._theme_sink = theme_sink
+
+    def characters(self) -> list[dict[str, str]]:
+        if self._characters_sink is None:
+            raise RuntimeError("移动端聊天服务尚未就绪。")
+        return self._characters_sink()
+
+    def history(self, character_id: str, *, limit: int = 50) -> list[dict[str, str]]:
+        if self._history_sink is None:
+            raise RuntimeError("移动端聊天服务尚未就绪。")
+        return self._history_sink(character_id, limit)
+
+    def chat(self, character_id: str, text: str, image_data_url: str = "") -> dict[str, Any]:
+        if self._chat_sink is None:
+            raise RuntimeError("移动端聊天服务尚未就绪。")
+        return self._chat_sink(character_id, text, image_data_url)
+
+    def theme(self) -> dict[str, object]:
+        if self._theme_sink is None:
+            return _default_theme_mapping()
+        try:
+            return _theme_mapping(self._theme_sink())
+        except Exception as exc:  # noqa: BLE001
+            log_event("PluginMobileService", "读取移动端主题失败，使用默认主题", {"error": str(exc)})
+            return _default_theme_mapping()
 
 
 class PluginResourceService:
@@ -234,7 +286,7 @@ class PluginResourceService:
             try:
                 stop(timeout_ms)
             except Exception as exc:  # noqa: BLE001
-                debug_log(
+                log_event(
                     "PluginResourceService",
                     "插件资源关闭失败",
                     {"plugin_id": plugin_id, "error": str(exc)},
@@ -303,11 +355,17 @@ class ScopedPluginResourceService:
 class ScopedPluginServices:
     """单插件视角的宿主服务集合。"""
 
-    def __init__(self, services: "PluginServices", plugin_id: str) -> None:
+    def __init__(
+        self,
+        services: "PluginServices",
+        plugin_id: str,
+        permissions: tuple[str, ...] = (),
+    ) -> None:
         self.ui = services.ui
         self.tts = services.tts
         self.agent = services.agent
         self.input = services.input
+        self.mobile = services.mobile if PERMISSION_MOBILE_CHAT in permissions else None
         self.resources = services.resources.for_plugin(plugin_id)
 
 
@@ -319,6 +377,7 @@ class PluginServices:
         self.tts = PluginTTSService()
         self.agent = PluginAgentService()
         self.input = PluginInputService()
+        self.mobile = PluginMobileService()
         self.resources = PluginResourceService()
 
     def set_backends(
@@ -328,6 +387,10 @@ class PluginServices:
         tts_sink: Callable[[str, bool], None] | None = None,
         passive_reply_sink: Callable[[str, dict[str, Any] | None], None] | None = None,
         input_text_sink: Callable[[str], None] | None = None,
+        mobile_characters_sink: Callable[[], list[dict[str, str]]] | None = None,
+        mobile_history_sink: Callable[[str, int], list[dict[str, str]]] | None = None,
+        mobile_chat_sink: Callable[[str, str, str], dict[str, Any]] | None = None,
+        mobile_theme_sink: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         """宿主装配时一次性注入真实后端（任意项可省略）。"""
         if bubble_sink is not None:
@@ -338,11 +401,33 @@ class PluginServices:
             self.agent.set_passive_reply_sink(passive_reply_sink)
         if input_text_sink is not None:
             self.input.set_input_text_sink(input_text_sink)
+        self.mobile.set_backends(
+            characters_sink=mobile_characters_sink,
+            history_sink=mobile_history_sink,
+            chat_sink=mobile_chat_sink,
+            theme_sink=mobile_theme_sink,
+        )
 
     def set_resource_registry(self, registry: ResourceRegistry) -> None:
         """宿主注入 App 级资源域。"""
         self.resources.set_resource_registry(registry)
 
-    def for_plugin(self, plugin_id: str) -> ScopedPluginServices:
+    def for_plugin(
+        self,
+        plugin_id: str,
+        permissions: tuple[str, ...] = (),
+    ) -> ScopedPluginServices:
         """构造绑定插件 ID 的服务视图，避免插件看到全局资源门面。"""
-        return ScopedPluginServices(self, plugin_id)
+        return ScopedPluginServices(self, plugin_id, permissions)
+
+
+def _default_theme_mapping() -> dict[str, object]:
+    from app.ui.theme import DEFAULT_THEME_SETTINGS, theme_colors_to_mapping
+
+    return theme_colors_to_mapping(DEFAULT_THEME_SETTINGS)
+
+
+def _theme_mapping(data: Any) -> dict[str, object]:
+    from app.ui.theme import theme_colors_to_mapping, theme_from_mapping
+
+    return theme_colors_to_mapping(theme_from_mapping(data))

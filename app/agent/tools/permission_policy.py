@@ -38,13 +38,15 @@ class ToolPermissionPolicy:
     # ---- 浏览器工具 (free_access 可跳过) ----
 
     BROWSER_FREE_ACCESS_TOOLS: frozenset[str] = frozenset({
-        "playwright_navigate",
         "playwright_get_text",
         "playwright_search_web",
         "playwright_screenshot",
         "playwright_click",
+    })
+
+    ALWAYS_CONFIRM_TOOL_NAMES: frozenset[str] = frozenset({
+        "playwright_navigate",
         "playwright_fill",
-        "playwright_evaluate",
     })
 
     # ---- 判断逻辑 ----
@@ -54,6 +56,13 @@ class ToolPermissionPolicy:
 
         返回 True 表示需要弹出确认面板。
         """
+        if tool.confirmation_predicate is not None:
+            try:
+                if not tool.confirmation_predicate(arguments or {}):
+                    return False
+            except Exception:
+                return True
+
         # 工具本身不需要确认
         if not tool.requires_confirmation:
             return False
@@ -66,6 +75,8 @@ class ToolPermissionPolicy:
 
     def _can_execute_with_free_access(self, tool: Tool) -> bool:
         """free_access 模式下是否可直接执行。"""
+        if tool.confirmation_bypass_free_access:
+            return False
         # 高风险工具始终需要确认
         if self._is_always_high_risk(tool):
             return False
@@ -73,6 +84,8 @@ class ToolPermissionPolicy:
 
     def _is_always_high_risk(self, tool: Tool) -> bool:
         """检查是否属于不可豁免的高风险工具。"""
+        if tool.name in self.ALWAYS_CONFIRM_TOOL_NAMES:
+            return True
         if tool.risk == "high":
             return True
         if tool.confirmation_risk in {"delete_file", "file_delete", "destructive_file"}:

@@ -14,11 +14,24 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from app.agent.actions import PendingToolAction
-from app.core.debug_log import debug_log
+from app.agent.actions import ApprovalScope, PendingToolAction, ToolConfirmationDetails
+from app.core.runtime_log import log_event
 
 
 ToolHandler = Callable[[dict[str, Any]], Any]
+ToolConfirmationBuilder = Callable[[dict[str, Any]], ToolConfirmationDetails]
+ToolConfirmationPredicate = Callable[[dict[str, Any]], bool]
+ToolApprovalHandler = Callable[[PendingToolAction, ApprovalScope, "ToolExecutionResult"], None]
+
+
+@dataclass(frozen=True)
+class ToolGroupMetadata:
+    """工具组的模型提示与默认激活策略。"""
+
+    id: str
+    label: str = ""
+    prompt_hint: str = ""
+    default_active: bool = False
 
 
 @dataclass(frozen=True)
@@ -64,6 +77,10 @@ class Tool:
     risk: str = "low"
     capability: str | None = None
     source: str = "builtin"
+    confirmation_bypass_free_access: bool = False
+    confirmation_builder: ToolConfirmationBuilder | None = None
+    confirmation_predicate: ToolConfirmationPredicate | None = None
+    approval_handler: ToolApprovalHandler | None = None
 
     @property
     def metadata(self) -> ToolMetadata:
@@ -101,12 +118,28 @@ class ToolRegistry:
     - 工具搜索 (search_tools / list_tool_groups)
     """
 
-    def __init__(self, tools: list[Tool] | None = None) -> None:
+    def __init__(
+        self,
+        tools: list[Tool] | None = None,
+        group_metadata: list[ToolGroupMetadata] | None = None,
+    ) -> None:
         self._tools: dict[str, Tool] = {}
+        self._group_metadata: dict[str, ToolGroupMetadata] = {
+            item.id: item
+            for item in (
+                ToolGroupMetadata("default", "内置工具", default_active=True),
+                ToolGroupMetadata("mcp", "MCP 工具", default_active=True),
+                ToolGroupMetadata("memory", "记忆工具", default_active=True),
+                ToolGroupMetadata("browser", "浏览器工具"),
+            )
+        }
+        self._enabled_capabilities: set[str] = set()
         from app.agent.tools.permission_policy import ToolPermissionPolicy
         self.permission_policy = ToolPermissionPolicy()
         # 可选事件发射器（由宿主注入），用于派发 tool.* 插件事件。
         self._event_emit: Callable[[str, dict[str, Any] | None], None] | None = None
+        for metadata in group_metadata or []:
+            self.register_group(metadata)
         for tool in tools or []:
             self.register(tool)
 
@@ -132,36 +165,25 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         """注册一个工具。同名工具会覆盖旧的。"""
         self._tools[tool.name] = tool
-        debug_log(
-            "ToolRegistry",
-            "注册工具",
-            {
-                "name": tool.name,
-                "group": tool.group,
-                "risk": tool.risk,
-                "requires_confirmation": tool.requires_confirmation,
-                "source": tool.source,
-                "capability": tool.capability,
-            },
+
+    def register_group(self, metadata: ToolGroupMetadata) -> None:
+        group_id = metadata.id.strip()
+        if not group_id:
+            raise ValueError("工具组 id 不能为空。")
+        self._group_metadata[group_id] = ToolGroupMetadata(
+            id=group_id,
+            label=metadata.label.strip(),
+            prompt_hint=metadata.prompt_hint.strip(),
+            default_active=bool(metadata.default_active),
         )
 
-    def register_from_provider(self, provider: object) -> int:
-        """从 ToolProvider 批量注册工具。
-
-        返回成功注册的数量。
-        """
-        contribute = getattr(provider, "contribute_tools", None)
-        if contribute is None:
-            debug_log(
-                "ToolRegistry",
-                "Provider 不支持 contribute_tools",
-                {"provider": type(provider).__name__},
-            )
-            return 0
-        tools = contribute()
-        for tool in tools:
-            self.register(tool)
-        return len(tools)
+    def unregister(self, name: str, *, expected: Tool | None = None) -> bool:
+        """移除工具；expected 可防止误删后来覆盖的同名工具。"""
+        current = self._tools.get(name)
+        if current is None or (expected is not None and current is not expected):
+            return False
+        del self._tools[name]
+        return True
 
     # ---- 查询 ----
 
@@ -189,6 +211,33 @@ class ToolRegistry:
     def groups(self) -> set[str]:
         """返回所有工具组。"""
         return {tool.group for tool in self.all()}
+
+    def default_active_groups(self) -> set[str]:
+        return {
+            group_id
+            for group_id, metadata in self._group_metadata.items()
+            if metadata.default_active
+        }
+
+    def group_prompt_hints(self, active_groups: set[str]) -> tuple[str, ...]:
+        return tuple(
+            metadata.prompt_hint
+            for group_id, metadata in self._group_metadata.items()
+            if group_id in active_groups and metadata.prompt_hint
+        )
+
+    @property
+    def enabled_capabilities(self) -> set[str]:
+        return set(self._enabled_capabilities)
+
+    def set_capability_enabled(self, capability: str, enabled: bool) -> None:
+        normalized = capability.strip()
+        if not normalized:
+            return
+        if enabled:
+            self._enabled_capabilities.add(normalized)
+        else:
+            self._enabled_capabilities.discard(normalized)
 
     # ---- 描述 (模型可见) ----
 
@@ -308,7 +357,7 @@ class ToolRegistry:
         permission_policy 参数接受 ToolPermissionPolicy 实例，用于集中控制确认逻辑。
         """
         tool = self.get(name)
-        debug_log(
+        log_event(
             "ToolRegistry",
             "准备工具执行",
             {
@@ -338,16 +387,36 @@ class ToolRegistry:
                 content="",
                 error="工具参数必须是 JSON object。",
             )
-            debug_log("ToolRegistry", "工具参数无效", result.to_dict())
+            log_event("ToolRegistry", "工具参数无效", result.to_dict())
+            return result
+        validation_error = _validate_tool_arguments(arguments, tool.parameters)
+        if validation_error:
+            result = ToolExecutionResult(name, False, "", f"工具参数校验失败：{validation_error}")
+            log_event("ToolRegistry", "工具参数无效", result.to_dict())
             return result
 
+        confirmation_details = ToolConfirmationDetails(risk_level=tool.risk)
+        if tool.confirmation_builder is not None:
+            try:
+                confirmation_details = tool.confirmation_builder(arguments).normalized()
+            except Exception as exc:  # noqa: BLE001 - 确认元数据异常时收紧权限而非绕过确认
+                log_event(
+                    "ToolRegistry",
+                    "工具确认信息构建失败，已按高风险单次执行处理",
+                    {"name": name, "error": str(exc)},
+                )
+                confirmation_details = ToolConfirmationDetails(
+                    summary=f"执行工具 {name}",
+                    risk_level="high",
+                )
         action = PendingToolAction.create(
             tool_name=name,
             arguments=arguments,
             reason=reason,
             tool_call_id=tool_call_id,
+            confirmation_details=confirmation_details,
         )
-        debug_log("ToolRegistry", "工具等待用户确认", action.to_dict())
+        log_event("ToolRegistry", "工具等待用户确认", action.to_dict())
         return action
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecutionResult:
@@ -361,7 +430,7 @@ class ToolRegistry:
                 content="",
                 error=f"未知工具：{name}",
             )
-            debug_log("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
+            log_event("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
             return result
         if tool.handler is None:
             result = ToolExecutionResult(
@@ -370,7 +439,7 @@ class ToolRegistry:
                 content="",
                 error=f"工具未配置处理器：{name}",
             )
-            debug_log("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
+            log_event("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
             return result
         if not isinstance(arguments, dict):
             result = ToolExecutionResult(
@@ -379,11 +448,16 @@ class ToolRegistry:
                 content="",
                 error="工具参数必须是 JSON object。",
             )
-            debug_log("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
+            log_event("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
+            return result
+        validation_error = _validate_tool_arguments(arguments, tool.parameters)
+        if validation_error:
+            result = ToolExecutionResult(name, False, "", f"工具参数校验失败：{validation_error}")
+            log_event("ToolRegistry", "工具执行失败", _result_with_elapsed(result, started_at))
             return result
 
         try:
-            debug_log(
+            log_event(
                 "ToolRegistry",
                 "开始执行工具",
                 {
@@ -405,7 +479,7 @@ class ToolRegistry:
                 content="",
                 error=str(exc),
             )
-            debug_log("ToolRegistry", "工具执行异常", _result_with_elapsed(result, started_at))
+            log_event("ToolRegistry", "工具执行异常", _result_with_elapsed(result, started_at))
             self._emit_tool_event("tool.failed", {"name": name, "error": str(exc)})
             return result
         result = ToolExecutionResult(
@@ -413,8 +487,40 @@ class ToolRegistry:
             success=True,
             content=content,
         )
-        debug_log("ToolRegistry", "工具执行成功", _result_with_elapsed(result, started_at))
+        log_event("ToolRegistry", "工具执行成功", _result_with_elapsed(result, started_at))
         self._emit_tool_event("tool.finished", {"name": name})
+        return result
+
+    def execute_confirmed(
+        self,
+        action: PendingToolAction,
+        approval_scope: ApprovalScope = ApprovalScope.ONCE,
+    ) -> ToolExecutionResult:
+        """执行已确认动作，并把授权结果通知工具所有者。"""
+        if not action.allows_scope(approval_scope):
+            return ToolExecutionResult(
+                tool_name=action.tool_name,
+                success=False,
+                content="",
+                error=f"工具动作不允许授权范围：{approval_scope.value}",
+            )
+        result = self.execute(action.tool_name, action.arguments)
+        tool = self.get(action.tool_name)
+        if result.success and tool is not None and tool.approval_handler is not None:
+            try:
+                tool.approval_handler(action, approval_scope, result)
+            except Exception as exc:  # noqa: BLE001 - 授权登记失败必须回报，不能静默放宽权限
+                log_event(
+                    "ToolRegistry",
+                    "工具授权结果登记失败",
+                    {"name": action.tool_name, "scope": approval_scope.value, "error": str(exc)},
+                )
+                return ToolExecutionResult(
+                    tool_name=action.tool_name,
+                    success=False,
+                    content="",
+                    error=f"工具已执行，但授权状态登记失败：{exc}",
+                )
         return result
 
 
@@ -512,6 +618,66 @@ def _is_null_only_schema(schema: Any) -> bool:
         return False
     schema_type = schema.get("type")
     return schema_type == "null" or schema_type == ["null"]
+
+
+def _validate_tool_arguments(value: Any, schema: Any, path: str = "arguments") -> str:
+    if not isinstance(schema, dict) or not schema:
+        return ""
+    allowed_types = schema.get("type")
+    if isinstance(allowed_types, str):
+        allowed = [allowed_types]
+    elif isinstance(allowed_types, list):
+        allowed = [item for item in allowed_types if isinstance(item, str)]
+    else:
+        allowed = []
+    if allowed and not any(_matches_schema_type(value, item) for item in allowed):
+        return f"{path} 类型错误，期望 {'/'.join(allowed)}。"
+    enum = schema.get("enum")
+    if isinstance(enum, list) and value not in enum:
+        return f"{path} 必须是允许的枚举值。"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if isinstance(minimum, (int, float)) and value < minimum:
+            return f"{path} 不能小于 {minimum}。"
+        if isinstance(maximum, (int, float)) and value > maximum:
+            return f"{path} 不能大于 {maximum}。"
+    if isinstance(value, dict):
+        properties = schema.get("properties")
+        properties = properties if isinstance(properties, dict) else {}
+        required = schema.get("required")
+        if isinstance(required, list):
+            for name in required:
+                if isinstance(name, str) and name not in value:
+                    return f"{path}.{name} 是必填参数。"
+        if schema.get("additionalProperties") is False:
+            unknown = sorted(str(name) for name in value if name not in properties)
+            if unknown:
+                return f"{path} 包含未声明参数：{', '.join(unknown)}。"
+        for name, item in value.items():
+            child_schema = properties.get(name)
+            if isinstance(child_schema, dict):
+                error = _validate_tool_arguments(item, child_schema, f"{path}.{name}")
+                if error:
+                    return error
+    if isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value):
+            error = _validate_tool_arguments(item, schema["items"], f"{path}[{index}]")
+            if error:
+                return error
+    return ""
+
+
+def _matches_schema_type(value: Any, schema_type: str) -> bool:
+    return {
+        "object": isinstance(value, dict),
+        "array": isinstance(value, list),
+        "string": isinstance(value, str),
+        "integer": isinstance(value, int) and not isinstance(value, bool),
+        "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+        "boolean": isinstance(value, bool),
+        "null": value is None,
+    }.get(schema_type, True)
 
 
 def _result_with_elapsed(result: ToolExecutionResult, started_at: float) -> dict[str, Any]:

@@ -23,6 +23,7 @@ from app.core.resource_manager import (
     ThreadGroupResource,
 )
 from app.storage.atomic import atomic_write_text, rename_with_retry
+from app.storage.archive_security import validate_zip_resource_limits
 from app.storage.chat_history import ChatHistoryEntry
 from app.storage.paths import StoragePaths
 
@@ -270,6 +271,11 @@ class MemoryStore:
         """切换角色后更新 mem0 user_id 作用域。"""
 
         self.scope_id = _normalize_scope_id(scope_id)
+
+    def scoped(self, scope_id: str) -> "ScopedMemoryStore":
+        """创建固定角色 scope 的轻量视图，供后台任务隔离角色切换。"""
+
+        return ScopedMemoryStore(self, scope_id)
 
     def set_api_settings(self, api_settings: "ApiSettings") -> None:
         """API 设置变更后重置 mem0，下次使用新配置重新初始化。"""
@@ -557,14 +563,19 @@ class MemoryStore:
             lines.append(f"- [{memory_id}] {_memory_layer_label(layer)}：{content}")
         return "\n".join(lines)
 
-    def list_memories(self, *, limit: int = DEFAULT_MEMORY_LIMIT) -> list[dict[str, Any]]:
+    def list_memories(self, *, limit: int | None = DEFAULT_MEMORY_LIMIT) -> list[dict[str, Any]]:
         mem = self._get_memory()
-        raw = mem.get_all(filters={"user_id": self.scope_id}, top_k=limit)
-        memories = _normalize_memory_results(raw, default_scope=self.scope_id)
+        top_k = DEFAULT_MEMORY_LIMIT if limit is None else limit
+        while True:
+            raw = mem.get_all(filters={"user_id": self.scope_id}, top_k=top_k)
+            memories = _normalize_memory_results(raw, default_scope=self.scope_id)
+            if limit is not None or len(memories) < top_k:
+                break
+            top_k *= 2
         core_profile = self.core_profile()
         if core_profile is not None:
             memories.insert(0, core_profile)
-        return memories[:limit]
+        return memories if limit is None else memories[:limit]
 
     def core_profile(self) -> dict[str, Any] | None:
         """读取当前角色的常驻档案块；缺失时返回 None。"""
@@ -815,7 +826,7 @@ class MemoryStore:
                 return self._failed_response(str(exc))
             if mem is None:
                 return self._loading_response()
-            previous = _normalize_memory_record(mem.get(memory_id), default_scope=self.scope_id)
+            previous = _require_owned_memory(mem, memory_id, self.scope_id)
             metadata = _memory_metadata(
                 arguments,
                 scope_id=self.scope_id,
@@ -834,7 +845,7 @@ class MemoryStore:
             return self._failed_response(str(exc))
         if mem is None:
             return self._loading_response()
-        previous = _normalize_memory_record(mem.get(memory_id), default_scope=self.scope_id)
+        previous = _require_owned_memory(mem, memory_id, self.scope_id)
         metadata = _memory_metadata(
             arguments,
             scope_id=self.scope_id,
@@ -858,7 +869,7 @@ class MemoryStore:
             previous = self.delete_core_profile()
             return {"memory": previous or {"id": memory_id, "content": ""}, "curation_cache_reset": {"messages": 0, "history": 0}}
         mem = self._get_memory()
-        previous = _normalize_memory_record(mem.get(memory_id), default_scope=self.scope_id)
+        previous = _require_owned_memory(mem, memory_id, self.scope_id, allow_missing=True)
         already_missing = _delete_memory_idempotently(mem, memory_id)
         cache_reset = self._reset_scope_curation_cache(mem, memory_ids=[memory_id])
         memory = previous or {"id": memory_id, "content": ""}
@@ -878,7 +889,7 @@ class MemoryStore:
             return self._failed_response(str(exc))
         if mem is None:
             return self._loading_response()
-        previous = _normalize_memory_record(mem.get(memory_id), default_scope=self.scope_id)
+        previous = _require_owned_memory(mem, memory_id, self.scope_id, allow_missing=True)
         already_missing = _delete_memory_idempotently(mem, memory_id)
         cache_reset = self._reset_scope_curation_cache(mem, memory_ids=[memory_id])
         forgotten = previous or {"id": memory_id, "content": ""}
@@ -1142,8 +1153,7 @@ class MemoryStore:
         return {
             "status": "loading",
             "message": (
-                f"记忆系统正在初始化（已等待 {elapsed} 秒）。"
-                "请告诉主人记忆系统稍后就绪，不要连续重复调用记忆工具。"
+                f"记忆系统正在初始化（已等待 {elapsed} 秒），稍后会自动就绪。"
             ),
             "memories": [],
         }
@@ -1152,8 +1162,7 @@ class MemoryStore:
         return {
             "status": "failed",
             "message": (
-                "长期记忆系统暂时不可用。请告诉主人普通聊天仍可继续，"
-                "不要重复调用记忆工具。"
+                "长期记忆系统暂时不可用，普通聊天仍可继续。"
             ),
             "error": error,
             "memories": [],
@@ -1166,6 +1175,51 @@ class MemoryStore:
             self._load_error = error
             self._status = "failed"
             self._status_message = f"长期记忆系统暂时不可用：{error}"
+
+
+class ScopedMemoryStore(MemoryStore):
+    """复用同一个 mem0 运行时，但把业务 scope 固定在创建时的角色上。"""
+
+    def __init__(self, owner: MemoryStore, scope_id: str) -> None:
+        self._owner = owner
+        self.base_dir = owner.base_dir
+        self.api_settings = owner.api_settings
+        self.scope_id = _normalize_scope_id(scope_id)
+        self.memory_client = owner.memory_client
+        self.resource_registry = owner.resource_registry
+        self._loading_started_at = owner._loading_started_at
+
+    def set_scope(self, scope_id: str) -> None:
+        self.scope_id = _normalize_scope_id(scope_id)
+
+    def is_ready(self) -> bool:
+        return self._owner.is_ready()
+
+    def needs_embedding_model_download(self) -> bool:
+        return self._owner.needs_embedding_model_download()
+
+    def close(self) -> None:
+        """视图不拥有底层 mem0 运行时，关闭由 owner 负责。"""
+
+        return None
+
+    def _get_memory(self, *, wait: bool = True) -> Any | None:
+        return self._owner._get_memory(wait=wait)
+
+    def _load_core_profiles(self) -> dict[str, Any]:
+        return self._owner._load_core_profiles()
+
+    def _save_core_profiles(self, profiles: dict[str, Any]) -> None:
+        self._owner._save_core_profiles(profiles)
+
+    def _loading_response(self) -> dict[str, Any]:
+        return self._owner._loading_response()
+
+    def _failed_response(self, error: str) -> dict[str, Any]:
+        return self._owner._failed_response(error)
+
+    def _mark_runtime_failed(self, error: str) -> None:
+        self._owner._mark_runtime_failed(error)
 
 
 def _resolve_base_dir(base_dir: Path | None) -> Path:
@@ -1268,6 +1322,14 @@ def import_embedding_model_archive(path: Path, base_dir: Path | None = None) -> 
     backup_model_dir = destination_root / f".{DEFAULT_EMBEDDING_MODEL_CACHE_NAME}.backup"
     try:
         with zipfile.ZipFile(archive_path, "r") as zf:
+            try:
+                validate_zip_resource_limits(
+                    zf,
+                    destination=destination_root,
+                    label="记忆模型包",
+                )
+            except ValueError as exc:
+                raise MemoryModelImportError(str(exc)) from exc
             model_prefix = _validate_embedding_model_zip_members(zf)
             temp_root.mkdir(parents=True, exist_ok=False)
             _extract_embedding_model_zip(zf, model_prefix, staging_model_dir)
@@ -1457,7 +1519,11 @@ def _format_memory_load_error(exc: Exception, *, embedding_download: bool) -> st
         return f"长期记忆系统初始化失败：{raw_message}"
     return (
         "长期记忆系统初始化失败：本地嵌入模型下载失败，"
-        "请检查 HuggingFace 访问、网络或代理后重试；普通聊天仍可继续。"
+        "请前往项目 Release 下载 models--sentence-transformers--all-MiniLM-L6-v2.zip，"
+        "然后在设置页手动导入：\n"
+        "https://github.com/Rvosy/Sakura/releases/download/v0.9.7/"
+        "models--sentence-transformers--all-MiniLM-L6-v2.zip\n"
+        "也可以尝试开启代理并重启 Sakura 重新下载；普通聊天仍可继续。"
         f"\n\n原始错误：{raw_message}"
     )
 
@@ -1660,7 +1726,7 @@ def looks_like_sensitive_memory(content: str) -> bool:
 
 
 def _query_needs_procedural_memory(query: str, mode: str) -> bool:
-    if mode in {"tool", "proactive"}:
+    if mode in {"tool", "screen_awareness"}:
         return True
     text = query.lower()
     keywords = (
@@ -1875,6 +1941,59 @@ def _normalize_memory_record(raw: Any, *, default_scope: str = DEFAULT_MEMORY_SC
     )
     memory = {**dict(raw), **record.to_dict()}
     return memory
+
+
+def _require_owned_memory(
+    mem: Any,
+    memory_id: str,
+    scope_id: str,
+    *,
+    allow_missing: bool = False,
+) -> dict[str, Any] | None:
+    raw = mem.get(memory_id)
+    if not isinstance(raw, dict):
+        if allow_missing:
+            return None
+        raise ValueError(f"未找到长期记忆：{memory_id}")
+    metadata = _metadata_mapping(raw)
+    explicit_scope = str(
+        raw.get("scope") or metadata.get("scope") or raw.get("user_id") or ""
+    ).strip()
+    normalized_scope = _normalize_scope_id(explicit_scope) if explicit_scope else ""
+    if not normalized_scope:
+        get_all = getattr(mem, "get_all", None)
+        if not callable(get_all):
+            # 兼容只实现 get/delete 的旧测试或第三方后端；正式 mem0 后端支持
+            # 按 user_id 查询，必须走下面的所有权验证。
+            normalized_scope = _normalize_scope_id(scope_id)
+        else:
+            try:
+                scoped_raw = get_all(filters={"user_id": scope_id}, top_k=10000)
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(f"无法验证长期记忆作用域：{memory_id}") from exc
+            scoped_ids = {
+                str(item.get("id") or item.get("memory_id") or "").strip()
+                for item in _raw_memory_candidates(scoped_raw)
+                if isinstance(item, dict)
+            }
+            if memory_id not in scoped_ids:
+                raise ValueError(f"长期记忆不属于当前角色，已拒绝修改：{memory_id}")
+            normalized_scope = _normalize_scope_id(scope_id)
+    if normalized_scope != _normalize_scope_id(scope_id):
+        raise ValueError(f"长期记忆不属于当前角色，已拒绝修改：{memory_id}")
+    normalized = _normalize_memory_record(raw, default_scope=scope_id)
+    if normalized is None:
+        raise ValueError(f"长期记忆记录无效：{memory_id}")
+    return normalized
+
+
+def _raw_memory_candidates(raw: Any) -> list[Any]:
+    if isinstance(raw, dict):
+        for key in ("results", "memories", "data"):
+            if isinstance(raw.get(key), list):
+                return list(raw[key])
+        return [raw]
+    return list(raw) if isinstance(raw, list) else []
 
 
 def _first_memory_result(raw: Any, *, default_scope: str = DEFAULT_MEMORY_SCOPE) -> dict[str, Any] | None:

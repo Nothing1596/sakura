@@ -52,6 +52,7 @@ from app.agent.screen_awareness import (
     ScreenAwarenessSettings,
     estimate_screen_context_batch_tokens_for_size,
     estimate_screen_context_image_tokens_for_size,
+    screen_context_resolution_size,
 )
 from app.agent.screen_observation import (
     SCREEN_OBSERVATION_HISTORY_MARKER,
@@ -63,6 +64,30 @@ from app.agent.screen_observation import (
 
 
 def _legacy_complete_with_tools(self, system_prompt, messages, **_kwargs):  # type: ignore[no-untyped-def]
+    if _kwargs.get("tool_choice") == "none" and hasattr(self, "chat"):
+        reply = self.chat(system_prompt, messages)
+        if isinstance(reply, str):
+            content = reply
+        else:
+            content = json.dumps(
+                {
+                    "segments": [
+                        {
+                            "ja": getattr(segment, "text", ""),
+                            "zh": getattr(segment, "translation", ""),
+                            "tone": getattr(segment, "tone", "中性"),
+                            "portrait": getattr(segment, "portrait", ""),
+                        }
+                        for segment in getattr(reply, "segments", [])
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        return ChatCompletionTurn(
+            content=content,
+            tool_calls=[],
+            message={"role": "assistant", "content": content},
+        )
     tools = _kwargs.get("tools") or []
     tool_names = [
         tool["function"]["name"]
@@ -193,6 +218,14 @@ def test_screen_awareness_settings_default_to_enabled() -> None:
     assert settings.check_interval_minutes == 2
     assert settings.cooldown_minutes == 10
     assert settings.screen_context_batch_limit == 6
+    assert settings.screen_context_resolution == "fullscreen"
+
+
+def test_screen_awareness_resolution_presets_keep_aspect_ratio_without_upscaling() -> None:
+    assert screen_context_resolution_size(3200, 2000, "1080p") == (1728, 1080)
+    assert screen_context_resolution_size(2000, 3200, "1080p") == (1080, 1728)
+    assert screen_context_resolution_size(1280, 720, "2160p") == (1280, 720)
+    assert screen_context_resolution_size(2560, 1440, "invalid") == (2560, 1440)
 
 
 def test_screen_awareness_token_estimate_uses_high_detail_rules() -> None:
@@ -282,6 +315,7 @@ def test_screen_awareness_settings_save_writes_yaml() -> None:
             check_interval_minutes=3,
             cooldown_minutes=7,
             screen_context_batch_limit=4,
+            screen_context_resolution="1080p",
         )
     )
 
@@ -291,6 +325,7 @@ def test_screen_awareness_settings_save_writes_yaml() -> None:
     assert config["screen_awareness"]["check_interval_minutes"] == 3
     assert config["screen_awareness"]["cooldown_minutes"] == 7
     assert config["screen_awareness"]["screen_context_batch_limit"] == 4
+    assert config["screen_awareness"]["screen_context_resolution"] == "1080p"
 
 
 def test_screen_awareness_settings_save_normalizes_enabled_flag() -> None:
@@ -359,6 +394,18 @@ def test_memory_store_builds_local_mem0_config() -> None:
     assert config["embedder"]["provider"] == "huggingface"
     assert "简体中文" in config["custom_instructions"]
     assert "memory/text" in config["custom_instructions"]
+
+
+def test_memory_download_failure_suggests_manual_import_or_proxy_restart() -> None:
+    message = memory_module._format_memory_load_error(
+        RuntimeError("offline"),
+        embedding_download=True,
+    )
+
+    assert "models--sentence-transformers--all-MiniLM-L6-v2.zip" in message
+    assert "https://github.com/Rvosy/Sakura/releases/download/v0.9.7/" in message
+    assert "设置页手动导入" in message
+    assert "开启代理并重启 Sakura" in message
 
 
 def test_memory_store_reuses_runtime_when_api_settings_unchanged() -> None:
@@ -853,6 +900,19 @@ def test_memory_store_create_update_search_and_delete() -> None:
     assert store.list_memories() == []
 
 
+def test_memory_store_lists_all_memories_without_limit() -> None:
+    fake = FakeMem0()
+    fake.records = [
+        {"id": str(index), "memory": f"memory-{index}", "user_id": "sakura", "metadata": {}}
+        for index in range(201)
+    ]
+    store = MemoryStore(
+        base_dir=_runtime_root_path("memory_list_all"), scope_id="sakura", memory_client=fake
+    )
+
+    assert len(store.list_memories(limit=None)) == 201
+
+
 def test_memory_store_forget_missing_id_is_idempotent() -> None:
     fake = FakeMem0RaisesOnMissingDelete()
     store = MemoryStore(base_dir=_runtime_root_path("memory_missing_forget"), scope_id="sakura", memory_client=fake)
@@ -1075,7 +1135,7 @@ def test_tool_registry_free_access_keeps_high_risk_confirmation() -> None:
     assert result.tool_name == "run_external_action"
 
 
-def test_tool_registry_free_access_allows_playwright_actions() -> None:
+def test_tool_registry_free_access_keeps_sensitive_playwright_confirmation() -> None:
     registry = ToolRegistry(
         [
             Tool(
@@ -1102,8 +1162,8 @@ def test_tool_registry_free_access_allows_playwright_actions() -> None:
     )
     evaluate_result = registry.prepare_or_execute("playwright_evaluate", {})
 
-    assert not isinstance(navigate_result, PendingToolAction)
-    assert navigate_result.success
+    assert isinstance(navigate_result, PendingToolAction)
+    assert navigate_result.tool_name == "playwright_navigate"
     assert isinstance(evaluate_result, PendingToolAction)
     assert evaluate_result.tool_name == "playwright_evaluate"
 
@@ -1352,7 +1412,15 @@ def test_mcp_provider_skips_disabled_server() -> None:
     provider.close()
 
 
-def test_mcp_runtime_settings_force_disables_windows_server() -> None:
+def test_mcp_runtime_settings_force_disables_windows_server(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from app.agent.mcp import DesktopMCP
+
+    # apply 现在按平台选择 server；固定为 Windows，测试 windows server 的启用路径。
+    monkeypatch.setattr(
+        "app.agent.mcp.settings.resolve_desktop_mcp",
+        lambda platform=None: DesktopMCP(server_name="windows", label="Windows MCP"),
+    )
+
     config_path = _runtime_root_path("mcp_runtime_override") / "mcp.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
@@ -1376,6 +1444,40 @@ servers:
     assert config.servers[0].enabled
 
 
+def test_mcp_runtime_settings_disables_builtin_desktop_servers_on_unsupported_platform(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("app.agent.mcp.settings.resolve_desktop_mcp", lambda platform=None: None)
+
+    config_path = _runtime_root_path("mcp_runtime_unsupported_desktop") / "mcp.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        """
+enabled: true
+servers:
+  windows:
+    enabled: true
+    transport: stdio
+    command: python
+  macos:
+    enabled: true
+    transport: stdio
+    command: python
+  custom:
+    enabled: true
+    transport: stdio
+    command: python
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = apply_mcp_runtime_settings(
+        load_mcp_config(config_path),
+        MCPRuntimeSettings(windows_enabled=True),
+    )
+
+    enabled_by_name = {server.name: server.enabled for server in config.servers}
+    assert enabled_by_name == {"windows": False, "macos": False, "custom": True}
+
+
 def test_settings_service_saves_and_loads_experimental_windows_mcp() -> None:
     service = AppSettingsService(_runtime_root_path("mcp_runtime_save"))
 
@@ -1384,7 +1486,15 @@ def test_settings_service_saves_and_loads_experimental_windows_mcp() -> None:
     assert service.load_mcp_runtime_settings().windows_enabled
 
 
-def test_register_mcp_tools_loads_experimental_windows_mcp_when_enabled() -> None:
+def test_register_mcp_tools_loads_experimental_windows_mcp_when_enabled(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from app.agent.mcp import DesktopMCP
+
+    # 注册路径内部会调用 apply；固定为 Windows，确保 windows server 被启用并注册。
+    monkeypatch.setattr(
+        "app.agent.mcp.settings.resolve_desktop_mcp",
+        lambda platform=None: DesktopMCP(server_name="windows", label="Windows MCP"),
+    )
+
     root = _runtime_root_path("mcp_register_windows_override")
     config_dir = root / "data" / "config"
     config_dir.mkdir(parents=True)
@@ -3099,7 +3209,7 @@ def test_vision_unsupported_error_gets_local_fallback_reply() -> None:
     assert not result.actions
 
 
-def test_proactive_check_tool_prompt_uses_single_segment_heading() -> None:
+def test_screen_awareness_check_tool_prompt_uses_single_segment_heading() -> None:
     prompt = build_screen_awareness_check_tool_system_prompt(
         "你是 Sakura。",
         ["中性"],
@@ -3128,12 +3238,12 @@ def test_proactive_check_tool_prompt_uses_single_segment_heading() -> None:
     assert "不确定时就普通问候" not in prompt
 
 
-def test_proactive_check_event_prompt_reuses_segment_rules() -> None:
+def test_screen_awareness_check_event_prompt_reuses_segment_rules() -> None:
     prompt = build_event_system_prompt(
         "你是 Sakura。",
         ["中性"],
         ["站立待机"],
-        event_type="proactive_check",
+        event_type="screen_awareness_check",
     )
 
     assert prompt.count("分段规则：") == 1
@@ -3145,8 +3255,8 @@ def test_proactive_check_event_prompt_reuses_segment_rules() -> None:
     assert "只有画面确实为空、黑屏、桌面无内容" in prompt
 
 
-def test_proactive_check_event_generates_segmented_reply() -> None:
-    class ProactiveClient:
+def test_screen_awareness_check_event_generates_segmented_reply() -> None:
+    class ScreenAwarenessClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
             self.messages: list[list[dict[str, object]]] = []
@@ -3161,7 +3271,7 @@ def test_proactive_check_event_generates_segmented_reply() -> None:
 
         complete_with_tools = _legacy_complete_with_tools
 
-    client = ProactiveClient()
+    client = ScreenAwarenessClient()
     runtime = AgentRuntime(
         api_client=client,  # type: ignore[arg-type]
         system_prompt="你是 Sakura。",
@@ -3169,7 +3279,7 @@ def test_proactive_check_event_generates_segmented_reply() -> None:
 
     result = runtime.handle_event(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "seconds_since_pet_interaction": 1800,
                 "check_interval_minutes": 20,
@@ -3189,11 +3299,11 @@ def test_proactive_check_event_generates_segmented_reply() -> None:
     assert "seconds_since_pet_interaction" in str(client.messages[0][0]["content"])
     assert "idle_seconds" not in str(client.messages[0][0]["content"])
     assert result.reply.translation == "稍微休息一下吧。"
-    assert result.actions[0].payload["event_type"] == "proactive_check"
+    assert result.actions[0].payload["event_type"] == "screen_awareness_check"
 
 
-def test_proactive_check_event_attaches_screen_context_image() -> None:
-    class ProactiveImageClient:
+def test_screen_awareness_check_event_attaches_screen_context_image() -> None:
+    class ScreenAwarenessImageClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
             self.messages: list[list[dict[str, object]]] = []
@@ -3208,7 +3318,7 @@ def test_proactive_check_event_attaches_screen_context_image() -> None:
 
         complete_with_tools = _legacy_complete_with_tools
 
-    client = ProactiveImageClient()
+    client = ScreenAwarenessImageClient()
     runtime = AgentRuntime(
         api_client=client,  # type: ignore[arg-type]
         system_prompt="你是 Sakura。",
@@ -3216,7 +3326,7 @@ def test_proactive_check_event_attaches_screen_context_image() -> None:
 
     runtime.handle_event(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "screen_context": {
                     "data_url": "data:image/jpeg;base64,abc123",
@@ -3243,9 +3353,9 @@ def test_proactive_check_event_attaches_screen_context_image() -> None:
     assert "基于屏幕内容找话题" in content[0]["text"]
 
 
-def test_proactive_check_event_attaches_screen_context_image_batch() -> None:
+def test_screen_awareness_check_event_attaches_screen_context_image_batch() -> None:
     event = AgentEvent(
-        type="proactive_check",
+        type="screen_awareness_check",
         payload={
             "screen_contexts": [
                 {
@@ -3281,9 +3391,9 @@ def test_proactive_check_event_attaches_screen_context_image_batch() -> None:
     assert "screen_contexts" in content[0]["text"]
 
 
-def test_proactive_check_event_includes_recent_conversation_text() -> None:
+def test_screen_awareness_check_event_includes_recent_conversation_text() -> None:
     event = AgentEvent(
-        type="proactive_check",
+        type="screen_awareness_check",
         payload={
             "recent_conversation": [
                 {"role": "user", "content": "访问 GitHub 看看 Sakura 内容"},
@@ -3313,10 +3423,10 @@ def test_proactive_check_event_includes_recent_conversation_text() -> None:
     assert "image_attached" in content[0]["text"]
 
 
-def test_proactive_check_event_redacts_screen_context_image_batch() -> None:
+def test_screen_awareness_check_event_redacts_screen_context_image_batch() -> None:
     redacted = _redact_event_for_model(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "screen_contexts": [
                     {"data_url": "data:image/jpeg;base64,first", "width": 800},
@@ -3333,10 +3443,10 @@ def test_proactive_check_event_redacts_screen_context_image_batch() -> None:
     ]
 
 
-def test_proactive_check_event_sanitizes_recent_conversation() -> None:
+def test_screen_awareness_check_event_sanitizes_recent_conversation() -> None:
     redacted = _redact_event_for_model(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "recent_conversation": [
                     {"role": "system", "content": "不要注入系统消息"},
@@ -3361,8 +3471,8 @@ def test_proactive_check_event_sanitizes_recent_conversation() -> None:
     assert "不要注入系统消息" not in str(recent_conversation)
 
 
-def test_proactive_check_event_can_continue_tool_loop_after_tool_results() -> None:
-    class ProactiveToolClient:
+def test_screen_awareness_check_event_can_continue_tool_loop_after_tool_results() -> None:
+    class ScreenAwarenessToolClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
             self.messages: list[list[dict[str, object]]] = []
@@ -3397,7 +3507,7 @@ def test_proactive_check_event_can_continue_tool_loop_after_tool_results() -> No
             )
         ]
     )
-    client = ProactiveToolClient()
+    client = ScreenAwarenessToolClient()
     runtime = AgentRuntime(
         api_client=client,  # type: ignore[arg-type]
         system_prompt="你是 Sakura。",
@@ -3406,7 +3516,7 @@ def test_proactive_check_event_can_continue_tool_loop_after_tool_results() -> No
 
     result = runtime.handle_event(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "seconds_since_pet_interaction": 1800,
                 "screen_context_allowed": False,
@@ -3422,8 +3532,8 @@ def test_proactive_check_event_can_continue_tool_loop_after_tool_results() -> No
     assert "不要为了显得主动而循环调用工具" in client.prompts[0]
 
 
-def test_proactive_check_can_request_screen_when_screen_context_allowed() -> None:
-    class ProactiveScreenClient:
+def test_screen_awareness_check_can_request_screen_when_screen_context_allowed() -> None:
+    class ScreenAwarenessScreenClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
 
@@ -3436,7 +3546,7 @@ def test_proactive_check_can_request_screen_when_screen_context_allowed() -> Non
 
         complete_with_tools = _legacy_complete_with_tools
 
-    client = ProactiveScreenClient()
+    client = ScreenAwarenessScreenClient()
     runtime = AgentRuntime(
         api_client=client,  # type: ignore[arg-type]
         system_prompt="你是 Sakura。",
@@ -3445,7 +3555,7 @@ def test_proactive_check_can_request_screen_when_screen_context_allowed() -> Non
 
     result = runtime.handle_event(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "seconds_since_pet_interaction": 1800,
                 "screen_context_allowed": True,
@@ -3459,8 +3569,8 @@ def test_proactive_check_can_request_screen_when_screen_context_allowed() -> Non
     assert result.actions[1].payload["reason"] == "想看看主人现在在做什么"
 
 
-def test_proactive_check_hides_screen_tool_when_screen_context_disallowed() -> None:
-    class ProactiveScreenClient:
+def test_screen_awareness_check_hides_screen_tool_when_screen_context_disallowed() -> None:
+    class ScreenAwarenessScreenClient:
         def __init__(self) -> None:
             self.prompts: list[str] = []
 
@@ -3470,7 +3580,7 @@ def test_proactive_check_hides_screen_tool_when_screen_context_disallowed() -> N
 
         complete_with_tools = _legacy_complete_with_tools
 
-    client = ProactiveScreenClient()
+    client = ScreenAwarenessScreenClient()
     runtime = AgentRuntime(
         api_client=client,  # type: ignore[arg-type]
         system_prompt="你是 Sakura。",
@@ -3480,7 +3590,7 @@ def test_proactive_check_hides_screen_tool_when_screen_context_disallowed() -> N
 
     result = runtime.handle_event(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "seconds_since_pet_interaction": 1800,
                 "screen_context_allowed": False,
@@ -3493,21 +3603,21 @@ def test_proactive_check_hides_screen_tool_when_screen_context_disallowed() -> N
     assert not any(action.type == SCREEN_OBSERVATION_REQUEST_ACTION for action in result.actions)
 
 
-def test_proactive_check_vision_unsupported_uses_silent_fallback() -> None:
-    class ProactiveVisionUnsupportedClient:
+def test_screen_awareness_check_vision_unsupported_uses_silent_fallback() -> None:
+    class ScreenAwarenessVisionUnsupportedClient:
         def complete_raw(self, *_args, **_kwargs) -> str:  # type: ignore[no-untyped-def]
             raise ApiRequestError("model does not support image_url content")
 
         complete_with_tools = _legacy_complete_with_tools
 
     runtime = AgentRuntime(
-        api_client=ProactiveVisionUnsupportedClient(),  # type: ignore[arg-type]
+        api_client=ScreenAwarenessVisionUnsupportedClient(),  # type: ignore[arg-type]
         system_prompt="你是 Sakura。",
     )
 
     result = runtime.handle_event(
         AgentEvent(
-            type="proactive_check",
+            type="screen_awareness_check",
             payload={
                 "screen_context": {
                     "data_url": "data:image/jpeg;base64,abc123",
@@ -3531,7 +3641,7 @@ def _runtime_json_path(name: str) -> Path:
 
 
 def _runtime_root_path(name: str) -> Path:
-    return Path(__file__).resolve().parents[2] / "__pycache__" / "test_runtime" / name / uuid.uuid4().hex
+    return Path(__file__).resolve().parents[2] / "temp" / "test_runtime" / uuid.uuid4().hex / name
 
 
 def _write_memory_model_zip(

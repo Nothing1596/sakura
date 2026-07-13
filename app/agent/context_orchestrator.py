@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any, Iterable, Sequence
 
-from app.core.debug_log import debug_log
+from app.core.runtime_log import log_event
 from app.llm.api_client import ChatMessage
 from app.llm.prompts.runtime import ContextPolicy
 from app.llm.prompts.types import (
@@ -34,9 +34,10 @@ class ContextOrchestrator:
         request: ContextRequest,
         *,
         providers: Sequence[ContextProviderContribution] = (),
+        session_fragments: Iterable[ContextFragment] = (),
         memory_fragments: Iterable[ContextFragment] = (),
     ) -> ContextSnapshot:
-        fragments = [*_builtin_fragments(request), *memory_fragments]
+        fragments = [*_builtin_fragments(request), *session_fragments, *memory_fragments]
         fragments.extend(_collect_provider_fragments(request, providers))
         return self.policy.select(request, fragments)
 
@@ -53,6 +54,8 @@ def build_context_request(
     event_payload: dict[str, Any] | None = None,
     service_status: dict[str, str] | None = None,
     current_time: str | None = None,
+    character_id: str = "",
+    character_name: str = "",
 ) -> ContextRequest:
     recent_messages = _recent_context_messages(messages)
     current_input = next(
@@ -63,8 +66,10 @@ def build_context_request(
     seconds_since = _optional_float(payload.get("seconds_since_pet_interaction"))
     return ContextRequest(
         current_input=_truncate(current_input, MAX_CONTEXT_INPUT_CHARS),
+        character_id=character_id.strip(),
+        character_name=character_name.strip(),
         source=source if source in {"chat", "event", "confirmed_action"} else "chat",  # type: ignore[arg-type]
-        mode=mode if mode in {"normal", "proactive"} else "normal",  # type: ignore[arg-type]
+        mode=mode if mode in {"normal", "screen_awareness"} else "normal",  # type: ignore[arg-type]
         event_type=event_type.strip(),
         step_index=max(0, step_index),
         remaining_steps=max(0, remaining_steps),
@@ -120,14 +125,14 @@ def _collect_provider_fragments(
         try:
             provided = provider.build_context(request)
         except Exception as exc:  # noqa: BLE001
-            debug_log(
+            log_event(
                 "ContextOrchestrator",
                 "插件上下文提供者执行失败，已跳过",
                 {"provider_id": provider.provider_id, "error": str(exc)},
             )
             continue
         if not isinstance(provided, Sequence) or isinstance(provided, (str, bytes)):
-            debug_log(
+            log_event(
                 "ContextOrchestrator",
                 "插件上下文提供者返回类型无效，已跳过",
                 {"provider_id": provider.provider_id},
@@ -135,7 +140,7 @@ def _collect_provider_fragments(
             continue
         for index, fragment in enumerate(provided):
             if not isinstance(fragment, ContextFragment):
-                debug_log(
+                log_event(
                     "ContextOrchestrator",
                     "插件上下文片段类型无效，已跳过",
                     {"provider_id": provider.provider_id, "index": index},

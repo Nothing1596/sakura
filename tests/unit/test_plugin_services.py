@@ -6,9 +6,11 @@ from pathlib import Path
 import uuid
 
 from app.agent.tools import ToolRegistry
+from app.plugins.models import PERMISSION_MOBILE_CHAT
 from app.plugins.manager import PluginManager
 from app.plugins.services import PluginInputService, PluginServices
 from app.core.resource_manager import ResourceRegistry
+from app.ui.theme import DEFAULT_THEME_SETTINGS, theme_colors_to_mapping
 
 
 def test_set_input_text_without_sink_is_noop() -> None:
@@ -43,6 +45,33 @@ def test_set_backends_wires_input_text_sink() -> None:
     assert received == ["从 services 进"]
 
 
+def test_mobile_theme_defaults_to_sakura_theme() -> None:
+    assert PluginServices().mobile.theme() == theme_colors_to_mapping(DEFAULT_THEME_SETTINGS)
+
+
+def test_set_backends_wires_mobile_theme_sink() -> None:
+    services = PluginServices()
+    services.set_backends(
+        mobile_theme_sink=lambda: {
+            "primary_color": "#112233",
+            "accent_color": "#445566",
+        }
+    )
+
+    theme = services.mobile.theme()
+
+    assert theme["primary_color"] == "#112233"
+    assert theme["accent_color"] == "#445566"
+    assert theme["text_color"] == DEFAULT_THEME_SETTINGS.text_color
+
+
+def test_mobile_service_requires_permission() -> None:
+    services = PluginServices()
+
+    assert services.for_plugin("plain").mobile is None
+    assert services.for_plugin("mobile", (PERMISSION_MOBILE_CHAT,)).mobile is services.mobile
+
+
 def test_plugin_reaches_input_sink_end_to_end() -> None:
     """端到端：插件经 context.services.input 打到宿主注入的 sink。"""
     base = _runtime_root("input_plugin")
@@ -50,7 +79,7 @@ def test_plugin_reaches_input_sink_end_to_end() -> None:
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.yaml").write_text(
         """
-api_version: 1
+api_version: 2
 id: input_plugin
 name: Input Plugin
 entry: plugin:InputPlugin
@@ -106,7 +135,7 @@ def test_plugin_manager_shutdown_all_stops_resources_once() -> None:
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.yaml").write_text(
         """
-api_version: 1
+api_version: 2
 id: resource_plugin
 name: Resource Plugin
 entry: plugin:ResourcePlugin
@@ -154,11 +183,11 @@ class ResourcePlugin(PluginBase):
 def _runtime_root(name: str) -> Path:
     root = (
         Path(__file__).resolve().parents[2]
-        / "__pycache__"
+        / "temp"
         / "test_runtime"
+        / uuid.uuid4().hex
         / "plugin_services"
         / name
-        / uuid.uuid4().hex
     )
     root.mkdir(parents=True, exist_ok=True)
     return root

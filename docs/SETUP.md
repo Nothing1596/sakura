@@ -10,12 +10,12 @@
 
 | 文件名 | 是什么 | 适合谁下载 |
 |:-:|---|---|
-| `sakura-v0.9.x-windows-x64.zip` | Windows 完整包，包含项目文件和 `runtime` | Windows 新手推荐 |
+| `sakura-v0.9.8-windows-x64.zip` | Windows 完整包，包含项目文件和 `runtime` | Windows 新手推荐 |
 | `runtime-windows-x64.zip` | 只有 Windows 预置 Python 运行环境 | 拉源码、缺 `runtime` 的用户 |
 | `sakura.char` | 默认 Sakura 角色包（含语音权重） | 想使用默认角色的用户 |
 | `models--sentence-transformers--all-MiniLM-L6-v2.zip` | 长期记忆所需的本地向量模型 | 首次启动自动下载失败时手动导入 |
 
-> 如果你只是想运行桌宠，下载 `sakura-v0.9.x-windows-x64.zip` 这种**完整包**。`runtime` 包不是完整程序，单独下载后不能直接启动。
+> 如果你只是想运行桌宠，下载 `sakura-v0.9.8-windows-x64.zip` 这个**完整包**。`runtime` 包不是完整程序，单独下载后不能直接启动。
 
 ---
 
@@ -37,7 +37,7 @@
 - **Mac 用户：** 双击 `start.command`，或在终端运行 `bash scripts/start.sh`
 - **Linux 用户：** 在终端运行 `bash scripts/start.sh`
 
-首次启动会进入引导配置流程，按下面几步完成即可。
+首次启动会先让你选择或导入角色，再配置 API 供应商和模型。已有角色与 API 配置的用户不会重复进入引导。
 
 ---
 
@@ -77,6 +77,8 @@ TTS 为可选功能，不配置也可以正常使用，只是没有语音。
 | 通用整合包 | 其他 NVIDIA 显卡用户 |
 | CPU 整合包 | 无独显或不支持 CUDA 的用户 |
 
+RTX 50 系显卡必须使用 50 系专用整合包；通用整合包不支持该系列。设置页会优先把 50 系设备的默认路径指向专用包目录，未安装时请先下载对应整合包。
+
 下载完成后在软件内直接启动 TTS 服务即可。
 
 ![配置 TTS](https://oss.cialloo.cn/img/setup_03.webp)
@@ -103,8 +105,22 @@ macOS 用户的 GPT-SoVITS 配置方式另见 [MACOS_SETUP.md](MACOS_SETUP.md)�
 
 ## 如何更新版本
 
+Windows 的 `0.9.9-dev` 及后续构建包含 `update.bat`。先退出 Sakura，再双击这个脚本。更新器会校验下载文件，保留 `data/`、`characters/`、`runtime/` 和本地插件配置；如果依赖清单有变化，它会继续更新 Python 依赖。
+
+如果当前安装包没有 `update.bat`，按下面的方法手动更新：
+
 1. 关闭正在运行的 Sakura。
-2. 从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 下载同平台的最新完整包。
-3. 解压后把新包里的文件复制到原 Sakura 目录，遇到同名文件选择**覆盖/替换**。
-4. 如果启动失败，重新运行一次安装脚本（`install.bat` 或 `bash scripts/install.sh`）。
-5. 正常启动即可，配置和角色数据会保留。
+2. 备份原目录中的 `data/`；自制角色或插件也建议一并备份。
+3. 从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 下载最新完整包。当前稳定包是 `0.9.8`。
+4. 把新包内容复制到原 Sakura 目录，遇到同名文件选择**覆盖/替换**。发布包不包含 `data/`，不会覆盖 API 配置、聊天记录、长期记忆和 TTS 数据。
+5. 运行一次安装脚本（Windows 为 `install.bat`），再启动 Sakura。配置迁移会自动执行，并把迁移前文件备份到 `data/migration_backup/`。
+
+不要删除原目录里的 `data/`。如果升级后怀疑存在旧版缓存，可先运行 `runtime/python.exe tools/cleanup.py` 预览；确认列表无误后再加 `--apply` 清理。
+
+---
+
+## 角色工作室（Windows / macOS）
+
+Release 完整包会同时携带 Tauri 设置页和角色工作室二进制。在 Sakura 设置页的角色页面打开工作室后，可以新建角色、编辑人格卡和主题、导入立绘与参考音频，最后导出 `.char` 文件，无需自行安装 Rust 或单独编译 Tauri。
+
+Windows 仍可使用 `start_studio.bat` 启动旧的独立工作室入口。Linux 当前没有正式角色工作室发布包，从源码运行时需要自行准备并编译 Tauri 运行环境。

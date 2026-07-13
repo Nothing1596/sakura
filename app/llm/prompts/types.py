@@ -41,8 +41,10 @@ class ContextRequest:
     """可安全暴露给上下文贡献者的运行时事实。"""
 
     current_input: str = ""
+    character_id: str = ""
+    character_name: str = ""
     source: Literal["chat", "event", "confirmed_action"] = "chat"
-    mode: Literal["normal", "proactive"] = "normal"
+    mode: Literal["normal", "screen_awareness"] = "normal"
     event_type: str = ""
     step_index: int = 0
     remaining_steps: int = 0
