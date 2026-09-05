@@ -1,10 +1,14 @@
 """Real Core bridge + two real plugin processes, launched by the Rust journey.
 
-The only argument is an isolated temporary root owned by the calling test.
+Arguments are an isolated temporary root and the repository root.
 """
 
 import sys
 from pathlib import Path
+
+# Windows embeddable Python ignores the working directory and PYTHONPATH.
+# Bootstrap the explicit source root just as the production Core launcher does.
+sys.path.insert(0, sys.argv[2])
 
 from app.agent.tools import ToolRegistry
 from app.core.runtime_log import log_message

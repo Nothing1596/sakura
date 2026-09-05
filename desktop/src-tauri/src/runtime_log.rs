@@ -3399,11 +3399,13 @@ mod tests {
         });
         let result = std::process::Command::new(python)
             .current_dir(repo)
+            .args(["-I", "-X", "utf8"])
             .arg("-c")
             .arg(include_str!(
                 "../../../tests/fixtures/runtime_v2/unified_logging_producer.py"
             ))
             .arg(root.join("fixture"))
+            .arg(repo)
             .output()
             .unwrap();
         assert!(
