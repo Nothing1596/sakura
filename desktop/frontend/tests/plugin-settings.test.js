@@ -287,6 +287,62 @@ test("plugin feature retains Memory editors and detaches old-generation queries 
   assert.deepEqual(fixture.errors, []);
 });
 
+for (const outcome of ["success", "failure"]) {
+  test(`a late collection ${outcome} cannot change a rebound Memory editor`, async () => {
+    let nextSnapshot = snapshot();
+    let completeMutation;
+    const fixture = featureFixture(async (command, args) => {
+      if (command === "settings_plugins_get") return nextSnapshot;
+      if (args.operation === "query") return queryResult("note");
+      return new Promise((resolve, reject) => {
+        completeMutation = () => outcome === "success"
+          ? resolve({ itemId: "note", values: args.payload.values })
+          : reject(new Error("STALE_WRITE_FAILURE"));
+      });
+    });
+    const { feature, document, runTimers } = fixture;
+    feature.initialize(nextSnapshot);
+    await runTimers(0);
+    await document.querySelector(".memory-record-card").fire("dblclick");
+    const input = document.querySelector(".memory-editor-overlay textarea");
+    input.value = "draft during restart";
+    await input.fire("input");
+    const saving = document.querySelector('[data-memory-action="save"]').fire("click");
+    await settle();
+    assert.equal(typeof completeMutation, "function");
+
+    nextSnapshot = snapshot("generation-b");
+    await feature.refreshCurrent();
+    completeMutation();
+    await saving;
+
+    assert.equal(document.querySelector(".memory-editor-overlay textarea")?.value, "draft during restart");
+    assert.equal(document.querySelector(".memory-dialog-error"), null);
+    assert.equal(feature.isDirty(), true);
+    feature.dispose();
+  });
+}
+
+test("a detached collection save callback cannot submit into the next generation", async () => {
+  const writes = [];
+  const fixture = featureFixture(async (command, args) => {
+    if (command === "settings_plugins_get") return snapshot("generation-b");
+    if (args.operation === "query") return queryResult("note");
+    writes.push(args);
+    return { itemId: "note", values: args.payload.values };
+  });
+  const { feature, document, runTimers } = fixture;
+  feature.initialize(snapshot());
+  await runTimers(0);
+  await document.querySelector(".memory-record-card").fire("dblclick");
+  const oldSave = document.querySelector('[data-memory-action="save"]');
+  await feature.refreshCurrent();
+  await oldSave.fire("click");
+  assert.deepEqual(writes, []);
+  assert.equal(feature.characterDraftCount(), 1);
+  feature.dispose();
+});
+
 test("plugin feature owns ordinary field drafts, saves with the current generation, and discards locally", async () => {
   let nextSnapshot = snapshot();
   const saves = [];

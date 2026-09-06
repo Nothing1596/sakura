@@ -897,9 +897,14 @@ export function createPluginSettingsFeature({
   }
 
   async function mutatePluginCollection(plugin, section, collection, operation) {
+    if (!pluginView.items.includes(plugin)) return;
     const state = pluginCollectionRuntimeState(plugin, section, collection);
+    const collectionKey = pluginCollectionKey(plugin, section, collection);
+    const isCurrent = () => pluginCollectionState.get(collectionKey) === state;
     const memorySurface = section.surface === "memory";
     if (!runtimePluginController || state.loading || !state.editor) return;
+    if (memorySurface && (isMemoryTransitioning() || hasPendingCharacterSelection())) return;
+    const editor = state.editor;
     if (operation !== "delete") {
       const invalid = (collection.fields || []).find((field) => {
         const value = state.editor.values[field.key];
@@ -921,7 +926,7 @@ export function createPluginSettingsFeature({
         cancelText: "保留",
         danger: true,
       });
-      if (!confirmed) return;
+      if (!confirmed || !isCurrent() || state.editor !== editor) return;
     }
     const editorItemId = state.editor.itemId;
     state.loading = true;
@@ -955,6 +960,7 @@ export function createPluginSettingsFeature({
           values: clonePlain(state.editor.values),
         });
       }
+      if (!isCurrent()) return;
       const affectedItemId = operation === "delete" ? editorItemId : result.itemId;
       state.editor = null;
       state.selectedItemId = operation === "delete" ? "" : affectedItemId;
@@ -962,9 +968,12 @@ export function createPluginSettingsFeature({
       if (memorySurface) {
         applyMemoryCollectionMutationResult(state, collection, operation, result, affectedItemId);
         await queryPluginCollection(plugin, section, collection, { render: false });
+        if (!isCurrent()) return;
         await dismissMemoryEditorPortal();
+        if (!isCurrent()) return;
         if (operation === "delete") await animateMemoryRecordRemoval(affectedItemId);
         else state.motion = { kind: operation, itemId: affectedItemId };
+        if (!isCurrent()) return;
         renderMemorySurface();
         completed = true;
         notify(operation === "delete" ? "记忆已删除。" : operation === "create" ? "记忆已新增。" : "记忆已更新。", "success");
@@ -974,8 +983,10 @@ export function createPluginSettingsFeature({
         completed = true;
       }
     } catch (error) {
+      if (!isCurrent()) return;
       state.error = String(error);
     } finally {
+      if (!isCurrent()) return;
       state.loading = false;
       state.operation = "";
       if (memorySurface) {
