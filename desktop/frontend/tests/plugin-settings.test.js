@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createPluginSettingsFeature } from "../settings/plugin-settings.js";
+import { executeSettingsClose } from "../settings/close-flow.js";
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -193,6 +194,38 @@ function featureFixture(invoke, options = {}) {
 
 function queryResult(itemId, content = itemId) {
   return { items: [{ itemId, values: { content } }], total: 1, nextCursor: null };
+}
+
+for (const surface of ["memory", null]) {
+  test(`an open ${surface || "plugin"} collection draft prevents silent Settings close`, async () => {
+    const data = snapshot();
+    data.plugins[0].sections[1].surface = surface;
+    const { feature, document, dirtyNotifications } = featureFixture(async () => {
+      assert.fail("a Settings save must not submit or discard an open collection editor");
+    });
+    feature.initialize(data);
+    const beforeEdit = dirtyNotifications();
+    const add = document.querySelector(surface === "memory" ? ".memory-add-button" : ".plugin-collection-head button");
+    await add.fire("click");
+    let choices = 0;
+    let closed = false;
+    const decision = await executeSettingsClose({
+      dirty: feature.isDirty(),
+      choose: async () => { choices += 1; return "stay"; },
+      save: feature.save,
+      discard: feature.discard,
+      close: async () => { closed = true; },
+    });
+    assert.equal(decision, "stay");
+    assert.equal(choices, 1);
+    assert.equal(closed, false);
+    assert.ok(dirtyNotifications() > beforeEdit);
+    await assert.rejects(() => feature.save(), /集合/);
+    assert.equal(feature.isDirty(), true);
+    feature.discard();
+    assert.equal(feature.isDirty(), false);
+    feature.dispose();
+  });
 }
 
 test("plugin feature retains Memory editors and detaches old-generation queries and callbacks", async () => {

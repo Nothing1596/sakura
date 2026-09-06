@@ -48,6 +48,10 @@ export function createPluginSettingsFeature({
     managementBusy: false,
   };
   const pluginCollectionState = new Map();
+
+  function hasCollectionDrafts() {
+    return Array.from(pluginCollectionState.values()).some((state) => Boolean(state.editor));
+  }
   let pluginActivityRefreshTimer = null;
   let pluginActivityRefreshInFlight = false;
   let aboutComponentsReadError = "";
@@ -980,6 +984,7 @@ export function createPluginSettingsFeature({
         renderPluginPage();
         renderMemorySurface();
       }
+      refreshDirty();
     }
   }
 
@@ -1004,6 +1009,7 @@ export function createPluginSettingsFeature({
             .filter(pluginFieldEditable)
             .map((field) => [field.key, field.default])),
         };
+        refreshDirty();
         renderPluginPage();
         renderMemorySurface();
       });
@@ -1097,6 +1103,7 @@ export function createPluginSettingsFeature({
                 .filter(pluginFieldEditable)
                 .map((field) => [field.key, item.values[field.key] ?? field.default])),
             };
+            refreshDirty();
             renderPluginPage();
             renderMemorySurface();
           });
@@ -1151,6 +1158,7 @@ export function createPluginSettingsFeature({
       cancel.addEventListener("click", () => {
         state.editor = null;
         state.editorError = "";
+        refreshDirty();
         renderPluginPage();
         renderMemorySurface();
       });
@@ -1501,6 +1509,7 @@ export function createPluginSettingsFeature({
     };
     state.editorError = "";
     state.selectedItemId = item?.itemId || "";
+    refreshDirty();
     renderMemorySurface();
     setTimer(() => document.querySelector(
       ".memory-editor-overlay .memory-record-dialog textarea, .memory-editor-overlay .memory-record-dialog input",
@@ -1633,6 +1642,7 @@ export function createPluginSettingsFeature({
       if (state.loading) return;
       state.editor = null;
       state.editorError = "";
+      refreshDirty();
       await dismissMemoryEditorPortal();
       renderMemorySurface();
     };
@@ -2414,8 +2424,13 @@ export function createPluginSettingsFeature({
 
   return Object.freeze({
     initialize: runtimePluginController.initialize,
-    isDirty: runtimePluginController.isDirty,
-    save: runtimePluginController.save,
+    isDirty: () => runtimePluginController.isDirty() || hasCollectionDrafts(),
+    async save() {
+      if (hasCollectionDrafts()) {
+        throw new Error("请先保存或还原正在编辑的集合记录，再保存设置。");
+      }
+      return runtimePluginController.save();
+    },
     refreshCurrent: runtimePluginController.refreshCurrent,
     discard: runtimePluginController.discard,
     characterDraftCount: () => countCharacterScopedCollectionDrafts(pluginCollectionState.values()),
@@ -2437,6 +2452,7 @@ export function createPluginSettingsFeature({
       clearMemoryEditorPortal();
       pluginCollectionState.clear();
       renderMemorySurface();
+      refreshDirty();
     },
     dispose() {
       clearPluginActivityRefresh();
