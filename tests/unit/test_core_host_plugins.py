@@ -137,7 +137,7 @@ def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -
     root = _assistant_root(tmp_path)
     controller = ReadinessController(
         HostConfig(RuntimeRoots(root, root), "generation-plugin-application", "a" * 32),
-        initializer_factory=lambda _root: FailingInitializer(),
+        initializer_factory=lambda _root, _tools, _mcp: FailingInitializer(),
     )
     controller.enable_plugins()
     try:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import sys
 import threading
 import time
@@ -813,7 +814,7 @@ def test_provider_readiness_transitions_replace_only_the_session(
     initializer = Initializer()
     controller = ReadinessController(
         HostConfig(RuntimeRoots(tmp_path, tmp_path), GENERATION, CREDENTIAL),
-        initializer_factory=lambda _root: initializer,
+        initializer_factory=lambda _root, _tools, _mcp: initializer,
     )
     controller.begin({})
     deadline = time.monotonic() + 2
@@ -850,3 +851,61 @@ def test_provider_readiness_transitions_replace_only_the_session(
     assert controller.snapshot()["revision"] == initial_revision + 2
     assert plugin_application.bound == [replacement]
     controller.close()
+
+
+def test_real_session_recreation_borrows_the_same_application_tools_and_mcp(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from app.agent.mcp import provider
+    from app.core_host.server import HostConfig, ReadinessController
+
+    fixture = Path(__file__).parents[1] / "fixtures/runtime_v2/wp_3_01/ready"
+    root = tmp_path / "application"
+    shutil.copytree(fixture, root)
+    registrations: list[object] = []
+
+    class MCP:
+        close_count = 0
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    mcp = MCP()
+
+    def start_mcp(_root, tools, **_kwargs):
+        registrations.append(tools)
+        return mcp
+
+    monkeypatch.setattr(provider, "start_mcp_tools_from_config", start_mcp)
+    controller = ReadinessController(HostConfig(RuntimeRoots(root, root), GENERATION, CREDENTIAL))
+    controller.enable_tools()
+    controller.enable_mcp()
+    try:
+        controller.begin({})
+        controller._worker.join(2)
+        first = controller.published_session()
+        assert first is not None
+        assert first.runtime.tools is registrations[0]
+        assert first.mcp_provider is mcp
+        assert first.runtime.tools.get("get_current_time") is not None
+
+        api_path = root / "config/api.yaml"
+        saved = api_path.read_text(encoding="utf-8")
+        api_path.write_text("api_profiles: []\n", encoding="utf-8")
+        controller.apply_provider_configuration()
+        assert controller.readiness() == "setup_required"
+        assert controller.published_session() is None
+        assert mcp.close_count == 0
+
+        api_path.write_text(saved, encoding="utf-8")
+        controller.apply_provider_configuration()
+        second = controller.published_session()
+        assert second is not None and second is not first
+        assert second.provider is not first.provider
+        assert second.runtime.tools is first.runtime.tools
+        assert second.mcp_provider is mcp
+        assert len(registrations) == 1
+        assert mcp.close_count == 0
+    finally:
+        controller.close()
+    assert mcp.close_count == 1

@@ -9,12 +9,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Any, BinaryIO, Callable
+from typing import TYPE_CHECKING, Any, BinaryIO, Callable
 
 from app.core.cancellation import OperationCancelled
 from app.storage.runtime_roots import RuntimeRoots
 
 from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, error_payload, read_frame, response, write_frame
+
+if TYPE_CHECKING:
+    from app.agent.mcp.provider import MCPToolProvider
+    from app.agent.tools import ToolRegistry
 
 
 CORE_VERSION = "0.1.0"
@@ -124,10 +128,12 @@ class NegotiationError(ValueError):
         self.code = code
 
 
-def _default_initializer_factory(roots: RuntimeRoots) -> object:
+def _default_initializer_factory(
+    roots: RuntimeRoots, tool_registry: ToolRegistry, mcp_provider: MCPToolProvider | None,
+) -> object:
     from .assistant_adapter import AssistantAdapter
 
-    return AssistantAdapter(roots)
+    return AssistantAdapter(roots, tool_registry=tool_registry, mcp_provider=mcp_provider)
 
 
 @dataclass
@@ -144,7 +150,9 @@ class ReadinessController:
         self,
         config: HostConfig,
         *,
-        initializer_factory: Callable[[RuntimeRoots], object] = _default_initializer_factory,
+        initializer_factory: Callable[
+            [RuntimeRoots, ToolRegistry, MCPToolProvider | None], object
+        ] = _default_initializer_factory,
     ) -> None:
         self._config = config
         self._initializer_factory = initializer_factory
@@ -167,8 +175,8 @@ class ReadinessController:
         self._mcp_enabled = False
         self._plugins_enabled = False
         self._session_published_callback: Callable[[], None] | None = None
-        self._application_tools: object | None = None
-        self._application_mcp: object | None = None
+        self._application_tools: ToolRegistry | None = None
+        self._application_mcp: MCPToolProvider | None = None
         self._plugin_application: object | None = None
         self._chat_boundary: object | None = None
 
@@ -471,7 +479,7 @@ class ReadinessController:
                 from app.agent.tools import ToolRegistry
 
                 application_tools = ToolRegistry([])
-            application_mcp: object | None = None
+            application_mcp: MCPToolProvider | None = None
             if mcp_enabled:
                 from app.agent.mcp.provider import start_mcp_tools_from_config
                 from app.core.runtime_resources import ResourceRegistry
@@ -508,25 +516,9 @@ class ReadinessController:
             if application_closed:
                 return
 
-            initializer = self._initializer_factory(self._config.roots)
-            bind_generation = getattr(initializer, "bind_generation", None)
-            if callable(bind_generation):
-                bind_generation(self._config.generation_id)
-            bind_application = getattr(initializer, "bind_application_resources", None)
-            if callable(bind_application):
-                bind_application(application_tools, application_mcp)
-            if tools_enabled:
-                enable_tools = getattr(initializer, "enable_tools", None)
-                if callable(enable_tools):
-                    enable_tools()
-            if mcp_enabled:
-                enable_mcp = getattr(initializer, "enable_mcp", None)
-                if callable(enable_mcp):
-                    enable_mcp()
-            if plugins_enabled:
-                enable_plugins = getattr(initializer, "enable_plugins", None)
-                if callable(enable_plugins):
-                    enable_plugins()
+            initializer = self._initializer_factory(
+                self._config.roots, application_tools, application_mcp,
+            )
             with self._lock:
                 self._initializer = initializer
                 close_now = self._closed
@@ -799,7 +791,9 @@ class ControlDispatcher:
         self,
         config: HostConfig,
         *,
-        initializer_factory: Callable[[Path], object] = _default_initializer_factory,
+        initializer_factory: Callable[
+            [RuntimeRoots, ToolRegistry, MCPToolProvider | None], object
+        ] = _default_initializer_factory,
         chat_boundary: object | None = None,
     ) -> None:
         self._config = config
