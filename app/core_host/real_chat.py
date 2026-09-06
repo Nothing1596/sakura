@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any
 
 from app.llm.provider_errors import provider_http_status, public_provider_http_message
 
-from .chat_fixture import CHAT_CLOSE_TIMEOUT_SECONDS, CHAT_MESSAGE_LIMIT
 from .protocol import event, response
 
 if TYPE_CHECKING:
@@ -26,6 +25,8 @@ if TYPE_CHECKING:
 
 
 REAL_CHAT_EXECUTION_LIMIT = 1
+CHAT_MESSAGE_LIMIT = 64 * 1024
+CHAT_CLOSE_TIMEOUT_SECONDS = 3.0
 MANUAL_SCREEN_ATTACHMENT_LIMIT = 6
 HOST_CHAT_COMPLETED_EVENT = "sakura.host.chat.completed"
 RECENT_PROACTIVE_LIMIT = 3
