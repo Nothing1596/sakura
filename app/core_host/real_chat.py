@@ -304,7 +304,7 @@ class RealChatBoundary:
             plugin_application = (
                 self._plugin_application_provider()
                 if self._plugin_application_provider is not None
-                else getattr(session, "plugin_application", None)
+                else None
             )
             if plugin_application is not None and not is_update_event:
                 try:

@@ -1109,8 +1109,7 @@ class TTSBoundary:
     def _plugin_application(self) -> object | None:
         if self._plugin_application_provider is not None:
             return self._plugin_application_provider()
-        session = self._session_provider()
-        return getattr(session, "plugin_application", None) if session is not None else None
+        return None
 
     def _require_storage_root(self) -> Path:
         try:

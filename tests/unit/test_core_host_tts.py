@@ -141,7 +141,8 @@ def test_voice_settings_report_partial_provider_save_without_claiming_atomicity(
         GENERATION,
         CREDENTIAL,
         tmp_path,
-        session_provider=lambda: SimpleNamespace(plugin_application=worker, character=character),
+        session_provider=lambda: SimpleNamespace(character=character),
+        plugin_application_provider=lambda: worker,
     )
     result = boundary.handle(
         _request(
@@ -214,14 +215,15 @@ def test_voice_settings_strip_generic_surface_routing_metadata(tmp_path: Path) -
                 "collections": [],
             }]
 
+    worker = Worker()
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=Worker(),
             character=SimpleNamespace(id="alpha", display_name="Alpha"),
         ),
+        plugin_application_provider=lambda: worker,
     )
 
     result = boundary.handle(
@@ -287,7 +289,8 @@ def test_voice_settings_without_character_keep_provider_management_available(
         GENERATION,
         CREDENTIAL,
         tmp_path,
-        session_provider=lambda: SimpleNamespace(plugin_application=worker),
+        session_provider=lambda: None,
+        plugin_application_provider=lambda: worker,
     )
 
     result = boundary.handle(
@@ -465,9 +468,9 @@ def test_voice_settings_validate_all_sections_before_the_first_write(tmp_path: P
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="alpha", display_name="Alpha"),
         ),
+        plugin_application_provider=lambda: worker,
     )
     result = boundary.handle(
         _request(
@@ -519,14 +522,15 @@ def test_voice_settings_report_partial_when_character_selection_save_fails(
                 "providers": [],
             }
 
+    worker = Worker()
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=Worker(),
             character=SimpleNamespace(id="alpha", display_name="Alpha"),
         ),
+        plugin_application_provider=lambda: worker,
     )
     result = boundary.handle(
         _request(
@@ -558,9 +562,9 @@ def _boundary(tmp_path: Path, events: list[dict]) -> TTSBoundary:
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
         event_publisher=events.append,
     )
     return boundary
@@ -651,9 +655,9 @@ def test_explicit_tts_service_disable_skips_segment_authorization(tmp_path: Path
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
     )
 
     authorized = boundary.authorize_segment(
@@ -707,9 +711,9 @@ def test_replacement_tts_service_failure_is_exposed_by_synthesis_start(
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
     )
 
     assert boundary.authorize_segment(
@@ -759,11 +763,13 @@ def test_authorized_plugin_artifact_is_committed_by_core_before_playback(
             artifact = store.resolve_committed_by_id(artifact_id)
             return store.release(artifact.plugin_id, artifact_id)
 
+    worker = Worker()
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
         tmp_path,
-        session_provider=lambda: SimpleNamespace(plugin_application=Worker()),
+        session_provider=lambda: None,
+        plugin_application_provider=lambda: worker,
     )
     boundary.authorize_segment(
         operation_id="operation-plugin",
@@ -818,9 +824,9 @@ def test_synthesis_rejects_disconnected_custom_tts_storage_without_fallback(
         CREDENTIAL,
         user_root,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
     )
     assert boundary.authorize_segment(
         operation_id="operation-storage",
@@ -1029,12 +1035,13 @@ class InstantTTSPlugin:
         ToolRegistry(),
         PluginInventory(roots).scan().runtime_specs,
     )
-    session = SimpleNamespace(plugin_application=worker, character=SimpleNamespace(id="sakura"))
+    session = SimpleNamespace(character=SimpleNamespace(id="sakura"))
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
         root,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
     )
     try:
         worker.start()
@@ -1350,9 +1357,9 @@ def test_recording_os_error_is_reported_as_audio_recording_invalid(tmp_path: Pat
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
         event_publisher=events.append,
         recording_store=FailingRecordingStore(),  # type: ignore[arg-type]
     )
@@ -1408,7 +1415,8 @@ def test_rust_playback_observation_publishes_only_bounded_plugin_summary(tmp_pat
         GENERATION,
         CREDENTIAL,
         tmp_path,
-        session_provider=lambda: SimpleNamespace(plugin_application=worker),
+        session_provider=lambda: None,
+        plugin_application_provider=lambda: worker,
     )
 
     started = boundary.handle(
@@ -1479,9 +1487,9 @@ def test_plugin_cutover_never_falls_back_when_tts_is_unavailable(
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
     )
     boundary.authorize_segment(
         operation_id="operation-no-fallback",
@@ -1712,9 +1720,9 @@ def test_cancel_is_rejected_after_synthesis_enters_recording_commit(tmp_path: Pa
         CREDENTIAL,
         tmp_path,
         session_provider=lambda: SimpleNamespace(
-            plugin_application=worker,
             character=SimpleNamespace(id="sakura"),
         ),
+        plugin_application_provider=lambda: worker,
         event_publisher=events.append,
     )
     boundary.authorize_segment(

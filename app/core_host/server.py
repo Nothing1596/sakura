@@ -1288,7 +1288,6 @@ def run_host(
             config.generation_credential,
             config.user_root,
             app_version=read_app_version(config.distribution_root),
-            session_provider=getattr(dispatcher, "published_session", lambda: None),
             plugin_application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None
             ),

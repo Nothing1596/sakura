@@ -134,12 +134,11 @@ def test_dynamic_plugin_slots_are_sorted_validated_and_saved_by_owner(tmp_path: 
             return {"applicationState": "applied"}
 
     worker = Worker()
-    session = type("Session", (), {"plugin_application": worker})()
     boundary = ProviderSettingsBoundary(
         GENERATION,
         CREDENTIAL,
         _root(tmp_path),
-        session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
     )
     boundary.enable()
 
@@ -222,12 +221,11 @@ def test_dynamic_slot_validation_precedes_writes_and_partial_save_is_explicit(
             return {"applicationState": "applied"}
 
     worker = Worker()
-    session = type("Session", (), {"plugin_application": worker})()
     boundary = ProviderSettingsBoundary(
         GENERATION,
         CREDENTIAL,
         _root(tmp_path),
-        session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
     )
     boundary.enable()
     current = boundary.handle(_request("get", "settings.provider_model.get", {}))["payload"]

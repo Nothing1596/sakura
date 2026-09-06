@@ -532,15 +532,16 @@ def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_application=Worker(),
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()
+    worker = Worker()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
         timeline_store=timeline,
     )
     request = _request(
@@ -597,15 +598,16 @@ def test_completed_terminal_claim_rejects_late_cancel_before_plugin_delivery(
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_application=Worker(),
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()
+    worker = Worker()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
         timeline_store=timeline,
         event_publisher=lambda frame: published.append(str(frame["name"])),
     )
@@ -740,15 +742,16 @@ def test_assistant_history_failure_does_not_emit_completed_chat_fact(tmp_path: P
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_application=Worker(),
     )
     failing_timeline = FailingTimeline(tmp_path / "timeline.sqlite3")
     failing_timeline.initialize()
+    worker = Worker()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
         timeline_store=failing_timeline,
     )
     request = _request(
@@ -1090,15 +1093,16 @@ def test_plugin_completion_failure_does_not_block_committed_chat(tmp_path: Path)
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_application=Worker(),
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()
+    worker = Worker()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
         timeline_store=timeline,
         event_publisher=lambda frame: published.append(str(frame["name"])),
     )
