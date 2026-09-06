@@ -66,24 +66,9 @@ fn validate_enabled_request(revision: &str, install_id: &str) -> Result<(), Stri
     Ok(())
 }
 
-fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
-    let keys = if saved {
-        vec![
-            "schemaVersion",
-            "revision",
-            "state",
-            "reasonCode",
-            "plugins",
-            "saved",
-            "changePlan",
-            "applicationState",
-            "applicationReasonCode",
-        ]
-    } else {
-        SNAPSHOT_KEYS.to_vec()
-    };
+fn validate_snapshot(value: &Value) -> Result<(), String> {
     if !serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= 512 * 1024)
-        || !has_exact_keys(value, &keys)
+        || !has_exact_keys(value, &SNAPSHOT_KEYS)
         || value.get("schemaVersion").and_then(Value::as_u64) != Some(1)
         || !valid_revision(value.get("revision"))
         || !valid_worker_state(value.get("state"))
@@ -97,20 +82,6 @@ fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
         .ok_or_else(|| "PLUGIN_SETTINGS_RESPONSE_INVALID".to_string())?;
     for plugin in plugins {
         validate_plugin(plugin)?;
-    }
-    if saved
-        && (value.get("saved").and_then(Value::as_bool) != Some(true)
-            || !matches!(
-                value.get("changePlan").and_then(Value::as_str),
-                Some("applied")
-            )
-            || !matches!(
-                value.get("applicationState").and_then(Value::as_str),
-                Some("applied")
-            )
-            || !valid_reason(value.get("applicationReasonCode")))
-    {
-        return Err("PLUGIN_SETTINGS_RESPONSE_INVALID".to_string());
     }
     Ok(())
 }
@@ -169,8 +140,7 @@ fn validate_management_result(value: &Value) -> Result<(), String> {
     object.remove("desiredSaved");
     object.remove("applicationState");
     object.remove("applicationReasonCode");
-    validate_snapshot(&snapshot, false)
-        .map_err(|_| "PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string())
+    validate_snapshot(&snapshot).map_err(|_| "PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string())
 }
 
 fn validate_settings_save_result(value: &Value) -> Result<(), String> {
@@ -639,7 +609,7 @@ pub(crate) async fn settings_plugins_get(
     .await?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     let mut payload = settings_response_payload(response)?;
-    validate_snapshot(&payload, false)?;
+    validate_snapshot(&payload)?;
     let object = payload
         .as_object_mut()
         .ok_or_else(|| "PLUGIN_SETTINGS_RESPONSE_INVALID".to_string())?;
@@ -906,7 +876,7 @@ mod tests {
 
     use super::{
         validate_action_result, validate_collection_request, validate_collection_result,
-        validate_management_result, validate_snapshot,
+        validate_management_result, validate_settings_save_result, validate_snapshot,
     };
 
     fn snapshot() -> serde_json::Value {
@@ -930,13 +900,13 @@ mod tests {
 
     #[test]
     fn wp_4_04_plugin_dto_rejects_private_fields_and_unbounded_drafts() {
-        assert!(validate_snapshot(&snapshot(), false).is_ok());
+        assert!(validate_snapshot(&snapshot()).is_ok());
         let mut private = snapshot();
         private["plugins"][0]["entry"] = json!("private.module:Plugin");
-        assert!(validate_snapshot(&private, false).is_err());
+        assert!(validate_snapshot(&private).is_err());
         let mut invalid_service = snapshot();
         invalid_service["plugins"][0]["missingServices"] = json!(["invalid/service"]);
-        assert!(validate_snapshot(&invalid_service, false).is_err());
+        assert!(validate_snapshot(&invalid_service).is_err());
         assert!(validate_action_result(&json!({
             "values": {"private": "x".repeat(70_000)}
         }))
@@ -944,19 +914,25 @@ mod tests {
     }
 
     #[test]
-    fn plugin_v3_states_and_local_apply_results_are_bounded() {
-        let mut active = snapshot();
-        active["plugins"][0]["state"] = json!("active");
-        active["plugins"][0]["reasonCode"] = json!("ACTIVE");
-        assert!(validate_snapshot(&active, false).is_ok());
+    fn plugin_settings_save_result_requires_the_current_applied_envelope() {
+        let saved = json!({
+            "saved": true,
+            "pluginId": "fixture_plugin",
+            "sectionId": "settings",
+            "changePlan": "applied",
+            "applicationState": "applied",
+            "applicationReasonCode": "READY",
+        });
+        assert!(validate_settings_save_result(&saved).is_ok());
 
-        active["saved"] = json!(true);
-        active["changePlan"] = json!("applied");
-        active["applicationState"] = json!("applied");
-        active["applicationReasonCode"] = json!("READY");
-        assert!(validate_snapshot(&active, true).is_ok());
-        active["changePlan"] = json!("worker_magic");
-        assert!(validate_snapshot(&active, true).is_err());
+        for field in ["changePlan", "applicationState"] {
+            let mut pending = saved.clone();
+            pending[field] = json!("restart_required");
+            assert!(validate_settings_save_result(&pending).is_err());
+        }
+        let mut private = saved;
+        private["sourcePath"] = json!("/private/plugin.zip");
+        assert!(validate_settings_save_result(&private).is_err());
     }
 
     #[test]
@@ -1010,7 +986,7 @@ mod tests {
                 "deleteConfirmation": "Delete this row?"
             }]
         }]);
-        assert!(validate_snapshot(&value, false).is_ok());
+        assert!(validate_snapshot(&value).is_ok());
         assert!(validate_collection_request(
             "query",
             "fixture_plugin",
@@ -1080,9 +1056,9 @@ mod tests {
             "actions": [{"actionId": "cancel", "label": "Cancel", "description": "", "danger": false}],
             "collections": []
         }]);
-        assert!(validate_snapshot(&value, false).is_ok());
+        assert!(validate_snapshot(&value).is_ok());
         value["plugins"][0]["sections"][0]["fields"][1]["value"]["progress"] = json!(101);
-        assert!(validate_snapshot(&value, false).is_err());
+        assert!(validate_snapshot(&value).is_err());
 
         let mut duplicate_action = snapshot();
         duplicate_action["plugins"][0]["sections"] = value["plugins"][0]["sections"].clone();
@@ -1091,6 +1067,6 @@ mod tests {
             json!(["cancel", "cancel"]);
         duplicate_action["plugins"][0]["sections"][0]["values"]["model"]["availableActionIds"] =
             json!(["cancel", "cancel"]);
-        assert!(validate_snapshot(&duplicate_action, false).is_err());
+        assert!(validate_snapshot(&duplicate_action).is_err());
     }
 }
