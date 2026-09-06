@@ -328,6 +328,7 @@ export function createProviderSettingsFeature({
       } else if (key === "api_key") {
         renderProviderStatus();
       }
+      refreshDirty();
     });
     row.append(labelEl, input);
     return row;
@@ -370,6 +371,7 @@ export function createProviderSettingsFeature({
           profile.models = profile.models.filter((item) => item !== model);
           renderProviderPage();
           refreshModelSlots();
+          refreshDirty();
         });
         chip.append(name, remove);
         list.append(chip);
@@ -425,6 +427,7 @@ export function createProviderSettingsFeature({
     if (added) {
       renderProviderPage();
       refreshModelSlots();
+      refreshDirty();
     }
     return added;
   }
@@ -507,6 +510,7 @@ export function createProviderSettingsFeature({
     }
     renderProviderPage();
     refreshModelSlots();
+    refreshDirty();
   }
 
   function addProvider(preset) {
@@ -527,6 +531,7 @@ export function createProviderSettingsFeature({
     }
     renderProviderPage();
     refreshModelSlots();
+    refreshDirty();
   }
 
   function makeModalButton(text, className, handler) {
@@ -719,6 +724,7 @@ export function createProviderSettingsFeature({
       delete inheritedSlotManualSelections[slot];
     }
     syncSlotInheritState(slot);
+    refreshDirty();
   }
 
   function renderModelSlots(selection, { preserveMissing = true } = {}) {
@@ -769,11 +775,13 @@ export function createProviderSettingsFeature({
         if (slot.id === "core:chat") {
           syncInheritedSlotDisplays();
         }
+        refreshDirty();
       });
       modelSelect.addEventListener("change", () => {
         if (slot.id === "core:chat") {
           syncInheritedSlotDisplays();
         }
+        refreshDirty();
       });
       const selected = selection?.slots?.[slot.id] || { profile_id: "", model: "" };
       const inheritInput = fields.modelSlots.querySelector(`[data-slot-inherit="${slot.id}"]`);
@@ -1058,6 +1066,13 @@ export function createProviderSettingsFeature({
   });
   listen(fields.apiTopPEnabled, "change", syncApiAdvancedState);
   listen(fields.apiMaxTokensEnabled, "change", syncApiAdvancedState);
+  for (const field of [
+    fields.contextWindowTokens, fields.apiTimeout, fields.apiTemperature,
+    fields.apiTopPEnabled, fields.apiTopP, fields.apiMaxTokensEnabled, fields.apiMaxTokens,
+  ]) {
+    listen(field, "input", refreshDirty);
+    listen(field, "change", refreshDirty);
+  }
 
   return Object.freeze({
     initialize: () => controller.refreshCurrent(),

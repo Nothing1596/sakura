@@ -140,6 +140,7 @@ function featureFixture(initial = snapshot(), intercept = () => undefined) {
   const errors = [];
   const notifications = [];
   const pages = [];
+  const dirtyStates = [];
   let dirtyNotifications = 0;
   const feature = createProviderSettingsFeature({
     ...browser,
@@ -164,7 +165,7 @@ function featureFixture(initial = snapshot(), intercept = () => undefined) {
       if (command === "settings_provider_model_cancel") return true;
       throw new Error(`unexpected command ${command}`);
     },
-    onDirty() { dirtyNotifications += 1; },
+    onDirty() { dirtyNotifications += 1; dirtyStates.push(feature.isDirty()); },
     onError(message) { errors.push(String(message)); },
     notify(message, type) { notifications.push([message, type]); },
     showPage(page) { pages.push(page); feature.onPageChanged(page); },
@@ -176,7 +177,7 @@ function featureFixture(initial = snapshot(), intercept = () => undefined) {
   });
   const { document } = browser;
   return {
-    ...browser, feature, calls, errors, notifications, pages,
+    ...browser, feature, calls, errors, notifications, pages, dirtyStates,
     get dirtyNotifications() { return dirtyNotifications; },
     field: (key) => document.querySelector(`[data-provider-field="${key}"]`),
     control: (id) => document.getElementById(id),
@@ -287,6 +288,51 @@ test("unavailable provider/model references remain visible and block save until 
   await ui.feature.refreshCurrent();
   assert.equal(ui.feature.hasModelSettings("sakura.memory.mem0"), false);
   assert.equal(ui.document.querySelector('[data-slot-model="plugin:sakura.memory.mem0:curation"]'), null);
+});
+
+test("provider and model edits immediately publish dirty state and clear it when restored", async (t) => {
+  for (const [name, select, event, changed, original] of [
+    ["provider input", (ui) => ui.field("alias"), "input", "Pending name", "Fixture"],
+    ["model selection", (ui) => ui.document.querySelector('[data-slot-model="core:chat"]'), "change", "third-model", "fixture-model"],
+    ["numeric option", (ui) => ui.control("apiTimeout"), "input", "60", "30"],
+    ["optional setting", (ui) => ui.control("apiTopPEnabled"), "change", true, false],
+    ["slot inheritance", (ui) => ui.document.querySelector('[data-slot-inherit="core:vision_chat"]'), "change", false, true],
+  ]) {
+    await t.test(name, async () => {
+      const ui = featureFixture();
+      await ui.feature.initialize();
+      const control = select(ui);
+      const property = typeof changed === "boolean" ? "checked" : "value";
+      control[property] = changed;
+      await control.fire(event);
+      assert.equal(ui.feature.isDirty(), true);
+      assert.equal(ui.dirtyStates.at(-1), true, "the visible draft marker must update on the edit");
+      control[property] = original;
+      await control.fire(event);
+      assert.equal(ui.feature.isDirty(), false);
+      assert.equal(ui.dirtyStates.at(-1), false, "restoring the saved value must clear the marker");
+      const notifications = ui.dirtyNotifications;
+      ui.feature.dispose();
+      if (name === "numeric option" || name === "optional setting") {
+        await control.fire(event);
+        assert.equal(ui.dirtyNotifications, notifications, "disposed controls must detach their listeners");
+      }
+    });
+  }
+});
+
+test("adding and removing a model updates the draft marker without another page refresh", async () => {
+  const ui = featureFixture();
+  await ui.feature.initialize();
+  const input = ui.control("providerDetail").querySelector(".model-add-row input");
+  input.value = "temporary-model";
+  await input.fire("keydown", { key: "Enter" });
+  assert.equal(ui.dirtyStates.at(-1), true);
+  const remove = ui.control("providerDetail").querySelectorAll("button")
+    .find((button) => button.getAttribute("aria-label") === "删除 temporary-model");
+  await remove.fire("click");
+  assert.equal(ui.feature.isDirty(), false);
+  assert.equal(ui.dirtyStates.at(-1), false);
 });
 
 test("partial save replaces secret drafts with actual state before reporting the failed slot", async () => {
