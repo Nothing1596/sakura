@@ -71,9 +71,6 @@ const fields = {
   cooldown: document.getElementById("cooldown"),
   batchLimit: document.getElementById("batchLimit"),
   screenResolution: document.getElementById("screenResolution"),
-  agentSteps: document.getElementById("agentSteps"),
-  toolCallsPerStep: document.getElementById("toolCallsPerStep"),
-  toolCallsPerTurn: document.getElementById("toolCallsPerTurn"),
   providerStatusStrip: document.getElementById("providerStatusStrip"),
   providerSearch: document.getElementById("providerSearch"),
   addProviderButton: document.getElementById("addProviderButton"),
@@ -87,45 +84,15 @@ const fields = {
   apiTopP: document.getElementById("apiTopP"),
   apiMaxTokensEnabled: document.getElementById("apiMaxTokensEnabled"),
   apiMaxTokens: document.getElementById("apiMaxTokens"),
-  ttsEnabled: document.getElementById("ttsEnabled"),
-  ttsProvider: document.getElementById("ttsProvider"),
-  ttsApiUrl: document.getElementById("ttsApiUrl"),
-  ttsWorkDir: document.getElementById("ttsWorkDir"),
-  ttsPythonPath: document.getElementById("ttsPythonPath"),
-  ttsConfigPath: document.getElementById("ttsConfigPath"),
-  ttsBundleNoticeRow: document.getElementById("ttsBundleNoticeRow"),
-  ttsBundleNotice: document.getElementById("ttsBundleNotice"),
-  ttsTestButton: document.getElementById("ttsTestButton"),
-  ttsTimeout: document.getElementById("ttsTimeout"),
   themeColors: document.getElementById("themeColors"),
   visualEffectMode: document.getElementById("visualEffectMode"),
   themeAiButton: document.getElementById("themeAiButton"),
   resetThemeButton: document.getElementById("resetThemeButton"),
-  subtitleTypingInterval: document.getElementById("subtitleTypingInterval"),
-  replySegmentPause: document.getElementById("replySegmentPause"),
   bubbleAutoHide: document.getElementById("bubbleAutoHide"),
   bubbleAutoHideDelay: document.getElementById("bubbleAutoHideDelay"),
-  memoryTriggerTurns: document.getElementById("memoryTriggerTurns"),
   speechFontSize: document.getElementById("speechFontSize"),
   nameFontSize: document.getElementById("nameFontSize"),
   inputFontSize: document.getElementById("inputFontSize"),
-  memoryStatusStrip: document.getElementById("memoryStatusStrip"),
-  memorySearch: document.getElementById("memorySearch"),
-  memoryLayerFilter: document.getElementById("memoryLayerFilter"),
-  memorySort: document.getElementById("memorySort"),
-  memoryAddButton: document.getElementById("memoryAddButton"),
-  memoryRefreshButton: document.getElementById("memoryRefreshButton"),
-  memoryList: document.getElementById("memoryList"),
-  memoryContent: document.getElementById("memoryContent"),
-  memoryLayer: document.getElementById("memoryLayer"),
-  memoryCategory: document.getElementById("memoryCategory"),
-  memorySource: document.getElementById("memorySource"),
-  memoryImportance: document.getElementById("memoryImportance"),
-  memoryConfidence: document.getElementById("memoryConfidence"),
-  memoryMeta: document.getElementById("memoryMeta"),
-  memorySaveButton: document.getElementById("memorySaveButton"),
-  memoryRevertButton: document.getElementById("memoryRevertButton"),
-  memoryDeleteButton: document.getElementById("memoryDeleteButton"),
   pluginSearch: document.getElementById("pluginSearch"),
   pluginInstallMenuRoot: document.getElementById("pluginInstallMenuRoot"),
   pluginInstallMenuButton: document.getElementById("pluginInstallMenuButton"),
@@ -149,7 +116,6 @@ const fields = {
   updateCheckButton: document.getElementById("updateCheckButton"),
   updateCheckLabel: document.getElementById("updateCheckLabel"),
   updateAutoCheck: document.getElementById("updateAutoCheck"),
-  launchAtLogin: document.getElementById("launchAtLogin"),
   updateActionButton: document.getElementById("updateActionButton"),
   updateActionLabel: document.getElementById("updateActionLabel"),
   telemetryEnabled: document.getElementById("telemetryEnabled"),
@@ -167,11 +133,6 @@ const fields = {
   aboutComponentsState: document.getElementById("aboutComponentsState"),
   aboutComponentsList: document.getElementById("aboutComponentsList"),
   errorText: document.getElementById("errorText"),
-  onboardingHead: document.getElementById("onboardingHead"),
-  onboardingCharacterStep: document.getElementById("onboardingCharacterStep"),
-  onboardingProviderStep: document.getElementById("onboardingProviderStep"),
-  onboardingCompleteStep: document.getElementById("onboardingCompleteStep"),
-  onboardingBackButton: document.getElementById("onboardingBackButton"),
   saveButton: document.getElementById("saveButton"),
   applyButton: document.getElementById("applyButton"),
   cancelButton: document.getElementById("cancelButton"),
@@ -196,12 +157,10 @@ const fields = {
 };
 
 let request = null;
-let runtimeSettingsHost = false;
 let runtimeAppearanceController = null;
 let runtimeProviderModelController = null;
 let runtimeChatTimingController = null;
 let runtimeBubbleAutoHideController = null;
-let runtimeMemoryController = null;
 let runtimeToolsController = null;
 let runtimePluginController = null;
 let latestUpdateSnapshot = null;
@@ -222,23 +181,13 @@ let runtimeVisualEffectModes = Object.freeze([
   Object.freeze({ id: "gaussian_blur", label: "高斯模糊", disabled: false, reason: "" }),
   Object.freeze({ id: "liquid_glass", label: "液态玻璃", disabled: false, reason: "" }),
 ]);
-let lastTtsProvider = "";
 let themeChanged = false;
-// 「未保存改动」基线：load() 末尾拍下 collectSettings() 的 JSON 快照，之后任意输入都与它比对。
-let settingsBaseline = null;
 // 程序化关窗（保存/取消）前置真，避免关窗拦截器把正常关闭误判成「放弃改动」。
 let bypassCloseGuard = false;
-let memoryRetryTimer = null;
-let memoryRetryStartedAt = 0;
-let memoryReadErrorRetryable = () => false;
-const MEMORY_LOADING_RETRY_DELAY_MS = 1500;
-const MEMORY_LOADING_RETRY_BUDGET_MS = 120_000;
-const MEMORY_INITIALIZING_MESSAGE = "记忆系统正在初始化，完成后会自动显示。";
 let settingsWindowClosing = false;
 let characterArchiveBusy = false;
 let characterSwitching = false;
 let characterCatalogRefreshRevision = 0;
-let onboardingStep = "character";
 const characterExportOptions = [
   {
     kind: "full",
@@ -259,19 +208,7 @@ const characterExportOptions = [
     requiresVoice: true,
   },
 ];
-const memoryState = {
-  entries: [],
-  selectedId: "",
-  loading: false,
-  loaded: false,
-  status: "idle",
-  message: "",
-  draft: null,
-  editorDrafts: new Map(),
-  rebinding: false,
-  composing: false,
-};
-let memoryLoadRevision = 0;
+const memoryState = { rebinding: false };
 const pluginState = {
   selectedId: "",
   enabledById: {},
@@ -415,42 +352,28 @@ function notify(message, type = "info") {
 }
 
 // ---------- 未保存改动追踪 ----------
-function settingsSnapshot() {
-  try {
-    return JSON.stringify(collectSettings());
-  } catch {
-    return settingsBaseline;
-  }
-}
-
 function computeDirty() {
-  if (runtimeSettingsHost) {
-    return Boolean(
-      runtimeAppearanceController?.isDirty()
-      || runtimeProviderModelController?.isDirty()
-      || runtimeChatTimingController?.isDirty()
-      || runtimeBubbleAutoHideController?.isDirty()
-      || runtimeMemoryController?.isDirty()
-      || runtimeToolsController?.isDirty()
-      || runtimePluginController?.isDirty()
-      || runtimeVoiceController?.isDirty()
-      || runtimeScreenAwarenessController?.isDirty()
-      || runtimeAutostartController?.isDirty()
-      || memoryState.editorDrafts.size > 0
-      || pendingRuntimeCharacterId()
-    );
-  }
-  return Boolean(request) && settingsBaseline !== null && settingsSnapshot() !== settingsBaseline;
+  return Boolean(
+    runtimeAppearanceController?.isDirty()
+    || runtimeProviderModelController?.isDirty()
+    || runtimeChatTimingController?.isDirty()
+    || runtimeBubbleAutoHideController?.isDirty()
+    || runtimeToolsController?.isDirty()
+    || runtimePluginController?.isDirty()
+    || runtimeVoiceController?.isDirty()
+    || runtimeScreenAwarenessController?.isDirty()
+    || runtimeAutostartController?.isDirty()
+    || pendingRuntimeCharacterId()
+  );
 }
 
 function refreshDirty() {
   const dirty = computeDirty();
   document.body.classList.toggle("is-dirty", dirty);
   fields.saveButton.classList.toggle("has-changes", dirty);
-  if (runtimeSettingsHost) syncCharacterArchiveState();
+  syncCharacterArchiveState();
 }
 
-let dirtyTimer = null;
 let submissionBusy = false;
 const submissionDisabledStates = new Map();
 
@@ -463,7 +386,6 @@ function setSubmissionBusy(busy) {
     surface.inert = submissionBusy;
   });
   [
-    fields.onboardingBackButton,
     fields.cancelButton,
     fields.applyButton,
     fields.saveButton,
@@ -482,49 +404,15 @@ function setSubmissionBusy(busy) {
   });
 }
 
-function scheduleDirty() {
-  if (settingsBaseline === null || submissionBusy) {
-    return;
-  }
-  window.clearTimeout(dirtyTimer);
-  dirtyTimer = window.setTimeout(refreshDirty, 150);
-}
-
-async function confirmDiscard() {
-  if (!computeDirty()) {
-    return true;
-  }
-  return confirmAction("有未保存的改动，确定放弃并关闭吗？", {
-    title: "放弃改动",
-    confirmText: "放弃",
-    cancelText: "返回",
-    danger: true,
-  });
-}
-
 async function closeSettingsWindow() {
   bypassCloseGuard = true;
   beginSettingsWindowClose();
-  if (runtimeSettingsHost) {
-    try {
-      await runtimeCharacterVisualPreviewPromise;
-      await runtimeProviderModelController?.cancelOperations();
-      await invoke("resolve_settings_close", { discard: true });
-    } catch (error) {
-      settingsWindowClosing = false;
-      throw error;
-    }
-    return;
-  }
   try {
-    await invoke("cancel_settings");
-    return;
+    await runtimeCharacterVisualPreviewPromise;
+    await runtimeProviderModelController?.cancelOperations();
+    await invoke("resolve_settings_close", { discard: true });
   } catch (error) {
-    const current = window.__TAURI__?.window?.getCurrentWindow?.();
-    if (current?.close) {
-      await current.close();
-      return;
-    }
+    settingsWindowClosing = false;
     throw error;
   }
 }
@@ -536,39 +424,31 @@ async function requestCancelClose() {
   }
   closeRequestInFlight = true;
   try {
-    if (runtimeSettingsHost) {
-      const { executeSettingsClose } = await settingsCloseFlowPromise;
-      setError("");
-      await executeSettingsClose({
-        dirty: computeDirty(),
-        choose: chooseUnsavedClose,
-        save: async () => {
-          setSubmissionBusy(true);
-          await saveRuntimeSettings();
-          notify("已保存。", "success");
-        },
-        discard: async () => {
-          setSubmissionBusy(true);
-          await runtimeAppearanceController?.cancelPreview();
-          await runtimeProviderModelController?.cancelOperations();
-          runtimeChatTimingController?.discard();
-          runtimeBubbleAutoHideController?.discard();
-          runtimeAutostartController?.discard();
-          runtimeMemoryController?.discard();
-          runtimeToolsController?.discard();
-          await discardRuntimeCharacterSelection();
-        },
-        close: closeSettingsWindow,
-        stay: async () => {
-          await invoke("resolve_settings_close", { discard: false });
-        },
-      });
-      return;
-    }
-    if (!(await confirmDiscard())) {
-      return;
-    }
-    await closeSettingsWindow();
+    const { executeSettingsClose } = await settingsCloseFlowPromise;
+    setError("");
+    await executeSettingsClose({
+      dirty: computeDirty(),
+      choose: chooseUnsavedClose,
+      save: async () => {
+        setSubmissionBusy(true);
+        await saveRuntimeSettings();
+        notify("已保存。", "success");
+      },
+      discard: async () => {
+        setSubmissionBusy(true);
+        await runtimeAppearanceController?.cancelPreview();
+        await runtimeProviderModelController?.cancelOperations();
+        runtimeChatTimingController?.discard();
+        runtimeBubbleAutoHideController?.discard();
+        runtimeAutostartController?.discard();
+        runtimeToolsController?.discard();
+        await discardRuntimeCharacterSelection();
+      },
+      close: closeSettingsWindow,
+      stay: async () => {
+        await invoke("resolve_settings_close", { discard: false });
+      },
+    });
   } catch (error) {
     bypassCloseGuard = false;
     setError(String(error));
@@ -580,9 +460,6 @@ async function requestCancelClose() {
 
 function beginSettingsWindowClose() {
   settingsWindowClosing = true;
-  clearMemoryRetry();
-  window.clearTimeout(memorySearchTimer);
-  memoryLoadRevision += 1;
 }
 
 let exitRequestInFlight = false;
@@ -609,7 +486,6 @@ async function requestAppExitClose() {
         runtimeChatTimingController?.discard();
         runtimeBubbleAutoHideController?.discard();
         runtimeAutostartController?.discard();
-        runtimeMemoryController?.discard();
         runtimeToolsController?.discard();
         await discardRuntimeCharacterSelection();
       },
@@ -653,29 +529,6 @@ function setControlDisabled(control, disabled, { row = true } = {}) {
     control.closest(".setting-row")?.classList.toggle("is-disabled", Boolean(disabled));
   }
   refreshSelect(control);
-}
-
-function clearMemoryRetry() {
-  window.clearTimeout(memoryRetryTimer);
-  memoryRetryTimer = null;
-}
-
-function scheduleMemoryRetry() {
-  clearMemoryRetry();
-  if (!fields.pages.memory.classList.contains("is-active")) {
-    return;
-  }
-  memoryRetryTimer = window.setTimeout(
-    () => loadMemories({ continueRetry: true }),
-    MEMORY_LOADING_RETRY_DELAY_MS,
-  );
-}
-
-function memoryRetryBudgetAvailable() {
-  if (!memoryRetryStartedAt) {
-    memoryRetryStartedAt = Date.now();
-  }
-  return Date.now() - memoryRetryStartedAt < MEMORY_LOADING_RETRY_BUDGET_MS;
 }
 
 function removeOverlayAfterExit(overlay) {
@@ -1120,10 +973,6 @@ function showPage(page) {
     "is-admin-active",
     page === "memory" || page === "plugins" || page === "providers",
   );
-  if (page !== "memory") {
-    clearMemoryRetry();
-    memoryRetryStartedAt = 0;
-  }
   clearPluginActivityRefresh();
   if (page === "plugins" || page === "about") schedulePluginActivityRefresh();
   const meta = pageMeta[page];
@@ -1136,79 +985,7 @@ function showPage(page) {
   if (page === "model" && request) {
     refreshModelSlots();
   }
-  if (page === "memory" && runtimeSettingsHost) {
-    renderMemorySurface();
-    return;
-  }
-  if (
-    page === "memory"
-    && request?.memory
-    && !memoryState.loading
-    && (!memoryState.loaded || memoryState.status === "loading")
-  ) {
-    loadMemories();
-  } else if (page === "memory" && !request?.memory) {
-    renderMemoryInitializationState();
-  }
-}
-
-function isOnboarding() {
-  return Boolean(request?.onboarding);
-}
-
-function onboardingChatProfile() {
-  const profiles = normalizedProviderProfiles();
-  const chat = collectModelSelection().slots.chat || {};
-  return profiles.find((profile) => profile.id === chat.profile_id) || null;
-}
-
-function onboardingApiReady() {
-  const profile = onboardingChatProfile();
-  const chat = collectModelSelection().slots.chat || {};
-  return Boolean(
-    profile
-    && profile.base_url
-    && profile.api_key
-    && chat.model
-    && profile.models.includes(chat.model)
-  );
-}
-
-function updateOnboardingUi() {
-  if (!isOnboarding()) {
-    return;
-  }
-  const characterReady = Boolean(selectedCharacter());
-  const apiReady = onboardingApiReady();
-  const providerActive = onboardingStep === "providers";
-  fields.onboardingCharacterStep.classList.toggle("is-active", !providerActive);
-  fields.onboardingCharacterStep.classList.toggle("is-complete", characterReady);
-  fields.onboardingProviderStep.classList.toggle("is-active", providerActive);
-  fields.onboardingProviderStep.classList.toggle("is-complete", apiReady);
-  fields.onboardingProviderStep.disabled = !characterReady;
-  fields.onboardingCompleteStep.classList.toggle("is-complete", characterReady && apiReady);
-  fields.onboardingBackButton.hidden = !providerActive;
-  fields.saveButton.disabled = characterArchiveBusy || !(characterReady && apiReady);
-}
-
-function showOnboardingStep(page) {
-  if (!isOnboarding() || (page === "providers" && !selectedCharacter())) {
-    return;
-  }
-  onboardingStep = page;
-  showPage(page);
-  updateOnboardingUi();
-}
-
-function initializeOnboarding() {
-  const active = isOnboarding();
-  document.body.classList.toggle("is-onboarding", active);
-  fields.onboardingHead.hidden = !active;
-  if (!active) {
-    return;
-  }
-  fields.saveButton.textContent = "完成并启动 Sakura";
-  showOnboardingStep(selectedCharacter() ? "providers" : "character");
+  if (page === "memory") renderMemorySurface();
 }
 
 function syncEnabledState() {
@@ -1217,18 +994,6 @@ function syncEnabledState() {
   setControlDisabled(fields.cooldown, !enabled);
   setControlDisabled(fields.batchLimit, !enabled);
   setControlDisabled(fields.screenResolution, !enabled);
-}
-
-function updateScreenResolutionEstimate() {
-  // Runtime v2 第一版不展示依赖屏幕尺寸与模型规则的 token 估算。
-}
-
-function syncRuntimeLoopState() {
-  if (runtimeToolsController || !request?.limits?.max_tool_calls_per_step) {
-    return;
-  }
-  const perStep = clampInt(fields.toolCallsPerStep.value, request.limits.max_tool_calls_per_step);
-  fields.toolCallsPerTurn.min = String(perStep);
 }
 
 function syncBubbleState() {
@@ -1248,133 +1013,6 @@ function selectedCharacterThemeDefaults() {
   return selectedCharacter()?.default_theme || request.theme_defaults;
 }
 
-function selectedCharacterTheme() {
-  return selectedCharacter()?.theme || selectedCharacterThemeDefaults();
-}
-
-// 切换角色时跟随载入该角色的最终配色（仅配色，输入栏视觉效果等用户级偏好保留）。
-function applySelectedCharacterTheme() {
-  setThemeValues(selectedCharacterTheme(), { updateVisualEffect: false, animateTheme: true });
-}
-
-function ttsProviderDefaults(provider) {
-  return request?.tts?.provider_defaults?.[provider] || {};
-}
-
-function ttsDefaultValue(provider, key) {
-  return String(ttsProviderDefaults(provider)[key] || "");
-}
-
-function isBundledTtsProvider(provider) {
-  return provider === "gpt-sovits" || provider === "genie-tts";
-}
-
-function normalizeTtsPathText(value) {
-  return String(value || "").trim().replaceAll("/", "\\").toLowerCase();
-}
-
-function isBundledTtsDefaultPath(value, key) {
-  const normalized = normalizeTtsPathText(value);
-  return Boolean(normalized) && ["gpt-sovits", "genie-tts"].some((provider) => (
-    normalizeTtsPathText(ttsDefaultValue(provider, key)) === normalized
-  ));
-}
-
-function isTtsDefaultApiUrl(value) {
-  const apiUrl = String(value || "").trim();
-  return Boolean(apiUrl) && ["gpt-sovits", "genie-tts", "custom-gpt-sovits"].some((provider) => (
-    ttsDefaultValue(provider, "api_url") === apiUrl
-  ));
-}
-
-function applyTtsProviderDefaults(previousProvider = lastTtsProvider) {
-  const provider = fields.ttsProvider.value;
-  const defaults = ttsProviderDefaults(provider);
-  const apiUrl = fields.ttsApiUrl.value.trim();
-  const oldApiUrl = ttsDefaultValue(previousProvider, "api_url");
-  const newApiUrl = String(defaults.api_url || "");
-  if (newApiUrl && (!apiUrl || apiUrl === oldApiUrl || isTtsDefaultApiUrl(apiUrl))) {
-    fields.ttsApiUrl.value = newApiUrl;
-  }
-  if (isBundledTtsProvider(provider)) {
-    fields.ttsWorkDir.value = String(defaults.work_dir || "");
-    fields.ttsPythonPath.value = String(defaults.python_path || "");
-    fields.ttsConfigPath.value = "";
-  } else if (provider === "custom-gpt-sovits") {
-    if (isBundledTtsDefaultPath(fields.ttsWorkDir.value, "work_dir")) {
-      fields.ttsWorkDir.value = "";
-    }
-    if (isBundledTtsDefaultPath(fields.ttsPythonPath.value, "python_path")) {
-      fields.ttsPythonPath.value = "";
-    }
-    fields.ttsConfigPath.value = "";
-  }
-  lastTtsProvider = provider;
-}
-
-function syncTtsBundleNotice() {
-  const provider = fields.ttsProvider.value;
-  const notice = isBundledTtsProvider(provider) ? String(ttsProviderDefaults(provider).notice || "") : "";
-  fields.ttsBundleNotice.textContent = notice;
-  fields.ttsBundleNoticeRow.hidden = !notice;
-}
-
-function syncTtsState() {
-  if (runtimeSettingsHost) return;
-  const character = selectedCharacter();
-  const hasVoice = character ? Boolean(character.has_voice) : true;
-  if (!hasVoice) {
-    fields.ttsEnabled.checked = false;
-  }
-  setControlDisabled(fields.ttsEnabled, !hasVoice);
-  const active = fields.ttsEnabled.checked && fields.ttsProvider.value !== "none";
-  const bundledProvider = isBundledTtsProvider(fields.ttsProvider.value);
-  setControlDisabled(fields.ttsApiUrl, !active);
-  setControlDisabled(fields.ttsTimeout, !active);
-  setControlDisabled(fields.ttsWorkDir, !active || bundledProvider);
-  setControlDisabled(fields.ttsPythonPath, !active || bundledProvider);
-  fields.ttsWorkDir.readOnly = false;
-  fields.ttsPythonPath.readOnly = false;
-  fields.ttsConfigPath.disabled = true;
-  setControlDisabled(fields.ttsTestButton, !active);
-  syncTtsBundleNotice();
-  if (request) {
-    renderTtsResourceCard();
-  }
-}
-
-async function testTtsSettings() {
-  if (runtimeSettingsHost) return;
-  const character = selectedCharacter();
-  if (!character) {
-    setError("请先选择一个角色。");
-    return;
-  }
-  const original = fields.ttsTestButton.textContent;
-  fields.ttsTestButton.disabled = true;
-  fields.ttsTestButton.textContent = "检测中…";
-  setError("");
-  try {
-    const result = await hostCall("tts.test", {
-      character_id: character.id,
-      tts: collectTtsSettings(),
-    });
-    notify(result?.message || "TTS 服务检测成功。", "success");
-  } catch (error) {
-    setError(`TTS 检测失败：${error}`);
-  } finally {
-    fields.ttsTestButton.disabled = false;
-    fields.ttsTestButton.textContent = original;
-    syncTtsState();
-  }
-}
-
-function handleTtsProviderChange() {
-  if (runtimeSettingsHost) return;
-  applyTtsProviderDefaults(lastTtsProvider);
-  syncTtsState();
-}
-
 function syncApiAdvancedState() {
   setControlDisabled(fields.apiTopP, !fields.apiTopPEnabled.checked, { row: false });
   setControlDisabled(fields.apiMaxTokens, !fields.apiMaxTokensEnabled.checked, { row: false });
@@ -1388,12 +1026,10 @@ function renderCharacters() {
     option.textContent = character.display_name || character.id;
     fields.characterSelect.append(option);
   });
-  const pendingCharacterId = runtimeSettingsHost
-    ? pendingCharacterSelection({
-      committedCharacterId: request.character.current_character_id,
-      selectedCharacterId: runtimeCharacterDraftId,
-    })
-    : null;
+  const pendingCharacterId = pendingCharacterSelection({
+    committedCharacterId: request.character.current_character_id,
+    selectedCharacterId: runtimeCharacterDraftId,
+  });
   fields.characterSelect.value = pendingCharacterId
     || request.character.current_character_id;
   syncCharacterArchiveState();
@@ -1697,7 +1333,7 @@ function syncCharacterArchiveState() {
     pages: [fields.pages.character],
     // Global drafts remain editable on their own pages, but the aggregate
     // submit actions must not cross the generation hand-off.
-    submitControls: runtimeSettingsHost ? [fields.saveButton, fields.applyButton] : [],
+    submitControls: [fields.saveButton, fields.applyButton],
   }, characterSwitching);
   for (const page of [fields.pages.appearance, fields.pages.voice, fields.pages.memory]) {
     if (!page) continue;
@@ -1705,7 +1341,7 @@ function syncCharacterArchiveState() {
     page.setAttribute("aria-busy", String(characterSwitching));
     page.setAttribute("aria-disabled", String(Boolean(pendingCharacterId)));
   }
-  if (runtimeSettingsHost && submissionBusy) {
+  if (submissionBusy) {
     fields.saveButton.disabled = true;
     fields.applyButton.disabled = true;
   }
@@ -1715,36 +1351,22 @@ function syncCharacterArchiveState() {
     || !request.character.characters.length;
   fields.characterImportButton.disabled = characterArchiveBusy || characterSwitching
     || Boolean(pendingCharacterId);
-  if (runtimeSettingsHost) {
-    fields.ttsVoiceImportButton.disabled = characterArchiveBusy || characterSwitching
-      || !hasCharacter || Boolean(pendingCharacterId) || currentCharacterHasDrafts();
-    fields.characterExportButton.disabled = characterArchiveBusy || characterSwitching
-      || !hasCharacter || Boolean(pendingCharacterId);
-    syncCharacterEditorControl(
-      fields.characterEditorButton,
-      characterArchiveBusy || characterSwitching || !hasCharacter,
-    );
-    fields.characterArchiveHint.textContent = pendingCharacterId
-      ? `已选择 ${character?.display_name || pendingCharacterId}；角色级设置已锁定，点击“应用”或“保存并关闭”后正式切换。`
-      : currentCharacterHasDrafts()
-        ? "当前角色有未保存的改动。保存或放弃后可以导入语音；导出仍使用已保存的角色包。"
-        : hasCharacter
-        ? "可以导入或导出角色包，也可以在角色工坊中编辑当前角色。"
-      : "当前没有角色。请导入一个 Sakura .char 角色包。";
-    refreshSelect(fields.characterSelect);
-    return;
-  }
-  fields.ttsVoiceImportButton.disabled = characterArchiveBusy || !hasCharacter;
-  fields.characterExportButton.disabled = characterArchiveBusy || !hasCharacter;
-  fields.characterEditorButton.disabled = characterArchiveBusy;
-  fields.saveButton.disabled = characterArchiveBusy;
-  fields.applyButton.disabled = characterArchiveBusy;
-  fields.cancelButton.disabled = characterArchiveBusy;
-  fields.characterArchiveHint.textContent = characterArchiveBusy
-    ? "角色包处理中..."
-    : (hasCharacter ? "管理 Sakura .char 与 .voice 文件。" : "先导入一个 Sakura .char 角色包。");
+  fields.ttsVoiceImportButton.disabled = characterArchiveBusy || characterSwitching
+    || !hasCharacter || Boolean(pendingCharacterId) || currentCharacterHasDrafts();
+  fields.characterExportButton.disabled = characterArchiveBusy || characterSwitching
+    || !hasCharacter || Boolean(pendingCharacterId);
+  syncCharacterEditorControl(
+    fields.characterEditorButton,
+    characterArchiveBusy || characterSwitching || !hasCharacter,
+  );
+  fields.characterArchiveHint.textContent = pendingCharacterId
+    ? `已选择 ${character?.display_name || pendingCharacterId}；角色级设置已锁定，点击“应用”或“保存并关闭”后正式切换。`
+    : currentCharacterHasDrafts()
+      ? "当前角色有未保存的改动。保存或放弃后可以导入语音；导出仍使用已保存的角色包。"
+      : hasCharacter
+      ? "可以导入或导出角色包，也可以在角色工坊中编辑当前角色。"
+    : "当前没有角色。请导入一个 Sakura .char 角色包。";
   refreshSelect(fields.characterSelect);
-  updateOnboardingUi();
 }
 
 function setCharacterArchiveBusy(busy) {
@@ -1756,10 +1378,7 @@ function currentCharacterHasDrafts() {
   return hasCharacterScopedDrafts({
     appearanceDirty: runtimeAppearanceController?.isDirty(),
     voiceDirty: runtimeVoiceController?.isDirty(),
-    memorySettingsDirty: runtimeMemoryController?.isDirty(),
-    memoryDraft: memoryState.draft,
-    memoryEditorDraftCount: memoryState.editorDrafts.size
-      + countCharacterScopedCollectionDrafts(pluginCollectionState.values()),
+    memoryEditorDraftCount: countCharacterScopedCollectionDrafts(pluginCollectionState.values()),
   });
 }
 
@@ -1788,7 +1407,7 @@ function runtimeVisualPreviewTheme(publication) {
 }
 
 function previewRuntimeCharacterVisual(characterId) {
-  if (!runtimeSettingsHost || !characterId) return;
+  if (!characterId) return;
   const pending = (async () => {
     const revision = ++runtimeCharacterVisualPreviewRevision;
     const publication = await invoke("settings_character_visual_preview", {
@@ -1817,16 +1436,6 @@ async function discardRuntimeCharacterSelection() {
 }
 
 function clearCharacterScopedRuntimeState() {
-  clearMemoryRetry();
-  memoryLoadRevision += 1;
-  memoryState.entries = [];
-  memoryState.selectedId = "";
-  memoryState.loading = false;
-  memoryState.loaded = false;
-  memoryState.status = "loading";
-  memoryState.message = "正在切换角色，记忆将在新角色就绪后重新加载。";
-  memoryState.draft = null;
-  memoryState.editorDrafts.clear();
   pluginCollectionState.forEach((state) => {
     window.clearTimeout(state.searchTimer);
     state.queryRevision += 1;
@@ -1837,7 +1446,6 @@ function clearCharacterScopedRuntimeState() {
   });
   clearMemoryEditorPortal();
   pluginCollectionState.clear();
-  renderMemoryPage();
   renderMemorySurface();
 }
 
@@ -1854,11 +1462,6 @@ async function rebindSettingsAfterCharacterSwitch(lifecycle) {
   await runtimeVoiceController?.refreshCurrent({ preserveDraft: true });
   applyRuntimeCharacterSnapshot(await rootSettingsClient.charactersGet(), { preserveSelection: true });
   memoryState.rebinding = false;
-  if (fields.pages.memory.classList.contains("is-active")) {
-    await loadMemories();
-  } else {
-    renderMemoryPage();
-  }
   refreshDirty();
 }
 
@@ -2062,7 +1665,6 @@ function buildThemeEditor() {
   pick.type = "button";
   pick.className = "secondary-button theme-editor-pick";
   pick.textContent = "取色";
-  pick.addEventListener("click", pickActiveThemeColor);
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.className = "secondary-button";
@@ -2252,36 +1854,6 @@ function updateThemeFromHuePointer(event) {
   })));
 }
 
-async function pickActiveThemeColor() {
-  if (!activeThemeField) {
-    return;
-  }
-  themeEditor.pick.disabled = true;
-  setError("");
-  try {
-    hideThemeColorPopover();
-    const result = await hostCall("theme.pick_screen_color");
-    if (result?.cancelled) {
-      return;
-    }
-    const color = normalizeColorText(result?.color, "");
-    if (!color) {
-      throw new Error("取色结果无效。");
-    }
-    updateActiveThemeColor(color);
-  } catch (error) {
-    setError(`屏幕取色失败：${error}`);
-  } finally {
-    themeEditor.pick.disabled = false;
-    if (themeEditor.editing) {
-      themeEditor.root.hidden = false;
-      if (!themeEditor.root.open) themeEditor.root.showModal();
-      syncThemeEditor();
-      themeEditor.hex.focus();
-    }
-  }
-}
-
 function setThemeValues(theme, options = {}) {
   const updateVisualEffect = options.updateVisualEffect !== false;
   const animateTheme = options.animateTheme === true;
@@ -2309,32 +1881,6 @@ function setThemeValues(theme, options = {}) {
     return;
   }
   update();
-}
-
-async function generateAiTheme() {
-  const character = selectedCharacter();
-  if (!character) {
-    setError("请先选择一个角色。");
-    return;
-  }
-  const original = fields.themeAiButton.textContent;
-  fields.themeAiButton.disabled = true;
-  fields.themeAiButton.textContent = "生成中…";
-  setError("");
-  try {
-    const result = await hostCall("theme.generate_ai", { character_id: character.id });
-    if (!result?.theme) {
-      throw new Error("AI 返回的主题格式无效。");
-    }
-    setThemeValues(result.theme, { animateTheme: true });
-    themeChanged = true;
-    notify("AI 配色已生成。", "success");
-  } catch (error) {
-    setError(`AI 配色失败，已保留当前配色：${error}`);
-  } finally {
-    fields.themeAiButton.disabled = false;
-    fields.themeAiButton.textContent = original;
-  }
 }
 
 function makeProfileId() {
@@ -2539,7 +2085,7 @@ function renderProviderDetail() {
   removeButton.className = "danger-button";
   removeButton.textContent = "删除供应商";
   removeButton.addEventListener("click", () => removeProvider(profile));
-  if (runtimeSettingsHost && profile.configured) {
+  if (profile.configured) {
     const clearButton = document.createElement("button");
     clearButton.type = "button";
     clearButton.className = "secondary-button";
@@ -2569,12 +2115,12 @@ function providerField(profile, key, label, type) {
   input.dataset.providerField = key;
   input.value = profile[key] || "";
   input.placeholder = PROVIDER_FIELD_PLACEHOLDERS[key] || "";
-  if (key === "api_key" && runtimeSettingsHost && profile.configured) {
+  if (key === "api_key" && profile.configured) {
     input.placeholder = "已保存；留空保持原值";
   }
   input.addEventListener("input", () => {
     profile[key] = input.value;
-    if (key === "api_key" && runtimeSettingsHost) {
+    if (key === "api_key") {
       profile.credential_action = input.value.trim() ? "replace" : (profile.configured ? "keep" : "clear");
     }
     if (input.value.trim()) {
@@ -2593,7 +2139,6 @@ function providerField(profile, key, label, type) {
     } else if (key === "api_key") {
       renderProviderStatus();
     }
-    updateOnboardingUi();
   });
   row.append(labelEl, input);
   return row;
@@ -2636,7 +2181,6 @@ function renderProviderModels(profile) {
         profile.models = profile.models.filter((item) => item !== model);
         renderProviderPage();
         refreshModelSlots();
-        updateOnboardingUi();
       });
       chip.append(name, remove);
       list.append(chip);
@@ -2692,7 +2236,6 @@ function addModelsToProfile(profile, models) {
   if (added) {
     renderProviderPage();
     refreshModelSlots();
-    updateOnboardingUi();
   }
   return added;
 }
@@ -2709,7 +2252,7 @@ async function autoDetectModels(profile, button) {
     setError("请先填写 Base URL。");
     return;
   }
-  if (!apiKey && !(runtimeSettingsHost && profile.configured && profile.credential_action === "keep")) {
+  if (!apiKey && !(profile.configured && profile.credential_action === "keep")) {
     markInvalid(providerDetailInput("api_key"), true);
     setError("请先填写 API Key。");
     return;
@@ -2719,13 +2262,7 @@ async function autoDetectModels(profile, button) {
   button.disabled = true;
   button.textContent = "检测中…";
   try {
-    const result = runtimeProviderModelController
-      ? await runtimeProviderModelController.listModels(runtimeProbeProfile(profile, ""))
-      : await hostCall("api.list_models", {
-        base_url: baseUrl,
-        api_key: apiKey,
-        timeout_seconds: request?.api?.settings?.timeout_seconds || 60,
-      });
+    const result = await runtimeProviderModelController.listModels(runtimeProbeProfile(profile, ""));
     const models = Array.isArray(result?.models) ? result.models : [];
     if (!models.length) {
       notify("未检测到任何模型。", "info");
@@ -2744,7 +2281,7 @@ async function testProvider(profile, button) {
   const baseUrl = (profile.base_url || "").trim();
   const apiKey = (profile.api_key || "").trim();
   const model = (profile.models || [])[0];
-  if (!baseUrl || (!apiKey && !(runtimeSettingsHost && profile.configured && profile.credential_action === "keep"))) {
+  if (!baseUrl || (!apiKey && !(profile.configured && profile.credential_action === "keep"))) {
     markInvalid(providerDetailInput("base_url"), !baseUrl);
     markInvalid(providerDetailInput("api_key"), !apiKey);
     setError("请先填写 Base URL 与 API Key。");
@@ -2759,14 +2296,7 @@ async function testProvider(profile, button) {
   button.disabled = true;
   button.textContent = "测试中…";
   try {
-    const result = runtimeProviderModelController
-      ? await runtimeProviderModelController.testConnection(runtimeProbeProfile(profile, model))
-      : await hostCall("api.test_connection", {
-        base_url: baseUrl,
-        api_key: apiKey,
-        model,
-        timeout_seconds: request?.api?.settings?.timeout_seconds || 60,
-      });
+    const result = await runtimeProviderModelController.testConnection(runtimeProbeProfile(profile, model));
     notify(`连接成功：${result?.message || "OK"}`, "success");
   } catch (error) {
     setError(`连接失败：${error}`);
@@ -2783,7 +2313,6 @@ function removeProvider(profile) {
   }
   renderProviderPage();
   refreshModelSlots();
-  updateOnboardingUi();
 }
 
 function addProvider(preset) {
@@ -2804,7 +2333,6 @@ function addProvider(preset) {
   }
   renderProviderPage();
   refreshModelSlots();
-  updateOnboardingUi();
 }
 
 function makeModalButton(text, className, handler) {
@@ -3157,27 +2685,6 @@ function collectModelSelection() {
   return { slots };
 }
 
-function renderTtsProviders() {
-  fields.ttsProvider.textContent = "";
-  request.tts.providers.filter((provider) => provider.id !== "none").forEach((provider) => {
-    const option = document.createElement("option");
-    option.value = provider.id;
-    option.textContent = provider.label;
-    fields.ttsProvider.append(option);
-  });
-}
-
-function setTtsProviderValue(provider) {
-  fields.ttsProvider.value = provider === "none" ? "" : provider;
-  if (!fields.ttsProvider.value) {
-    fields.ttsProvider.value = request.tts.providers.find((item) => item.id !== "none")?.id || "gpt-sovits";
-  }
-}
-
-async function hostCall(method, params = {}) {
-  return invoke("host_call", { method, params });
-}
-
 function characterExportDefaultName(kind) {
   const id = selectedCharacter()?.id || "character";
   if (kind === "voice") {
@@ -3265,39 +2772,6 @@ function chooseExportKind() {
   });
 }
 
-function applyCharacterRpcResult(result, { dirty = true, applyTheme = false } = {}) {
-  if (Array.isArray(result?.characters)) {
-    request.character.characters = result.characters;
-  }
-  const hasCurrentCharacterId = typeof result?.current_character_id === "string";
-  if (hasCurrentCharacterId) {
-    request.character.current_character_id = result.current_character_id;
-  }
-  renderCharacters();
-  refreshSelect(fields.characterSelect);
-  if (hasCurrentCharacterId) {
-    fields.characterSelect.value = result.current_character_id;
-    refreshSelect(fields.characterSelect);
-  }
-  if (result?.disable_tts) {
-    fields.ttsEnabled.checked = false;
-  }
-  if (applyTheme && selectedCharacter()) {
-    applySelectedCharacterTheme();
-  }
-  syncTtsState();
-  syncCharacterArchiveState();
-  if (dirty) {
-    scheduleDirty();
-  }
-  if (result?.message) {
-    notify(result.message, "success");
-  }
-  if (isOnboarding() && selectedCharacter()) {
-    showOnboardingStep("providers");
-  }
-}
-
 async function runCharacterArchiveAction(action) {
   if (!request || characterArchiveBusy) {
     return;
@@ -3319,20 +2793,15 @@ async function importCharacterArchive() {
     if (!path) {
       return;
     }
-    if (runtimeSettingsHost) {
-      const previousLifecycle = await invoke("runtime_lifecycle_snapshot");
-      const result = await rootSettingsClient.characterImport(path);
-      await applyRuntimeCharacterChange(result, previousLifecycle);
-      notify("角色包已导入。", "success");
-      return;
-    }
-    const result = await hostCall("character.import_archive", { path });
-    applyCharacterRpcResult(result, { dirty: true, applyTheme: true });
+    const previousLifecycle = await invoke("runtime_lifecycle_snapshot");
+    const result = await rootSettingsClient.characterImport(path);
+    await applyRuntimeCharacterChange(result, previousLifecycle);
+    notify("角色包已导入。", "success");
   });
 }
 
 async function stageRuntimeCharacterSelection() {
-  if (!runtimeSettingsHost || characterArchiveBusy) return;
+  if (characterArchiveBusy) return;
   const characterId = fields.characterSelect.value;
   if (!characterId || characterId === runtimeCharacterDraftId) return;
   const previousCharacterId = runtimeCharacterDraftId
@@ -3369,7 +2838,7 @@ async function importCharacterVoiceArchive() {
       setError("请先选择一个角色。");
       return;
     }
-    if (runtimeSettingsHost && (pendingRuntimeCharacterId() || currentCharacterHasDrafts())) {
+    if (pendingRuntimeCharacterId() || currentCharacterHasDrafts()) {
       setError("请先保存或放弃角色相关改动，再导入语音包。");
       return;
     }
@@ -3377,18 +2846,10 @@ async function importCharacterVoiceArchive() {
     if (!path) {
       return;
     }
-    if (runtimeSettingsHost) {
-      const previousLifecycle = await invoke("runtime_lifecycle_snapshot");
-      const result = await rootSettingsClient.characterVoiceImport(path, character.id);
-      await applyRuntimeCharacterChange(result, previousLifecycle);
-      notify(`已为角色「${character.display_name}」导入 TTS 模型包。`, "success");
-      return;
-    }
-    const result = await hostCall("character.import_voice_archive", {
-      path,
-      character_id: character.id,
-    });
-    applyCharacterRpcResult(result, { dirty: false });
+    const previousLifecycle = await invoke("runtime_lifecycle_snapshot");
+    const result = await rootSettingsClient.characterVoiceImport(path, character.id);
+    await applyRuntimeCharacterChange(result, previousLifecycle);
+    notify(`已为角色「${character.display_name}」导入 TTS 模型包。`, "success");
   });
 }
 
@@ -3399,7 +2860,7 @@ async function exportCharacterArchive() {
       setError("当前没有可导出的角色。");
       return;
     }
-    if (runtimeSettingsHost && pendingRuntimeCharacterId()) {
+    if (pendingRuntimeCharacterId()) {
       setError("请先应用或放弃待切换的角色，再导出角色包。");
       return;
     }
@@ -3411,17 +2872,8 @@ async function exportCharacterArchive() {
     if (!path) {
       return;
     }
-    if (runtimeSettingsHost) {
-      const result = await rootSettingsClient.characterExport(path, character.id, kind);
-      notify(result.message, "success");
-      return;
-    }
-    const result = await hostCall("character.export_archive", {
-      path,
-      character_id: character.id,
-      kind,
-    });
-    applyCharacterRpcResult(result, { dirty: false });
+    const result = await rootSettingsClient.characterExport(path, character.id, kind);
+    notify(result.message, "success");
   });
 }
 
@@ -3437,7 +2889,6 @@ async function launchCharacterStudio() {
 }
 
 function runtimeFeatureAvailable(feature) {
-  if (!runtimeSettingsHost) return true;
   return Object.values(runtimeCapabilityManifest?.sections || {})
     .some((section) => section?.features?.[feature] === "available");
 }
@@ -3571,27 +3022,6 @@ function renderResourceCard(container, model) {
 
 
 
-function memoryLayers() {
-  return request?.memory?.layers || [];
-}
-
-function memoryDefaults() {
-  return request?.memory?.defaults || {
-    layer: "semantic",
-    source: "manual",
-    importance: 0.5,
-    confidence: 0.75,
-  };
-}
-
-function memoryLayerLabel(layer) {
-  return memoryLayers().find((item) => item.id === layer)?.label || layer || "未分层";
-}
-
-function memoryContent(record) {
-  return String(record?.content || record?.memory || "");
-}
-
 function compactText(value, max = 110) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (text.length <= max) {
@@ -3608,443 +3038,6 @@ function renderStrip(container, items) {
     chip.textContent = `${item.label} ${item.value}`;
     container.append(chip);
   });
-}
-
-function renderMemoryControls() {
-  fields.memoryLayerFilter.textContent = "";
-  const all = document.createElement("option");
-  all.value = "";
-  all.textContent = "全部层级";
-  fields.memoryLayerFilter.append(all);
-  memoryLayers().forEach((layer) => {
-    const option = document.createElement("option");
-    option.value = layer.id;
-    option.textContent = layer.label;
-    fields.memoryLayerFilter.append(option);
-  });
-
-  fields.memoryLayer.textContent = "";
-  memoryLayers().forEach((layer) => {
-    const option = document.createElement("option");
-    option.value = layer.id;
-    option.textContent = layer.label;
-    fields.memoryLayer.append(option);
-  });
-}
-
-function selectedMemory() {
-  if (memoryState.selectedId === "__draft__") {
-    return memoryState.draft;
-  }
-  const entry = memoryState.entries.find((item) => item.id === memoryState.selectedId);
-  if (entry) return entry;
-  const editorDraft = memoryState.editorDrafts.get(memoryState.selectedId);
-  return editorDraft ? { id: memoryState.selectedId, ...editorDraft } : null;
-}
-
-function syncRuntimeMemorySettingsAvailability() {
-  const settingsReadOnly = memoryState.rebinding
-    || ["read_only", "failed", "stopped"].includes(memoryState.status);
-  fields.memoryTriggerTurns.disabled = settingsReadOnly
-    || !runtimeFeatureAvailable("memory.curation");
-}
-
-function captureMemoryEditorDraft() {
-  if (!memoryState.selectedId) return;
-  const draft = {
-    content: fields.memoryContent.value,
-    layer: fields.memoryLayer.value,
-    category: fields.memoryCategory.value,
-    source: fields.memorySource.value,
-    importance: fields.memoryImportance.value,
-    confidence: fields.memoryConfidence.value,
-  };
-  const committed = memoryState.entries.find((entry) => entry.id === memoryState.selectedId);
-  const unchanged = committed
-    && draft.content === memoryContent(committed)
-    && draft.layer === (committed.layer || memoryDefaults().layer)
-    && draft.category === (committed.category || "")
-    && draft.source === (committed.source || memoryDefaults().source)
-    && Number(draft.importance) === Number(committed.importance ?? memoryDefaults().importance)
-    && Number(draft.confidence) === Number(committed.confidence ?? memoryDefaults().confidence);
-  if (unchanged) {
-    memoryState.editorDrafts.delete(memoryState.selectedId);
-  } else {
-    memoryState.editorDrafts.set(memoryState.selectedId, draft);
-  }
-  refreshDirty();
-}
-
-function sortedMemories() {
-  const entries = [...memoryState.entries];
-  const sort = fields.memorySort.value;
-  entries.sort((a, b) => {
-    if (a.layer === "core_profile" && b.layer !== "core_profile") {
-      return -1;
-    }
-    if (b.layer === "core_profile" && a.layer !== "core_profile") {
-      return 1;
-    }
-    if (sort === "importance_desc") {
-      return Number(b.importance || 0) - Number(a.importance || 0);
-    }
-    if (sort === "confidence_desc") {
-      return Number(b.confidence || 0) - Number(a.confidence || 0);
-    }
-    return String(b.updated_at || b.created_at || "").localeCompare(
-      String(a.updated_at || a.created_at || ""),
-    );
-  });
-  return entries;
-}
-
-function setMemoryEditorDisabled(editorDisabled, actionsDisabled = editorDisabled) {
-  [
-    fields.memoryContent,
-    fields.memoryLayer,
-    fields.memoryCategory,
-    fields.memorySource,
-    fields.memoryImportance,
-    fields.memoryConfidence,
-  ].forEach((field) => {
-    field.disabled = editorDisabled;
-  });
-  fields.memorySaveButton.disabled = actionsDisabled;
-  fields.memoryRevertButton.disabled = actionsDisabled;
-  fields.memoryDeleteButton.disabled = actionsDisabled;
-  refreshSelect(fields.memoryLayer);
-}
-
-function fillMemoryEditor(record) {
-  const readOnly = ["degraded", "read_only", "failed", "stopped"].includes(memoryState.status);
-  const actionsDisabled = readOnly || memoryState.loading || memoryState.rebinding;
-  if (!record) {
-    fields.memoryContent.value = "";
-    fields.memoryCategory.value = "";
-    fields.memorySource.value = "";
-    fields.memoryImportance.value = "";
-    fields.memoryConfidence.value = "";
-    fields.memoryMeta.textContent = "";
-    setMemoryEditorDisabled(true);
-    return;
-  }
-  const editorDraft = memoryState.editorDrafts.get(memoryState.selectedId);
-  if (!memoryState.composing) {
-    fields.memoryContent.value = editorDraft?.content ?? memoryContent(record);
-  }
-  fields.memoryLayer.value = editorDraft?.layer || record.layer || memoryDefaults().layer;
-  fields.memoryCategory.value = editorDraft?.category ?? record.category ?? "";
-  fields.memorySource.value = editorDraft?.source ?? record.source ?? memoryDefaults().source;
-  fields.memoryImportance.value = editorDraft?.importance ?? Number(record.importance ?? memoryDefaults().importance);
-  fields.memoryConfidence.value = editorDraft?.confidence ?? Number(record.confidence ?? memoryDefaults().confidence);
-  refreshSelect(fields.memoryLayer);
-  fields.memoryMeta.textContent = "";
-  [
-    ["ID", record.id || "新记忆"],
-    ["创建", record.created_at || "未保存"],
-    ["更新", record.updated_at || "未保存"],
-  ].forEach(([label, value]) => {
-    const dt = document.createElement("dt");
-    dt.textContent = label;
-    const dd = document.createElement("dd");
-    dd.textContent = value;
-    fields.memoryMeta.append(dt, dd);
-  });
-  setMemoryEditorDisabled(readOnly, actionsDisabled);
-  fields.memoryDeleteButton.disabled = actionsDisabled || memoryState.selectedId === "__draft__";
-  fields.memoryRevertButton.disabled = actionsDisabled || memoryState.selectedId === "__draft__";
-}
-
-function renderMemoryStatus() {
-  const counts = {
-    all: memoryState.entries.length,
-    core_profile: 0,
-    semantic: 0,
-    episodic: 0,
-    procedural: 0,
-    session: 0,
-  };
-  memoryState.entries.forEach((entry) => {
-    if (counts[entry.layer] !== undefined) {
-      counts[entry.layer] += 1;
-    }
-  });
-  const triggerTurns = fields.memoryTriggerTurns.value
-    || request?.memory?.curation?.trigger_turns;
-  renderStrip(fields.memoryStatusStrip, [
-    { label: "总数", value: counts.all },
-    { label: "常驻档案", value: counts.core_profile },
-    { label: "长期事实", value: counts.semantic },
-    { label: "事件总结", value: counts.episodic },
-    { label: "协作规则", value: counts.procedural },
-    { label: "当前任务", value: counts.session },
-    {
-      label: "整理频率",
-      value: triggerTurns ? `${triggerTurns} 轮` : "未配置",
-    },
-  ]);
-}
-
-function renderMemoryList() {
-  fields.memoryList.textContent = "";
-  if (memoryState.loading && memoryState.entries.length === 0) {
-    const item = document.createElement("p");
-    item.className = "empty-state";
-    item.textContent = MEMORY_INITIALIZING_MESSAGE;
-    fields.memoryList.append(item);
-    return;
-  }
-  if (["failed", "stopped"].includes(memoryState.status)) {
-    const item = document.createElement("p");
-    item.className = "empty-state";
-    item.textContent = memoryState.message || "记忆系统加载失败。";
-    fields.memoryList.append(item);
-    return;
-  }
-  const entries = sortedMemories();
-  if (!entries.length) {
-    const item = document.createElement("p");
-    item.className = "empty-state";
-    item.textContent = memoryState.message || "暂无记忆。";
-    fields.memoryList.append(item);
-    return;
-  }
-  entries.forEach((entry) => {
-    const row = document.createElement("div");
-    row.className = "memory-card";
-    row.setAttribute("role", "button");
-    row.tabIndex = 0;
-    row.classList.toggle("is-selected", entry.id === memoryState.selectedId);
-    row.classList.toggle("is-core", entry.layer === "core_profile");
-    const selectRow = () => {
-      memoryState.selectedId = entry.id;
-      renderMemoryPage();
-    };
-    row.addEventListener("click", selectRow);
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        selectRow();
-      }
-    });
-    const title = document.createElement("strong");
-    title.textContent = compactText(memoryContent(entry) || "(空记忆)");
-    const meta = document.createElement("span");
-    meta.className = "card-meta";
-    meta.textContent = [
-      memoryLayerLabel(entry.layer),
-      entry.category || "未分类",
-      entry.source || "未知来源",
-      entry.updated_at || entry.created_at || "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    const chips = document.createElement("span");
-    chips.className = "chip-row";
-    [
-      `重要 ${Number(entry.importance ?? 0).toFixed(2)}`,
-      `置信 ${Number(entry.confidence ?? 0).toFixed(2)}`,
-    ].forEach((text) => {
-      const chip = document.createElement("span");
-      chip.className = "permission-chip";
-      chip.textContent = text;
-      chips.append(chip);
-    });
-    row.append(title, meta, chips);
-    fields.memoryList.append(row);
-  });
-}
-
-function renderMemoryPage() {
-  renderMemoryStatus();
-  renderMemoryList();
-  fillMemoryEditor(selectedMemory());
-  fields.memoryAddButton.disabled = memoryState.rebinding
-    || ["loading", "degraded", "read_only", "failed", "stopped"].includes(memoryState.status);
-  fields.memoryRefreshButton.disabled = memoryState.loading || memoryState.rebinding;
-}
-
-function renderMemoryInitializationState(
-  message = MEMORY_INITIALIZING_MESSAGE,
-  { failed = false } = {},
-) {
-  memoryState.loading = !failed;
-  memoryState.status = failed ? "degraded" : "loading";
-  memoryState.message = message;
-  fields.memoryStatusStrip.textContent = "";
-  renderMemoryList();
-  setMemoryEditorDisabled(true, true);
-  fields.memoryAddButton.disabled = true;
-  fields.memoryRefreshButton.disabled = true;
-}
-
-async function loadMemories({ continueRetry = false } = {}) {
-  if (!request) {
-    return;
-  }
-  clearMemoryRetry();
-  if (!continueRetry || !memoryRetryStartedAt) {
-    memoryRetryStartedAt = Date.now();
-  }
-  captureMemoryEditorDraft();
-  const loadRevision = ++memoryLoadRevision;
-  const loadingMessage = MEMORY_INITIALIZING_MESSAGE;
-  memoryState.loading = true;
-  memoryState.status = "loading";
-  memoryState.message = loadingMessage;
-  let shouldRetry = false;
-  renderMemoryPage();
-  try {
-    const params = {
-      query: fields.memorySearch.value.trim(),
-      limit: request.memory.page_size || 120,
-    };
-    if (fields.memoryLayerFilter.value) {
-      params.layer = fields.memoryLayerFilter.value;
-    }
-    const result = runtimeMemoryController
-      ? await runtimeMemoryController.search(params)
-      : await hostCall("memory.search", params);
-    if (loadRevision !== memoryLoadRevision) return;
-    const status = result.status || "ready";
-    if (status === "loading") {
-      shouldRetry = memoryRetryBudgetAvailable();
-      memoryState.status = shouldRetry ? "loading" : "degraded";
-      memoryState.message = shouldRetry
-        ? MEMORY_INITIALIZING_MESSAGE
-        : "本地记忆模型初始化超过两分钟，请点击刷新重试。";
-    } else {
-      memoryRetryStartedAt = 0;
-      memoryState.status = status;
-      memoryState.message = result.message || result.error || "";
-      memoryState.entries = Array.isArray(result.memories)
-        ? result.memories.filter((entry) => entry && entry.id)
-        : [];
-      memoryState.loaded = true;
-      const preserveSelection = memoryState.selectedId === "__draft__"
-        || memoryState.editorDrafts.has(memoryState.selectedId);
-      if (!preserveSelection && !memoryState.entries.some((entry) => entry.id === memoryState.selectedId)) {
-        memoryState.selectedId = memoryState.entries[0]?.id || "";
-      }
-    }
-  } catch (error) {
-    if (loadRevision !== memoryLoadRevision) return;
-    const retryable = runtimeMemoryController
-      && memoryReadErrorRetryable(error)
-      && memoryRetryBudgetAvailable();
-    if (retryable) {
-      memoryState.status = "loading";
-      memoryState.message = MEMORY_INITIALIZING_MESSAGE;
-      shouldRetry = true;
-    } else {
-      memoryRetryStartedAt = 0;
-      memoryState.status = "degraded";
-      memoryState.message = runtimeMemoryController
-        ? "记忆连接暂不可用；已有内容和草稿已保留，请点击刷新重试。"
-        : String(error);
-    }
-  } finally {
-    if (loadRevision !== memoryLoadRevision) return;
-    memoryState.loading = false;
-    renderMemoryPage();
-    if (shouldRetry) {
-      scheduleMemoryRetry();
-    }
-  }
-}
-
-function newMemoryDraft() {
-  const defaults = memoryDefaults();
-  memoryState.draft = {
-    id: "",
-    content: "",
-    layer: defaults.layer,
-    category: "",
-    source: defaults.source,
-    importance: defaults.importance,
-    confidence: defaults.confidence,
-  };
-  memoryState.selectedId = "__draft__";
-  renderMemoryPage();
-  fields.memoryContent.focus();
-}
-
-function collectMemoryEditor() {
-  const payload = {
-    content: fields.memoryContent.value.trim(),
-    layer: fields.memoryLayer.value || memoryDefaults().layer,
-    category: fields.memoryCategory.value.trim(),
-    source: fields.memorySource.value.trim() || memoryDefaults().source,
-    importance: clampFloat(fields.memoryImportance.value, [0, 1]),
-    confidence: clampFloat(fields.memoryConfidence.value, [0, 1]),
-  };
-  if (memoryState.selectedId && memoryState.selectedId !== "__draft__") {
-    payload.id = memoryState.selectedId;
-  }
-  return payload;
-}
-
-async function saveMemoryEditor() {
-  const payload = collectMemoryEditor();
-  if (!payload.content) {
-    setError("记忆内容不能为空。");
-    return;
-  }
-  setError("");
-  try {
-    const result = runtimeMemoryController
-      ? await runtimeMemoryController.upsert(payload)
-      : await hostCall("memory.upsert", payload);
-    if (result.status === "loading" || result.status === "failed") {
-      setError(result.error || result.message || "记忆系统暂不可用。");
-      return;
-    }
-    const saved = result.memory || {};
-    memoryState.editorDrafts.delete(memoryState.selectedId);
-    memoryState.selectedId = saved.id || payload.id || "";
-    memoryState.draft = null;
-    await loadMemories();
-    notify("已保存记忆。", "success");
-  } catch (error) {
-    if (runtimeMemoryController && error?.code === "MEMORY_WRITE_OUTCOME_UNCERTAIN") {
-      await loadMemories();
-    }
-    setError(String(error));
-  }
-}
-
-async function deleteSelectedMemory() {
-  const record = selectedMemory();
-  if (!record || !record.id) {
-    return;
-  }
-  const confirmed = await confirmAction("确认删除这条记忆？", {
-    title: "删除记忆",
-    confirmText: "删除",
-    danger: true,
-  });
-  if (!confirmed) {
-    return;
-  }
-  setError("");
-  try {
-    const result = runtimeMemoryController
-      ? await runtimeMemoryController.delete(record.id)
-      : await hostCall("memory.delete", { id: record.id });
-    if (Array.isArray(result.failed) && result.failed.length) {
-      setError(result.failed[0].error || "记忆删除失败。");
-      return;
-    }
-    memoryState.selectedId = "";
-    memoryState.editorDrafts.delete(record.id);
-    await loadMemories();
-    notify("已删除记忆。", "success");
-  } catch (error) {
-    if (runtimeMemoryController && error?.code === "MEMORY_WRITE_OUTCOME_UNCERTAIN") {
-      await loadMemories();
-    }
-    setError(String(error));
-  }
 }
 
 function clonePlain(value) {
@@ -5882,25 +4875,15 @@ async function runPluginSettingsAction(plugin, section, action, focusResourceKey
   renderAboutComponents();
   setError("");
   try {
-    const result = runtimePluginController
-      ? await runtimePluginController.action({
-        pluginId: plugin.plugin_id,
-        sectionId: section.section_id,
-        actionId: action.action_id,
-        values: clonePlain(editablePluginSectionValues(
-          section,
-          pluginSectionValues(plugin.id, section.section_id),
-        )),
-      })
-      : await hostCall("plugin.settings_action", {
-        plugin_id: plugin.plugin_id,
-        section_id: section.section_id,
-        action_id: action.action_id,
-        values: clonePlain(editablePluginSectionValues(
-          section,
-          pluginSectionValues(plugin.id, section.section_id),
-        )),
-      });
+    const result = await runtimePluginController.action({
+      pluginId: plugin.plugin_id,
+      sectionId: section.section_id,
+      actionId: action.action_id,
+      values: clonePlain(editablePluginSectionValues(
+        section,
+        pluginSectionValues(plugin.id, section.section_id),
+      )),
+    });
     if (result && typeof result.values === "object" && result.values !== null) {
       pluginState.settingsValues[plugin.id][section.section_id] = {
         ...pluginState.settingsValues[plugin.id][section.section_id],
@@ -6195,24 +5178,7 @@ function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = n
   renderAboutComponents();
 }
 
-function collectCharacterSettings() {
-  const limits = request.limits;
-  return {
-    current_character_id: fields.characterSelect.value,
-    layout: {
-      portrait_scale_percent: clampInt(fields.portraitScale.value, limits.portrait_scale_percent),
-      control_panel_width: clampInt(fields.controlPanelWidth.value, limits.control_panel_width),
-      bubble_height: clampInt(fields.bubbleHeight.value, limits.bubble_height),
-      control_panel_vertical_offset: clampInt(
-        fields.controlPanelOffset.value,
-        limits.control_panel_vertical_offset,
-      ),
-      input_bar_offset: clampInt(fields.inputBarOffset.value, limits.input_bar_offset),
-    },
-  };
-}
-
-// 角色页的布局滑块：拖动时把数值实时回写到桌宠（preview_layout），保存时才落盘。
+// 布局滑块的输出显示；预览和保存由 Appearance controller 处理。
 const layoutSliders = [
   "portraitScale",
   "controlPanelWidth",
@@ -6234,77 +5200,6 @@ function updateSliderOutput(fieldKey) {
     const progress = max > min ? ((value - min) / (max - min)) * 100 : 0;
     input.style.setProperty("--slider-progress", `${Math.max(0, Math.min(100, progress))}%`);
   }
-}
-
-let layoutPreviewPending = false;
-function requestLayoutPreview() {
-  if (!request || runtimeSettingsHost || layoutPreviewPending) {
-    return;
-  }
-  layoutPreviewPending = true;
-  requestAnimationFrame(async () => {
-    layoutPreviewPending = false;
-    try {
-      await invoke("preview_layout", { layout: collectCharacterSettings().layout });
-    } catch (error) {
-      // 实时预览失败不应打断编辑
-    }
-  });
-}
-
-let fontPreviewPending = false;
-function requestFontPreview() {
-  if (!request || runtimeSettingsHost || fontPreviewPending) {
-    return;
-  }
-  fontPreviewPending = true;
-  requestAnimationFrame(async () => {
-    fontPreviewPending = false;
-    try {
-      await invoke("preview_layout", {
-        layout: {
-          speech_font_size: clampInt(
-            fields.speechFontSize.value,
-            request.limits.speech_font_size,
-          ),
-          name_font_size: clampInt(
-            fields.nameFontSize.value,
-            request.limits.name_font_size,
-          ),
-          input_font_size: clampInt(
-            fields.inputFontSize.value,
-            request.limits.input_font_size,
-          ),
-        },
-      });
-    } catch (error) {
-      // 实时预览失败不应打断编辑
-    }
-  });
-}
-
-function collectScreenAwarenessSettings() {
-  const limits = request.limits;
-  const enabled = fields.enabled.checked;
-  return {
-    enabled,
-    screen_context_enabled: enabled,
-    check_interval_minutes: clampInt(fields.checkInterval.value, limits.check_interval_minutes),
-    cooldown_minutes: clampInt(fields.cooldown.value, limits.cooldown_minutes),
-    screen_context_batch_limit: clampInt(fields.batchLimit.value, limits.screen_context_batch_limit),
-    screen_context_resolution: fields.screenResolution.value || "fullscreen",
-  };
-}
-
-function collectRuntimeLoopSettings() {
-  const limits = request.limits;
-  const perStep = clampInt(fields.toolCallsPerStep.value, limits.max_tool_calls_per_step);
-  const perTurn = clampInt(fields.toolCallsPerTurn.value, limits.max_tool_calls_per_turn);
-  return {
-    max_agent_steps_per_turn: clampInt(fields.agentSteps.value, limits.max_agent_steps_per_turn),
-    max_tool_calls_per_step: perStep,
-    max_tool_calls_per_turn: Math.max(perStep, perTurn),
-  };
 }
 
 function normalizedProviderProfiles() {
@@ -6332,29 +5227,6 @@ function focusProviderValidation(profile, field) {
   markInvalid(providerDetailInput(field), true);
 }
 
-function validateOnboardingBeforeSubmit() {
-  if (runtimeSettingsHost) {
-    return true;
-  }
-  if (!isOnboarding()) {
-    return true;
-  }
-  if (!selectedCharacter()) {
-    showOnboardingStep("character");
-    setError("请先导入并选择一个角色包。");
-    return false;
-  }
-  const profile = onboardingChatProfile();
-  if (profile && !profile.api_key) {
-    focusProviderValidation(profile, "api_key");
-    onboardingStep = "providers";
-    updateOnboardingUi();
-    setError(`供应商「${providerDisplayName(profile)}」缺少 API Key。`);
-    return false;
-  }
-  return true;
-}
-
 function validateApiSettingsBeforeSubmit() {
   const profiles = normalizedProviderProfiles();
   if (!profiles.length) {
@@ -6368,51 +5240,25 @@ function validateApiSettingsBeforeSubmit() {
     setError(`供应商「${providerDisplayName(missingBaseUrl)}」缺少 Base URL。`);
     return false;
   }
-  const missingModels = profiles.find((profile) => !profile.models.length);
-  if (missingModels && !runtimeSettingsHost) {
-    focusProviderValidation(missingModels, "");
-    setError(`供应商「${providerDisplayName(missingModels)}」至少需要一个模型。`);
-    return false;
-  }
-  const missingCredential = providerState.profiles.find((profile) => (
-    !profile.api_key?.trim()
-    && !(profile.configured && profile.credential_action === "keep")
-  ));
-  if (missingCredential && !runtimeSettingsHost) {
-    focusProviderValidation(missingCredential, "api_key");
-    setError(`供应商「${providerDisplayName(missingCredential)}」缺少 API Key。`);
-    return false;
-  }
   const selection = collectModelSelection();
-  if (runtimeSettingsHost) {
-    const issue = findProviderModelSelectionIssue({
-      providers: profiles,
-      modelSlots: selection.slots,
-      slotFields: request.api.slot_fields,
-    });
-    if (!issue) {
-      return true;
-    }
-    showPage("model");
-    refreshModelSlots();
-    if (issue.type === "incomplete") {
-      setError(`${issue.label}必须同时选择供应商和模型。`);
-    } else if (issue.type === "required") {
-      setError(`请选择可用的${issue.label}。`);
-    } else {
-      setError(`${issue.label}引用的供应商或模型已不可用，请重新选择。`);
-    }
-    return false;
+  const issue = findProviderModelSelectionIssue({
+    providers: profiles,
+    modelSlots: selection.slots,
+    slotFields: request.api.slot_fields,
+  });
+  if (!issue) {
+    return true;
   }
-  const chat = selection.slots.chat || {};
-  const chatProfile = profiles.find((profile) => profile.id === chat.profile_id);
-  if (!chatProfile || !chat.model || !chatProfile.models.includes(chat.model)) {
-    showPage("model");
-    refreshModelSlots();
-    setError("请选择可用的聊天模型。");
-    return false;
+  showPage("model");
+  refreshModelSlots();
+  if (issue.type === "incomplete") {
+    setError(`${issue.label}必须同时选择供应商和模型。`);
+  } else if (issue.type === "required") {
+    setError(`请选择可用的${issue.label}。`);
+  } else {
+    setError(`${issue.label}引用的供应商或模型已不可用，请重新选择。`);
   }
-  return true;
+  return false;
 }
 
 function collectApiSettings() {
@@ -6523,10 +5369,7 @@ async function refreshRuntimeVoiceCurrent() {
 }
 
 async function saveRuntimeSettings() {
-  if (
-    memoryState.editorDrafts.size > 0
-    || countCharacterScopedCollectionDrafts(pluginCollectionState.values()) > 0
-  ) {
+  if (countCharacterScopedCollectionDrafts(pluginCollectionState.values()) > 0) {
     throw new Error("请先使用“保存记忆”提交当前记忆草稿，或还原草稿后再关闭设置。");
   }
   if (runtimeAppearanceController?.isDirty()) await runtimeAppearanceController.save();
@@ -6546,7 +5389,6 @@ async function saveRuntimeSettings() {
     runtimeProviderModelController.rebase();
     await runtimeToolsController?.refreshCurrent();
     await runtimePluginController?.refreshCurrent();
-    await runtimeMemoryController?.refreshCurrent();
     await refreshRuntimeVoiceCurrent();
   }
   if (runtimeChatTimingController?.isDirty()) {
@@ -6561,26 +5403,19 @@ async function saveRuntimeSettings() {
   if (runtimeToolsController?.isDirty()) {
     result = await runtimeToolsController.save();
     await runtimePluginController?.refreshCurrent();
-    await runtimeMemoryController?.refreshCurrent();
     await runtimeProviderModelController?.refreshCurrent();
     await refreshRuntimeVoiceCurrent();
   }
   if (runtimePluginController?.isDirty()) {
     result = await runtimePluginController.save();
     await runtimeToolsController?.refreshCurrent();
-    await runtimeMemoryController?.refreshCurrent();
     await runtimeProviderModelController?.refreshCurrent();
     await refreshRuntimeVoiceCurrent();
-  }
-  if (runtimeMemoryController?.isDirty()) {
-    result = await runtimeMemoryController.save();
-    await loadMemories();
   }
   if (runtimeVoiceController?.isDirty()) {
     result = await runtimeVoiceController.save();
     await runtimeToolsController?.refreshCurrent();
     await runtimePluginController?.refreshCurrent();
-    await runtimeMemoryController?.refreshCurrent();
     await runtimeProviderModelController?.refreshCurrent();
   }
   const characterResult = await commitCharacterSelection({
@@ -6594,81 +5429,6 @@ async function saveRuntimeSettings() {
   return result;
 }
 
-function collectTtsSettings() {
-  const enabled = fields.ttsEnabled.checked && fields.ttsProvider.value !== "none";
-  return {
-    enabled,
-    provider: enabled ? fields.ttsProvider.value : "none",
-    api_url: fields.ttsApiUrl.value.trim(),
-    work_dir: fields.ttsWorkDir.value.trim(),
-    python_path: fields.ttsPythonPath.value.trim(),
-    tts_config_path: fields.ttsConfigPath.value.trim(),
-    timeout_seconds: clampInt(fields.ttsTimeout.value, request.limits.tts_timeout_seconds),
-  };
-}
-
-function collectSystemBasicSettings() {
-  const limits = request.limits;
-  return {
-    // Debug settings no longer have controls. Preserve their compatibility
-    // payload without exposing them as product settings.
-    debug_log: { ...request.system_basic.debug_log },
-    ui: {
-      subtitle_typing_interval_ms: clampInt(
-        fields.subtitleTypingInterval.value,
-        limits.subtitle_typing_interval_ms,
-      ),
-      reply_segment_pause_ms: clampInt(
-        fields.replySegmentPause.value,
-        limits.reply_segment_pause_ms,
-      ),
-      speech_font_size: clampInt(
-        fields.speechFontSize.value,
-        limits.speech_font_size,
-      ),
-      name_font_size: clampInt(
-        fields.nameFontSize.value,
-        limits.name_font_size,
-      ),
-      input_font_size: clampInt(
-        fields.inputFontSize.value,
-        limits.input_font_size,
-      ),
-      // Runtime v2 no longer exposes a text-size setting for the icon-only send control.
-      // Preserve the legacy host value while the shared settings document still carries it.
-      button_font_size: request.system_basic.ui.button_font_size,
-    },
-    bubble: {
-      auto_hide_enabled: fields.bubbleAutoHide.checked,
-      auto_hide_delay_seconds: clampInt(
-        fields.bubbleAutoHideDelay.value,
-        limits.bubble_auto_hide_delay_seconds,
-      ),
-    },
-  };
-}
-
-function collectSystemExtraSettings() {
-  return {
-    startup: {
-      ...request.system_extra.startup,
-      launch_at_login: fields.launchAtLogin.checked,
-    },
-    // Runtime v2 does not expose quick backchannel settings. Preserve the
-    // compatibility payload so saving unrelated settings cannot reset it.
-    backchannel: { ...request.system_extra.backchannel },
-  };
-}
-
-function collectMemorySettings() {
-  return {
-    curation: {
-      trigger_turns: clampInt(fields.memoryTriggerTurns.value, request.limits.memory_trigger_turns),
-      backfill_limit: request.memory.curation.backfill_limit,
-    },
-  };
-}
-
 function collectThemeSettings() {
   const theme = {};
   request.theme_fields.forEach(({ id }) => {
@@ -6678,22 +5438,6 @@ function collectThemeSettings() {
   theme.ai_enabled = Boolean(request.theme.ai_enabled && !themeChanged);
   theme.visual_effect_mode = fields.visualEffectMode.value || request.theme.visual_effect_mode;
   return theme;
-}
-
-function collectSettings() {
-  return {
-    screen_awareness: collectScreenAwarenessSettings(),
-    runtime_loop: collectRuntimeLoopSettings(),
-    system_basic: collectSystemBasicSettings(),
-    theme: collectThemeSettings(),
-    theme_changed: themeChanged,
-    character: collectCharacterSettings(),
-    api: collectApiSettings(),
-    tts: collectTtsSettings(),
-    system_extra: collectSystemExtraSettings(),
-    memory: collectMemorySettings(),
-    plugins: collectPluginSettings(),
-  };
 }
 
 function upgradeSliderControls() {
@@ -6740,127 +5484,12 @@ function upgradeSliderControls() {
   });
 }
 
-async function load() {
-  request = await invoke("load_request");
-  renderCharacters();
-  renderThemeControls();
-  initializeProviderState();
-  renderProviderPage();
-  renderModelSlots(request.api.model_selection);
-  renderTtsProviders();
-  renderMemoryControls();
-  initializePluginState();
-  enhanceSelect(fields.characterSelect);
-  enhanceSelect(fields.visualEffectMode);
-  enhanceSelect(fields.ttsProvider);
-  enhanceSelect(fields.screenResolution);
-  enhanceSelect(fields.memoryLayerFilter);
-  enhanceSelect(fields.memorySort);
-  enhanceSelect(fields.memoryLayer);
-
-  setNumericBounds(fields.checkInterval, request.limits.check_interval_minutes);
-  setNumericBounds(fields.cooldown, request.limits.cooldown_minutes);
-  setNumericBounds(fields.batchLimit, request.limits.screen_context_batch_limit);
-  setNumericBounds(fields.agentSteps, request.limits.max_agent_steps_per_turn);
-  setNumericBounds(fields.toolCallsPerStep, request.limits.max_tool_calls_per_step);
-  setNumericBounds(fields.toolCallsPerTurn, request.limits.max_tool_calls_per_turn);
-  setNumericBounds(fields.subtitleTypingInterval, request.limits.subtitle_typing_interval_ms);
-  setNumericBounds(fields.replySegmentPause, request.limits.reply_segment_pause_ms);
-  setNumericBounds(fields.bubbleAutoHideDelay, request.limits.bubble_auto_hide_delay_seconds);
-  setNumericBounds(fields.portraitScale, request.limits.portrait_scale_percent);
-  setNumericBounds(fields.controlPanelWidth, request.limits.control_panel_width);
-  setNumericBounds(fields.bubbleHeight, request.limits.bubble_height);
-  setNumericBounds(fields.controlPanelOffset, request.limits.control_panel_vertical_offset);
-  setNumericBounds(fields.inputBarOffset, request.limits.input_bar_offset);
-  setNumericBounds(fields.contextWindowTokens, [4_096, 2_000_000]);
-  setNumericBounds(fields.apiTimeout, request.limits.api_timeout_seconds);
-  setNumericBounds(fields.apiMaxTokens, request.limits.api_max_tokens);
-  setNumericBounds(fields.ttsTimeout, request.limits.tts_timeout_seconds);
-  setNumericBounds(fields.memoryTriggerTurns, request.limits.memory_trigger_turns);
-  setNumericBounds(fields.speechFontSize, request.limits.speech_font_size);
-  setNumericBounds(fields.nameFontSize, request.limits.name_font_size);
-  setNumericBounds(fields.inputFontSize, request.limits.input_font_size);
-
-  const layout = request.character.layout;
-  fields.portraitScale.value = layout.portrait_scale_percent;
-  fields.controlPanelWidth.value = layout.control_panel_width;
-  fields.bubbleHeight.value = layout.bubble_height;
-  fields.controlPanelOffset.value = layout.control_panel_vertical_offset;
-  fields.inputBarOffset.value = layout.input_bar_offset;
-  layoutSliders.forEach(updateSliderOutput);
-
-  const settings = request.screen_awareness;
-  fields.enabled.checked = settings.enabled && settings.screen_context_enabled;
-  fields.checkInterval.value = settings.check_interval_minutes;
-  fields.cooldown.value = settings.cooldown_minutes;
-  fields.batchLimit.value = settings.screen_context_batch_limit;
-  fields.screenResolution.value = settings.screen_context_resolution || "fullscreen";
-  fields.agentSteps.value = request.runtime_loop.max_agent_steps_per_turn;
-  fields.toolCallsPerStep.value = request.runtime_loop.max_tool_calls_per_step;
-  fields.toolCallsPerTurn.value = request.runtime_loop.max_tool_calls_per_turn;
-
-  fields.apiTimeout.value = request.api.settings.timeout_seconds;
-  fields.apiTemperature.value = request.api.settings.temperature ?? 0.8;
-  fields.apiTopPEnabled.checked = request.api.settings.top_p !== null;
-  fields.apiTopP.value = request.api.settings.top_p ?? 1;
-  fields.apiMaxTokensEnabled.checked = request.api.settings.max_tokens !== null;
-  fields.apiMaxTokens.value = request.api.settings.max_tokens ?? 2048;
-
-  fields.ttsEnabled.checked = request.tts.enabled;
-  setTtsProviderValue(request.tts.provider);
-  fields.ttsApiUrl.value = request.tts.api_url;
-  fields.ttsWorkDir.value = request.tts.work_dir;
-  fields.ttsPythonPath.value = request.tts.python_path;
-  fields.ttsConfigPath.value = request.tts.tts_config_path;
-  fields.ttsTimeout.value = request.tts.timeout_seconds;
-  lastTtsProvider = fields.ttsProvider.value;
-  applyTtsProviderDefaults(lastTtsProvider);
-
-  fields.subtitleTypingInterval.value = request.system_basic.ui.subtitle_typing_interval_ms;
-  fields.replySegmentPause.value = request.system_basic.ui.reply_segment_pause_ms;
-  fields.speechFontSize.value = request.system_basic.ui.speech_font_size;
-  fields.nameFontSize.value = request.system_basic.ui.name_font_size;
-  fields.inputFontSize.value = request.system_basic.ui.input_font_size;
-  updateSliderOutput("speechFontSize");
-  updateSliderOutput("nameFontSize");
-  updateSliderOutput("inputFontSize");
-  fields.bubbleAutoHide.checked = request.system_basic.bubble.auto_hide_enabled;
-  fields.bubbleAutoHideDelay.value = request.system_basic.bubble.auto_hide_delay_seconds;
-  fields.launchAtLogin.checked = request.system_extra.startup.launch_at_login;
-  fields.launchAtLogin.disabled = false;
-  fields.memoryTriggerTurns.value = request.memory.curation.trigger_turns;
-
-  setThemeValues(request.theme);
-  themeChanged = false;
-  updateScreenResolutionEstimate();
-  syncEnabledState();
-  syncRuntimeLoopState();
-  syncBubbleState();
-  syncApiAdvancedState();
-  syncTtsState();
-  syncCharacterArchiveState();
-  refreshSelect(fields.characterSelect);
-  refreshSelect(fields.ttsProvider);
-  refreshSelect(fields.screenResolution);
-  renderMemoryPage();
-  renderPluginPage();
-  initializeOnboarding();
-
-  // 给所有滑块追加数字输入框，滑块粗调 + 数字精确输入。
-  upgradeSliderControls();
-
-  // 配置全部填充完毕后拍基线，作为「未保存改动」的比对基准。
-  settingsBaseline = settingsSnapshot();
-  refreshDirty();
-}
-
 fields.navItems.forEach((item) => {
   item.addEventListener("click", () => showPage(item.dataset.page));
 });
 layoutSliders.forEach((fieldKey) => {
   const preview = () => {
     updateSliderOutput(fieldKey);
-    requestLayoutPreview();
   };
   fields[fieldKey].addEventListener("input", preview);
   fields[fieldKey].addEventListener("change", preview);
@@ -6868,18 +5497,14 @@ layoutSliders.forEach((fieldKey) => {
 ["speechFontSize", "nameFontSize", "inputFontSize"].forEach((fieldKey) => {
   const preview = () => {
     updateSliderOutput(fieldKey);
-    requestFontPreview();
   };
   fields[fieldKey].addEventListener("input", preview);
   fields[fieldKey].addEventListener("change", preview);
 });
-fields.characterSelect.addEventListener("change", syncTtsState);
 fields.characterSelect.addEventListener("change", () => {
-  if (runtimeSettingsHost) void stageRuntimeCharacterSelection();
-  else applySelectedCharacterTheme();
+  void stageRuntimeCharacterSelection();
 });
 fields.characterSelect.addEventListener("change", syncCharacterArchiveState);
-fields.characterSelect.addEventListener("change", updateOnboardingUi);
 fields.characterImportButton.addEventListener("click", importCharacterArchive);
 fields.ttsVoiceImportButton.addEventListener("click", importCharacterVoiceArchive);
 fields.characterExportButton.addEventListener("click", exportCharacterArchive);
@@ -6928,71 +5553,20 @@ fields.telemetryCopyButton.addEventListener("click", async () => {
 fields.telemetryRegenerateButton.addEventListener("click", regenerateTelemetryInstallationId);
 fields.updateActionButton.addEventListener("click", runUpdateAction);
 fields.enabled.addEventListener("change", syncEnabledState);
-fields.screenResolution.addEventListener("change", updateScreenResolutionEstimate);
-fields.toolCallsPerStep.addEventListener("input", syncRuntimeLoopState);
 fields.addProviderButton.addEventListener("click", openAddProviderChooser);
-fields.onboardingCharacterStep.addEventListener("click", () => showOnboardingStep("character"));
-fields.onboardingProviderStep.addEventListener("click", () => showOnboardingStep("providers"));
-fields.onboardingBackButton.addEventListener("click", () => showOnboardingStep("character"));
 fields.providerSearch.addEventListener("input", () => {
   providerState.search = fields.providerSearch.value;
   renderProviderList();
 });
 fields.apiTopPEnabled.addEventListener("change", syncApiAdvancedState);
 fields.apiMaxTokensEnabled.addEventListener("change", syncApiAdvancedState);
-fields.ttsEnabled.addEventListener("change", () => {
-  if (!runtimeSettingsHost) syncTtsState();
-});
-fields.ttsProvider.addEventListener("change", () => {
-  if (!runtimeSettingsHost) handleTtsProviderChange();
-});
-fields.ttsTestButton.addEventListener("click", () => {
-  if (!runtimeSettingsHost) testTtsSettings();
-});
 fields.visualEffectMode.addEventListener("change", markThemeChanged);
 fields.visualEffectMode.addEventListener("runtime-value-applied", () => refreshSelect(fields.visualEffectMode));
-fields.themeAiButton.addEventListener("click", generateAiTheme);
 fields.resetThemeButton.addEventListener("click", () => {
   setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false, animateTheme: true });
   themeChanged = true;
 });
 fields.bubbleAutoHide.addEventListener("change", syncBubbleState);
-let memorySearchTimer = null;
-fields.memorySearch.addEventListener("input", () => {
-  clearMemoryRetry();
-  window.clearTimeout(memorySearchTimer);
-  memorySearchTimer = window.setTimeout(loadMemories, 180);
-});
-fields.memoryLayerFilter.addEventListener("change", loadMemories);
-fields.memorySort.addEventListener("change", renderMemoryPage);
-fields.memoryAddButton.addEventListener("click", newMemoryDraft);
-fields.memoryRefreshButton.addEventListener("click", () => loadMemories());
-fields.memorySaveButton.addEventListener("click", saveMemoryEditor);
-fields.memoryRevertButton.addEventListener("click", () => {
-  memoryState.editorDrafts.delete(memoryState.selectedId);
-  fillMemoryEditor(selectedMemory());
-  refreshDirty();
-});
-fields.memoryDeleteButton.addEventListener("click", deleteSelectedMemory);
-fields.memoryTriggerTurns.addEventListener("input", renderMemoryStatus);
-fields.memoryContent.addEventListener("compositionstart", () => {
-  memoryState.composing = true;
-});
-fields.memoryContent.addEventListener("compositionend", () => {
-  memoryState.composing = false;
-  captureMemoryEditorDraft();
-});
-[
-  fields.memoryContent,
-  fields.memoryLayer,
-  fields.memoryCategory,
-  fields.memorySource,
-  fields.memoryImportance,
-  fields.memoryConfidence,
-].forEach((field) => {
-  field.addEventListener("input", captureMemoryEditorDraft);
-  field.addEventListener("change", captureMemoryEditorDraft);
-});
 fields.pluginSearch.addEventListener("input", renderPluginPage);
 fields.pluginInstallMenuButton.addEventListener("click", () => {
   setPluginInstallMenuOpen(fields.pluginInstallMenu.hidden);
@@ -7043,104 +5617,36 @@ fields.pluginInstallFolderButton.addEventListener("click", () => {
   installLocalPlugin("folder");
 });
 fields.saveButton.addEventListener("click", async () => {
-  if (runtimeSettingsHost) {
-    if (characterSwitching) {
-      setError("角色切换完成前不能保存设置。");
-      return;
-    }
-    const original = fields.saveButton.textContent;
-    setError("");
-    setSubmissionBusy(true);
-    fields.saveButton.textContent = "保存中…";
-    try {
-      await saveRuntimeSettings();
-      notify("已保存。", "success");
-      await closeSettingsWindow();
-    } catch (error) {
-      bypassCloseGuard = false;
-      setError(String(error));
-    } finally {
-      setSubmissionBusy(false);
-      fields.saveButton.textContent = original;
-    }
-    return;
-  }
-  if (!request) {
-    return;
-  }
-  setError("");
-  if (!validateOnboardingBeforeSubmit() || !validateApiSettingsBeforeSubmit()) {
+  if (characterSwitching) {
+    setError("角色切换完成前不能保存设置。");
     return;
   }
   const original = fields.saveButton.textContent;
-  let settings;
-  try {
-    settings = collectSettings();
-  } catch (error) {
-    setError(String(error));
-    return;
-  }
-  // 保存成功后 Rust/Python 会关窗，提前放行关窗拦截。
-  bypassCloseGuard = true;
+  setError("");
   setSubmissionBusy(true);
   fields.saveButton.textContent = "保存中…";
   try {
-    await invoke("save_settings", { settings });
-    settingsBaseline = JSON.stringify(settings);
-    refreshDirty();
+    await saveRuntimeSettings();
     notify("已保存。", "success");
+    await closeSettingsWindow();
   } catch (error) {
     bypassCloseGuard = false;
-    setSubmissionBusy(false);
-    fields.saveButton.textContent = original;
     setError(String(error));
-    return;
-  }
-  window.setTimeout(() => {
-    bypassCloseGuard = false;
+  } finally {
     setSubmissionBusy(false);
     fields.saveButton.textContent = original;
-  }, 800);
+  }
 });
 
 fields.applyButton.addEventListener("click", async () => {
-  if (runtimeSettingsHost) {
-    if (characterSwitching) {
-      setError("角色切换完成前不能应用设置。");
-      return;
-    }
-    setError("");
-    setSubmissionBusy(true);
-    try {
-      await saveRuntimeSettings();
-      notify("已应用。", "success");
-    } catch (error) {
-      setError(String(error));
-    } finally {
-      setSubmissionBusy(false);
-    }
-    return;
-  }
-  if (!request) {
+  if (characterSwitching) {
+    setError("角色切换完成前不能应用设置。");
     return;
   }
   setError("");
-  if (!validateOnboardingBeforeSubmit() || !validateApiSettingsBeforeSubmit()) {
-    return;
-  }
-  let settings;
-  try {
-    settings = collectSettings();
-  } catch (error) {
-    setError(String(error));
-    return;
-  }
   setSubmissionBusy(true);
   try {
-    await invoke("apply_settings", { settings });
-    // 应用同样会持久化（仅不关窗），故重置基线，清掉「未保存」状态。
-    settingsBaseline = JSON.stringify(settings);
-    refreshDirty();
+    await saveRuntimeSettings();
     notify("已应用。", "success");
   } catch (error) {
     setError(String(error));
@@ -7151,11 +5657,6 @@ fields.applyButton.addEventListener("click", async () => {
 
 fields.cancelButton.addEventListener("click", async () => {
   await requestCancelClose();
-});
-
-// 任意输入/勾选/点击后重算「未保存」状态（动态重建 DOM 的供应商/插件/模型区也能覆盖）。
-["input", "change", "click"].forEach((evt) => {
-  document.addEventListener(evt, scheduleDirty, true);
 });
 
 // 数字输入失焦时越界标红，改回合法即清除。
@@ -7214,7 +5715,6 @@ window.addEventListener("beforeunload", () => {
   runtimeProviderModelController?.dispose();
   runtimeChatTimingController?.dispose();
   runtimeBubbleAutoHideController?.dispose();
-  runtimeMemoryController?.dispose();
   runtimeToolsController?.dispose();
   runtimePluginController?.dispose();
   runtimeVoiceController?.dispose();
@@ -7235,15 +5735,7 @@ async function initializeRuntimeSettingsSection(initialize) {
 async function startSettingsFrontend() {
   await runtimeDiagnosticsReady;
   pluginPresentation = await import("./plugin-presentation.js");
-  let manifest;
-  try {
-    manifest = await invoke("settings_capability_manifest");
-  } catch {
-    await load();
-    runtimeDiagnostics?.markReady({ settings: true });
-    return;
-  }
-  runtimeSettingsHost = true;
+  let manifest = await invoke("settings_capability_manifest");
   window.__TAURI__?.event?.listen?.("sakura://character-catalog-changed", ({ payload } = {}) => {
     if (settingsWindowClosing) return;
     void refreshRuntimeCharacterCatalog(payload);
@@ -7433,7 +5925,6 @@ async function startSettingsFrontend() {
   if (manifest.availableSections.includes("about")) {
     await initializeRuntimeSettingsSection(refreshAboutSettings);
   }
-  settingsBaseline = null;
   refreshDirty();
   runtimeDiagnostics?.markReady({ settings: true });
 }

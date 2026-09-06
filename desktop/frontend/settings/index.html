@@ -73,26 +73,6 @@
       </aside>
 
       <section class="detail-card">
-        <header id="onboardingHead" class="onboarding-head" data-submission-lock hidden>
-          <div>
-            <p class="onboarding-kicker">首次启动</p>
-            <h1>让 Sakura 准备好陪你</h1>
-            <p>完成两个必要步骤，其他选项可以稍后再调整。</p>
-          </div>
-          <div class="onboarding-steps" role="list" aria-label="初始化进度">
-            <button id="onboardingCharacterStep" class="onboarding-step" type="button" role="listitem">
-              <span>1</span> 添加角色
-            </button>
-            <span class="onboarding-step-line" aria-hidden="true"></span>
-            <button id="onboardingProviderStep" class="onboarding-step" type="button" role="listitem">
-              <span>2</span> 配置供应商
-            </button>
-            <span class="onboarding-step-line" aria-hidden="true"></span>
-            <span id="onboardingCompleteStep" class="onboarding-step is-static" role="listitem">
-              <span>3</span> 完成
-            </span>
-          </div>
-        </header>
         <header class="page-head">
           <h1 id="pageTitle" class="page-title">角色与布局</h1>
           <p id="pageSubtitle" class="page-subtitle">选择陪伴角色与桌宠布局</p>
@@ -361,69 +341,6 @@
               </label>
               <select id="ttsProvider"></select>
             </div>
-            <div id="ttsBundleNoticeRow" hidden>
-              <p id="ttsBundleNotice" class="page-note"></p>
-            </div>
-            <input id="ttsConfigPath" type="hidden" />
-            <div class="setting-row" hidden aria-hidden="true">
-              <div class="setting-row-text">
-                <span class="setting-title">语音测试</span>
-                <span class="setting-desc">按当前表单配置检测 TTS 服务。</span>
-              </div>
-              <button id="ttsTestButton" class="secondary-button" type="button">测试语音</button>
-            </div>
-            <details class="advanced-section" hidden aria-hidden="true">
-              <summary>高级参数</summary>
-              <div id="ttsApiUrlRow" class="setting-row">
-                <label class="setting-row-text" for="ttsApiUrl">
-                  <span class="setting-title">Genie API URL</span>
-                  <span class="setting-desc">Genie TTS 服务的接口地址。</span>
-                </label>
-                <input id="ttsApiUrl" class="wide-input" type="text" />
-              </div>
-              <div id="ttsCustomBaseUrlRow" class="setting-row">
-                <label class="setting-row-text" for="ttsCustomBaseUrl">
-                  <span class="setting-title">自定义 GPT-SoVITS 服务地址</span>
-                  <span class="setting-desc">留空时使用 Sakura 内置服务，例如 http://192.168.1.20:9880。</span>
-                </label>
-                <input id="ttsCustomBaseUrl" class="wide-input" type="text" placeholder="留空使用 Sakura 内置 GPT-SoVITS" />
-              </div>
-              <div id="ttsPathRow" class="setting-row">
-                <label class="setting-row-text" for="ttsPath">
-                  <span class="setting-title">GPT-SoVITS 请求路径</span>
-                  <span class="setting-desc">合成接口相对于服务地址的路径，默认 /tts。</span>
-                </label>
-                <input id="ttsPath" class="wide-input" type="text" />
-              </div>
-              <div id="ttsRemoteReferenceRootRow" class="setting-row">
-                <label class="setting-row-text" for="ttsRemoteReferenceRoot">
-                  <span class="setting-title">远程参考音频根目录</span>
-                  <span class="setting-desc">远程服务映射角色资源的根目录；本机自定义服务可留空。</span>
-                </label>
-                <input id="ttsRemoteReferenceRoot" class="wide-input" type="text" placeholder="例如 /data/voices" />
-              </div>
-              <div class="setting-row">
-                <label class="setting-row-text" for="ttsWorkDir">
-                  <span class="setting-title">工作目录</span>
-                  <span class="setting-desc">TTS 引擎运行所在的工作目录路径。</span>
-                </label>
-                <input id="ttsWorkDir" class="wide-input" type="text" />
-              </div>
-              <div class="setting-row">
-                <label class="setting-row-text" for="ttsPythonPath">
-                  <span class="setting-title">TTS Python</span>
-                  <span class="setting-desc">运行 TTS 引擎使用的 Python 解释器路径。</span>
-                </label>
-                <input id="ttsPythonPath" class="wide-input" type="text" />
-              </div>
-              <div class="setting-row">
-                <label class="setting-row-text" for="ttsTimeout">
-                  <span class="setting-title">超时</span>
-                  <span class="setting-desc">等待语音合成完成的最长时间。</span>
-                </label>
-                <span class="field-unit"><input id="ttsTimeout" type="number" step="1" /><span class="unit">秒</span></span>
-              </div>
-            </details>
           </fieldset>
           <div id="ttsProviderSettings"></div>
           </div>
@@ -689,61 +606,6 @@
 
         <section id="page-memory" class="settings-page admin-page">
           <div id="memorySurface" class="plugin-surface"></div>
-          <div class="admin-topline" hidden>
-            <div id="memoryStatusStrip" class="admin-strip"></div>
-            <div class="admin-mini-panel">
-              <label class="compact-number" for="memoryTriggerTurns">
-                <span>自动整理轮次</span>
-                <input id="memoryTriggerTurns" type="number" step="1" data-settings-feature="memory.curation" />
-                <span class="unit">轮</span>
-              </label>
-            </div>
-          </div>
-          <div class="admin-toolbar" hidden>
-            <input id="memorySearch" class="admin-search" type="text" placeholder="搜索内容、ID、分类、来源" />
-            <select id="memoryLayerFilter"></select>
-            <select id="memorySort">
-              <option value="updated_desc">最近更新</option>
-              <option value="importance_desc">重要性</option>
-              <option value="confidence_desc">置信度</option>
-            </select>
-            <button id="memoryAddButton" class="secondary-button" type="button">新增记忆</button>
-            <button id="memoryRefreshButton" class="secondary-button" type="button">刷新</button>
-          </div>
-          <div class="admin-workbench" hidden>
-            <div id="memoryList" class="admin-list"></div>
-            <aside class="admin-detail">
-              <textarea id="memoryContent" class="memory-editor" placeholder="选择左侧记忆后编辑"></textarea>
-              <div class="detail-grid">
-                <label>
-                  <span>层级</span>
-                  <select id="memoryLayer"></select>
-                </label>
-                <label>
-                  <span>分类</span>
-                  <input id="memoryCategory" type="text" />
-                </label>
-                <label>
-                  <span>来源</span>
-                  <input id="memorySource" type="text" />
-                </label>
-                <label>
-                  <span>重要性</span>
-                  <input id="memoryImportance" type="number" min="0" max="1" step="0.05" />
-                </label>
-                <label>
-                  <span>置信度</span>
-                  <input id="memoryConfidence" type="number" min="0" max="1" step="0.05" />
-                </label>
-              </div>
-              <dl id="memoryMeta" class="detail-meta"></dl>
-              <div class="detail-actions">
-                <button id="memorySaveButton" type="button">保存记忆</button>
-                <button id="memoryRevertButton" class="secondary-button" type="button">还原</button>
-                <button id="memoryDeleteButton" class="danger-button" type="button">删除</button>
-              </div>
-            </aside>
-          </div>
         </section>
         </div>
 
@@ -752,7 +614,6 @@
             <span class="dirty-flag">● 有未保存的改动</span>
             <p id="errorText" class="error" role="alert"></p>
           </div>
-          <button id="onboardingBackButton" class="secondary-button" type="button" hidden>返回角色</button>
           <button id="cancelButton" class="secondary-button" type="button">取消</button>
           <button id="applyButton" class="secondary-button" type="button">应用</button>
           <button id="saveButton" type="button">保存并关闭</button>
