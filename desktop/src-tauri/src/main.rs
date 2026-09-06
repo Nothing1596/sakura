@@ -9,15 +9,10 @@ mod character_studio_window;
 mod chat_bridge;
 mod chat_settings;
 mod color_picker;
-#[allow(dead_code)] // WP-2-02 allowlisted chat Gateway and terminal registry.
 mod core_host_gateway;
-#[allow(dead_code)] // Production wiring is activated incrementally across Phase 1C.
 mod core_host_protocol;
-#[allow(dead_code)] // WP-2-01 generation-scoped concurrent transport owner.
 mod core_host_router;
-#[allow(dead_code)] // Exercised by WP-1C tests and debug acceptance before release wiring.
 mod core_host_runtime;
-#[allow(dead_code)] // Exercised by WP-1B tests before Fake Core wiring in WP-1B-03.
 mod core_supervisor;
 mod history_window;
 mod input_visual_effect;
@@ -27,9 +22,8 @@ mod legacy_import;
 mod macos_input_glass;
 #[cfg(any(target_os = "macos", test))]
 mod macos_surface_viewport;
-#[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
+#[cfg(windows)]
 mod managed_process_tree;
-#[allow(dead_code)] // Compile-only platform contracts are wired by WP-1P-02 through WP-1P-05.
 mod platform;
 mod plugin_settings;
 mod product_shell;
@@ -70,32 +64,6 @@ use window_geometry::{
     MonitorDescriptor, PhysicalRect, PresentationState,
 };
 
-const STARTUP_HTML: &str = include_str!("../../frontend/index.html");
-const STARTUP_STYLES: &str = include_str!("../../frontend/styles.css");
-const APP_SCRIPT: &str = include_str!("../../frontend/app.js");
-const LIFECYCLE_SCRIPT: &str = include_str!("../../frontend/lifecycle.js");
-const LAYOUT_SCRIPT: &str = include_str!("../../frontend/pet/layout.js");
-const LAYOUT_CONTROLLER_SCRIPT: &str = include_str!("../../frontend/pet/layout-controller.js");
-const HIT_REGIONS_SCRIPT: &str = include_str!("../../frontend/pet/hit-regions.js");
-const INPUT_FOCUS_SCRIPT: &str = include_str!("../../frontend/pet/input-focus.js");
-const APPEARANCE_SCRIPT: &str = include_str!("../../frontend/pet/appearance.js");
-const SETTINGS_HTML: &str = include_str!("../../frontend/settings/index.html");
-const SETTINGS_STYLES: &str = include_str!("../../frontend/settings/styles.css");
-const SETTINGS_SCRIPT: &str = include_str!("../../frontend/settings/settings.js");
-const SETTINGS_CAPABILITY_SCRIPT: &str =
-    include_str!("../../frontend/settings/capability-shell.js");
-const SETTINGS_APPEARANCE_SCRIPT: &str =
-    include_str!("../../frontend/settings/appearance-runtime.js");
-const SETTINGS_PROVIDER_MODEL_SCRIPT: &str =
-    include_str!("../../frontend/settings/provider-model-runtime.js");
-const SETTINGS_CLOSE_FLOW_SCRIPT: &str = include_str!("../../frontend/settings/close-flow.js");
-const SETTINGS_CHAT_TIMING_SCRIPT: &str =
-    include_str!("../../frontend/settings/chat-timing-runtime.js");
-const SETTINGS_TOOLS_SCRIPT: &str = include_str!("../../frontend/settings/tools-runtime.js");
-const SETTINGS_SCREEN_AWARENESS_SCRIPT: &str =
-    include_str!("../../frontend/settings/screen-awareness-runtime.js");
-const SETTINGS_AUTOSTART_SCRIPT: &str =
-    include_str!("../../frontend/settings/autostart-runtime.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 #[cfg(windows)]
@@ -8875,30 +8843,6 @@ fn main() {
             std::process::exit(1);
         }
     };
-
-    let _embedded_assets = (
-        STARTUP_HTML.len(),
-        STARTUP_STYLES.len(),
-        APP_SCRIPT.len(),
-        LIFECYCLE_SCRIPT.len(),
-        LAYOUT_SCRIPT.len(),
-        LAYOUT_CONTROLLER_SCRIPT.len(),
-        HIT_REGIONS_SCRIPT.len(),
-        INPUT_FOCUS_SCRIPT.len(),
-        APPEARANCE_SCRIPT.len(),
-        LAYOUT_CONTRACT_JSON.len(),
-        SETTINGS_HTML.len(),
-        SETTINGS_STYLES.len(),
-        SETTINGS_SCRIPT.len(),
-        SETTINGS_CAPABILITY_SCRIPT.len(),
-        SETTINGS_APPEARANCE_SCRIPT.len(),
-        SETTINGS_PROVIDER_MODEL_SCRIPT.len(),
-        SETTINGS_CLOSE_FLOW_SCRIPT.len(),
-        SETTINGS_CHAT_TIMING_SCRIPT.len(),
-        SETTINGS_TOOLS_SCRIPT.len(),
-        SETTINGS_SCREEN_AWARENESS_SCRIPT.len(),
-        SETTINGS_AUTOSTART_SCRIPT.len(),
-    );
 
     let runtime_request = runtime_request().unwrap_or_else(|error| {
         show_startup_message("Sakura 启动失败", &error, true);
