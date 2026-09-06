@@ -339,38 +339,6 @@ class MCPToolProvider:
             )
 
 
-def register_mcp_tools_from_config(
-    base_dir: Path,
-    registry: ToolRegistry,
-    bridge_factory: BridgeFactory | None = None,
-    resource_registry: ResourceRegistry | None = None,
-    distribution_root: Path | None = None,
-) -> MCPToolProvider | None:
-    try:
-        config = load_mcp_config(StoragePaths(base_dir).mcp_config())
-    except Exception as exc:
-        log_event(
-            "MCP",
-            "配置读取失败，已跳过 MCP",
-            {
-                "diagnostic": str(exc),
-                "error_type": type(exc).__name__,
-                "reason_code": "MCP_CONFIG_LOAD_FAILED",
-                "stage": "config_load",
-            },
-        )
-        return None
-    config = _resolve_runtime_tokens(config, base_dir, distribution_root)
-    provider = MCPToolProvider(config, bridge_factory=bridge_factory, resource_registry=resource_registry)
-    registered = provider.register_tools(registry)
-    if registered == 0:
-        provider.close()
-        log_event("MCP", "没有注册任何 MCP 工具")
-        return None
-    log_event("MCP", "MCP 工具注册完成", {"registered": registered})
-    return provider
-
-
 def start_mcp_tools_from_config(
     base_dir: Path,
     registry: ToolRegistry,
