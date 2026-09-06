@@ -274,6 +274,10 @@ class ReadinessController:
                 return None
             return self._plugin_application
 
+    def published_mcp_provider(self) -> MCPToolProvider | None:
+        with self._lock:
+            return None if self._closed else self._application_mcp
+
     def apply_provider_configuration(self) -> None:
         """Apply Provider settings or replace/retire only the Assistant Session."""
 
@@ -883,6 +887,9 @@ class ControlDispatcher:
     def published_plugin_application(self) -> object | None:
         return self._readiness.published_plugin_application()
 
+    def published_mcp_provider(self) -> MCPToolProvider | None:
+        return self._readiness.published_mcp_provider()
+
     def apply_provider_configuration(self) -> None:
         self._readiness.apply_provider_configuration()
 
@@ -1307,7 +1314,7 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            session_provider=getattr(dispatcher, "published_session", lambda: None),
+            mcp_provider_getter=getattr(dispatcher, "published_mcp_provider", lambda: None),
         )
         plugin_settings = PluginSettingsBoundary(
             config.generation_id,

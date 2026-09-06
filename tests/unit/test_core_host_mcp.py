@@ -272,12 +272,11 @@ servers:
             }
         },
     )()
-    session = type("Session", (), {"mcp_provider": provider})()
     boundary = MCPStatusBoundary(
         "generation-1",
         "c" * 32,
         tmp_path,
-        session_provider=lambda: session,
+        mcp_provider_getter=lambda: provider,
     )
 
     snapshot = boundary.handle(_request("mcp.status.get", {}))

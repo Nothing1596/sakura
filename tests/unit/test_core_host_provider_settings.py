@@ -857,6 +857,7 @@ def test_real_session_recreation_borrows_the_same_application_tools_and_mcp(
     tmp_path: Path, monkeypatch,
 ) -> None:
     from app.agent.mcp import provider
+    from app.core_host.mcp_status import MCPStatusBoundary
     from app.core_host.server import HostConfig, ReadinessController
 
     fixture = Path(__file__).parents[1] / "fixtures/runtime_v2/wp_3_01/ready"
@@ -866,6 +867,9 @@ def test_real_session_recreation_borrows_the_same_application_tools_and_mcp(
 
     class MCP:
         close_count = 0
+
+        def status_snapshot(self):
+            return {"configState": "valid", "reasonCode": "READY", "servers": []}
 
         def close(self) -> None:
             self.close_count += 1
@@ -880,6 +884,9 @@ def test_real_session_recreation_borrows_the_same_application_tools_and_mcp(
     controller = ReadinessController(HostConfig(RuntimeRoots(root, root), GENERATION, CREDENTIAL))
     controller.enable_tools()
     controller.enable_mcp()
+    status = MCPStatusBoundary(
+        GENERATION, CREDENTIAL, root, mcp_provider_getter=controller.published_mcp_provider,
+    )
     try:
         controller.begin({})
         controller._worker.join(2)
@@ -888,6 +895,7 @@ def test_real_session_recreation_borrows_the_same_application_tools_and_mcp(
         assert first.runtime.tools is registrations[0]
         assert first.mcp_provider is mcp
         assert first.runtime.tools.get("get_current_time") is not None
+        assert status.snapshot()["reasonCode"] == "READY"
 
         api_path = root / "config/api.yaml"
         saved = api_path.read_text(encoding="utf-8")
@@ -896,6 +904,7 @@ def test_real_session_recreation_borrows_the_same_application_tools_and_mcp(
         assert controller.readiness() == "setup_required"
         assert controller.published_session() is None
         assert mcp.close_count == 0
+        assert status.snapshot()["reasonCode"] == "READY"
 
         api_path.write_text(saved, encoding="utf-8")
         controller.apply_provider_configuration()
@@ -906,6 +915,7 @@ def test_real_session_recreation_borrows_the_same_application_tools_and_mcp(
         assert second.mcp_provider is mcp
         assert len(registrations) == 1
         assert mcp.close_count == 0
+        assert status.snapshot()["reasonCode"] == "READY"
     finally:
         controller.close()
     assert mcp.close_count == 1
