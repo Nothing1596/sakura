@@ -182,10 +182,6 @@ export function createProviderModelController({ invoke, readDraft, applySnapshot
       }
       snapshot = Object.freeze({ ...snapshot, core_generation_id: coreGenerationId });
     },
-    rebase() {
-      baseline = JSON.stringify(currentDraft());
-      onDirty();
-    },
     dispose() {
       cancelOperations().catch(onError);
       snapshot = null;
