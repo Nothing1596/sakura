@@ -2579,7 +2579,6 @@ async function saveRuntimeSettings() {
     });
     renderProviderPage();
     runtimeProviderModelController.rebase();
-    await runtimeToolsController?.refreshCurrent();
     await runtimePluginController?.refreshCurrent();
     await refreshRuntimeVoiceCurrent();
   }
@@ -2594,19 +2593,14 @@ async function saveRuntimeSettings() {
   }
   if (runtimeToolsController?.isDirty()) {
     result = await runtimeToolsController.save();
-    await runtimePluginController?.refreshCurrent();
-    await runtimeProviderModelController?.refreshCurrent();
-    await refreshRuntimeVoiceCurrent();
   }
   if (runtimePluginController?.isDirty()) {
     result = await runtimePluginController.save();
-    await runtimeToolsController?.refreshCurrent();
     await runtimeProviderModelController?.refreshCurrent();
     await refreshRuntimeVoiceCurrent();
   }
   if (runtimeVoiceController?.isDirty()) {
     result = await runtimeVoiceController.save();
-    await runtimeToolsController?.refreshCurrent();
     await runtimePluginController?.refreshCurrent();
     await runtimeProviderModelController?.refreshCurrent();
   }
