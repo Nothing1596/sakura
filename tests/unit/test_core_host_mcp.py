@@ -11,7 +11,6 @@ from app.agent.mcp.bridge import MCPToolSpec
 from app.agent.mcp.config import MCPConfig, MCPServerConfig
 from app.agent.mcp.provider import MCPToolProvider
 from app.agent.tools import ToolRegistry
-from app.core.runtime_resources import ResourceRegistry
 from app.core_host.mcp_status import MCPStatusBoundary
 
 
@@ -62,7 +61,6 @@ def _request(name: str, payload: dict[str, object]) -> dict[str, object]:
 def test_mcp_provider_is_generation_scoped_and_unregisters_tools() -> None:
     bridge = _Bridge()
     registry = ToolRegistry()
-    resources = ResourceRegistry()
     provider = MCPToolProvider(
         MCPConfig(
             enabled=True,
@@ -77,7 +75,6 @@ def test_mcp_provider_is_generation_scoped_and_unregisters_tools() -> None:
             ],
         ),
         bridge_factory=lambda _server, _timeout: bridge,
-        resource_registry=resources,
     )
 
     provider.start_registration(registry)

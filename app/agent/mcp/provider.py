@@ -13,7 +13,6 @@ from app.agent.mcp.bridge import MCPBridge, MCPToolSpec
 from app.agent.mcp.config import MCPConfig, MCPServerConfig, load_mcp_config
 from app.agent.tools import Tool, ToolRegistry
 from app.core.runtime_log import log_event
-from app.core.runtime_resources import ResourceRegistry, ServiceResource
 from app.storage.paths import StoragePaths, user_facing_path
 
 
@@ -50,13 +49,11 @@ class MCPToolProvider:
         config: MCPConfig,
         bridge_factory: BridgeFactory | None = None,
         *,
-        resource_registry: ResourceRegistry | None = None,
         config_state: str = "valid",
         reason_code: str = "STARTING",
     ) -> None:
         self.config = config
         self.bridge_factory = bridge_factory
-        self.resource_registry = resource_registry or ResourceRegistry()
         self._bridges: list[MCPBridgeLike] = []
         self._all_bridges: list[MCPBridgeLike] = []
         self._tool_targets: dict[str, tuple[MCPBridgeLike, str]] = {}
@@ -79,12 +76,6 @@ class MCPToolProvider:
             }
             for server in self.config.servers
         }
-        self._provider_resource: ServiceResource = self.resource_registry.track_service(
-            stop=self.close,
-            is_running=lambda: not self._closed and bool(self._bridges),
-            label="mcp_provider",
-            shutdown_order=800,
-        )
 
     def start_registration(self, registry: ToolRegistry) -> None:
         """Start server discovery without delaying Core readiness."""
@@ -284,7 +275,6 @@ class MCPToolProvider:
                     status["reasonCode"] = "STOPPED"
                     status["toolCount"] = 0
             self._reason_code = "STOPPED"
-        self._provider_resource.detach()
 
     def status_snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -300,7 +290,6 @@ class MCPToolProvider:
         return MCPBridge(
             server,
             self.config.default_call_timeout,
-            resource_registry=self.resource_registry,
         )
 
     def _make_handler(self, internal_name: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
@@ -344,7 +333,6 @@ def start_mcp_tools_from_config(
     registry: ToolRegistry,
     *,
     bridge_factory: BridgeFactory | None = None,
-    resource_registry: ResourceRegistry | None = None,
     distribution_root: Path | None = None,
 ) -> MCPToolProvider:
     """Create the generation owner and discover configured servers in the background."""
@@ -363,7 +351,6 @@ def start_mcp_tools_from_config(
     provider = MCPToolProvider(
         config,
         bridge_factory=bridge_factory,
-        resource_registry=resource_registry,
         config_state=config_state,
         reason_code=reason_code,
     )

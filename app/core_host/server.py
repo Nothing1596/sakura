@@ -486,12 +486,10 @@ class ReadinessController:
             application_mcp: MCPToolProvider | None = None
             if mcp_enabled:
                 from app.agent.mcp.provider import start_mcp_tools_from_config
-                from app.core.runtime_resources import ResourceRegistry
 
                 application_mcp = start_mcp_tools_from_config(
                     self._config.user_root,
                     application_tools,
-                    resource_registry=ResourceRegistry(),
                     distribution_root=self._config.distribution_root,
                 )
                 unpublished_resources.append(application_mcp)

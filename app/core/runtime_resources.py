@@ -51,115 +51,6 @@ class _ResourceEntry:
     shutdown_order: int
 
 
-class ServiceResource:
-    """Bring an existing service object's stop callbacks into the registry."""
-
-    def __init__(
-        self,
-        manager: ResourceRegistry,
-        *,
-        stop: Callable[[], Any] | None = None,
-        stop_with_timeout: Callable[[int], Any] | None = None,
-        is_running: Callable[[], bool] | None = None,
-        health: Callable[[], ResourceState] | None = None,
-        label: str = "",
-    ) -> None:
-        self._manager = manager
-        self._stop = stop
-        self._stop_with_timeout = stop_with_timeout
-        self._is_running = is_running
-        self._health = health
-        self.label = label
-        self.state = ResourceState.READY
-
-    def is_running(self) -> bool:
-        if self.state in (ResourceState.STOPPED, ResourceState.FAILED):
-            return False
-        if self._is_running is None:
-            return self.state not in (ResourceState.STOPPING, ResourceState.STOPPED)
-        try:
-            return bool(self._is_running())
-        except Exception as exc:  # noqa: BLE001
-            log_event(
-                "ResourceManager",
-                "服务运行态查询失败",
-                {
-                    "service": self.label,
-                    **diagnostic_attributes(
-                        exc,
-                        reason_code="SERVICE_STATE_QUERY_FAILED",
-                        stage="service_state",
-                    ),
-                },
-            )
-            return False
-
-    def health(self) -> ResourceState:
-        if self._health is not None:
-            try:
-                return self._health()
-            except Exception as exc:  # noqa: BLE001
-                log_event(
-                    "ResourceManager",
-                    "服务健康检查失败",
-                    {
-                        "service": self.label,
-                        **diagnostic_attributes(
-                            exc,
-                            reason_code="SERVICE_HEALTH_CHECK_FAILED",
-                            stage="service_health",
-                        ),
-                    },
-                )
-                return ResourceState.DEGRADED
-        if self.state in (
-            ResourceState.STOPPING,
-            ResourceState.STOPPED,
-            ResourceState.FAILED,
-        ):
-            return self.state
-        return ResourceState.READY if self.is_running() else ResourceState.STOPPED
-
-    def stop(self, timeout_ms: int = DEFAULT_THREAD_SHUTDOWN_WAIT_MS) -> bool:
-        if self.state in (ResourceState.STOPPING, ResourceState.STOPPED):
-            return True
-        self.state = ResourceState.STOPPING
-        clean = True
-        try:
-            if self._stop_with_timeout is not None:
-                result = self._stop_with_timeout(timeout_ms)
-            elif self._stop is not None:
-                result = self._stop()
-            else:
-                result = None
-            if isinstance(result, bool):
-                clean = result
-        except Exception as exc:  # noqa: BLE001
-            clean = False
-            self.state = ResourceState.FAILED
-            log_event(
-                "ResourceManager",
-                "服务关闭失败",
-                {
-                    "service": self.label,
-                    **diagnostic_attributes(
-                        exc,
-                        reason_code="SERVICE_CLOSE_FAILED",
-                        stage="service_close",
-                    ),
-                },
-            )
-        else:
-            self.state = ResourceState.STOPPED if clean else ResourceState.DEGRADED
-        finally:
-            self._manager._unregister(self)
-        return clean
-
-    def detach(self) -> None:
-        self.state = ResourceState.STOPPED
-        self._manager._unregister(self)
-
-
 class AsyncLoopResource:
     """Manage an asyncio event loop running on its own daemon thread."""
 
@@ -392,29 +283,6 @@ class ResourceRegistry:
             finally:
                 self._unregister(entry.resource)
 
-    def track_service(
-        self,
-        *,
-        stop: Callable[[], Any] | None = None,
-        stop_with_timeout: Callable[[int], Any] | None = None,
-        is_running: Callable[[], bool] | None = None,
-        health: Callable[[], ResourceState] | None = None,
-        label: str = "",
-        shutdown_order: int = 0,
-        register: bool = True,
-    ) -> ServiceResource:
-        resource = ServiceResource(
-            self,
-            stop=stop,
-            stop_with_timeout=stop_with_timeout,
-            is_running=is_running,
-            health=health,
-            label=label,
-        )
-        if register:
-            self._register(resource, label=label, shutdown_order=shutdown_order)
-        return resource
-
     def track_async_loop(
         self,
         *,
@@ -471,6 +339,5 @@ __all__ = [
     "DEFAULT_THREAD_SHUTDOWN_WAIT_MS",
     "ResourceRegistry",
     "ResourceState",
-    "ServiceResource",
     "StoppableResource",
 ]
