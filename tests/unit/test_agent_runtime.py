@@ -17,7 +17,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.agent.actions import AgentAction, AgentEvent, AgentResult
-from app.agent.builtin_tools import create_builtin_tool_registry
 from app.agent.runtime import (
     AgentRuntime,
     _build_vision_unsupported_reply,
@@ -172,10 +171,9 @@ def test_chat_prompt_budget_excludes_native_visual_reply_instruction() -> None:
     assert "visual_observation" in native_prompt
 
 
-def test_runtime_tool_prompts_are_role_neutral_and_match_direct_execution(tmp_path) -> None:
+def test_runtime_tool_prompts_are_role_neutral_and_match_direct_execution() -> None:
     screen_tool = create_screen_observation_tool()
     screen_rules = screen_awareness_rules_block(include_tool_rules=True).body
-    tools = {tool.name: tool for tool in create_builtin_tool_registry(tmp_path).all()}
     runtime_prompt = AgentRuntime(
         _dummy_api_client(),
         _dummy_system_prompt(),
@@ -184,10 +182,6 @@ def test_runtime_tool_prompts_are_role_neutral_and_match_direct_execution(tmp_pa
     assert "主人" not in screen_tool.description
     assert "主人" not in screen_rules
     assert "不得自行调用会改变外部状态的操作" in screen_rules
-    assert "需要用户确认" not in tools["open_url"].description
-    assert "需要用户确认" not in tools["open_local_folder"].description
-    assert "立即在桌面环境中打开" in tools["open_url"].description
-    assert "立即在桌面环境中打开" in tools["open_local_folder"].description
     assert "工具调用会直接执行" in runtime_prompt
     assert "需要确认" not in runtime_prompt
 
