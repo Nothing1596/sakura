@@ -13,7 +13,9 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
-use crate::{runtime_log::CoreLogContext, ui_config::UiConfigRepository};
+use tauri::{State, WebviewWindow};
+
+use crate::{product_shell, runtime_log::CoreLogContext, ui_config::UiConfigRepository};
 
 pub const TELEMETRY_CORE_BRIDGE_PREFIX: &str = "SAKURA_TELEMETRY_V1\t";
 pub const TELEMETRY_ENDPOINT: &str = "https://telemetry.cialloo.cn";
@@ -1589,6 +1591,40 @@ fn os_version() -> String {
 fn os_version() -> String {
     let version = windows_version::OsVersion::current();
     format!("{}.{}.{}", version.major, version.minor, version.build)
+}
+
+#[tauri::command]
+pub(crate) fn settings_telemetry_get(
+    window: WebviewWindow,
+    telemetry: State<'_, TelemetryService>,
+) -> Result<TelemetrySettingsSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    telemetry.snapshot()
+}
+
+#[tauri::command]
+pub(crate) fn settings_telemetry_set_enabled(
+    window: WebviewWindow,
+    telemetry: State<'_, TelemetryService>,
+    enabled: bool,
+) -> Result<TelemetrySettingsSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    telemetry.set_enabled(enabled)
+}
+
+#[tauri::command]
+pub(crate) fn settings_telemetry_regenerate_installation_id(
+    window: WebviewWindow,
+    telemetry: State<'_, TelemetryService>,
+) -> Result<TelemetrySettingsSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    telemetry.regenerate_installation_id()
+}
+
+#[tauri::command]
+pub(crate) fn settings_telemetry_open_documentation(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    open_documentation()
 }
 
 #[cfg(test)]

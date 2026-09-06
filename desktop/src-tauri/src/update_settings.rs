@@ -7,13 +7,15 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter, State, WebviewWindow};
 use tauri_plugin_updater::UpdaterExt;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
-    chat_bridge::ChatEventPublication,
+    chat_bridge::{self, ChatEventPublication},
+    product_shell,
     runtime_log::{RuntimeLogEvent, RuntimeLogService, Severity},
+    shell_lifecycle::ShellLifecycleState,
     ui_config::UiConfigRepository,
 };
 
@@ -1017,6 +1019,165 @@ pub(crate) fn open_https_url(url: &str, error_code: &str) -> Result<(), String> 
         .spawn()
         .map(|_| ())
         .map_err(|_| error_code.to_string())
+}
+
+fn current_executable_directory() -> Result<std::path::PathBuf, String> {
+    std::env::current_exe()
+        .map_err(|_| "EXECUTABLE_DIRECTORY_UNAVAILABLE".to_string())?
+        .parent()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "EXECUTABLE_DIRECTORY_UNAVAILABLE".to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn settings_update_get(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    runtime_log: State<'_, RuntimeLogService>,
+) -> Result<UpdateSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    check(
+        &app_handle,
+        &current_executable_directory()?,
+        runtime_log.inner(),
+        "manual",
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) fn settings_update_cached_get(
+    window: WebviewWindow,
+    coordinator: State<'_, UpdateCoordinator>,
+) -> Result<Option<UpdateSnapshot>, String> {
+    product_shell::validate_settings_window(&window)?;
+    coordinator.checked_snapshot()
+}
+
+#[tauri::command]
+pub(crate) fn settings_update_preferences_get(
+    window: WebviewWindow,
+    coordinator: State<'_, UpdateCoordinator>,
+) -> Result<UpdatePreferencesSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    coordinator.preferences()
+}
+
+#[tauri::command]
+pub(crate) fn settings_update_preferences_set(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    coordinator: State<'_, UpdateCoordinator>,
+    auto_check_enabled: bool,
+) -> Result<UpdatePreferencesSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    let snapshot = coordinator.set_auto_check_enabled(auto_check_enabled)?;
+    let _ = app_handle.emit_to("main", UPDATE_PREFERENCES_CHANGED_EVENT, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub(crate) async fn startup_update_check(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    coordinator: State<'_, UpdateCoordinator>,
+    runtime_log: State<'_, RuntimeLogService>,
+) -> Result<StartupUpdateSnapshot, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    Ok(coordinator
+        .startup_check(
+            &app_handle,
+            &current_executable_directory()?,
+            runtime_log.inner(),
+        )
+        .await)
+}
+
+#[tauri::command]
+pub(crate) async fn chat_update_announce(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+    coordinator: State<'_, UpdateCoordinator>,
+) -> Result<chat_bridge::ChatSendPublication, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let (event, version) = coordinator.pending_event()?;
+    let handle = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "CHAT_BRIDGE_UNAVAILABLE".to_string())?;
+    let pending = handle
+        .chat_bridge()?
+        .send_update_available(window.label(), event, version)?;
+    tauri::async_runtime::spawn_blocking(move || pending.wait())
+        .await
+        .map_err(|_| "CHAT_DISPATCH_ABORTED".to_string())?
+}
+
+#[tauri::command]
+pub(crate) fn settings_about_get(window: WebviewWindow) -> Result<AboutSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    Ok(about_snapshot())
+}
+
+#[tauri::command]
+pub(crate) fn settings_about_open_website(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    open_website()
+}
+
+#[tauri::command]
+pub(crate) fn settings_about_open_repository(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    open_repository()
+}
+
+#[tauri::command]
+pub(crate) fn settings_about_open_changelog(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    open_changelog()
+}
+
+#[tauri::command]
+pub(crate) fn settings_about_open_sponsor(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    open_sponsor()
+}
+
+#[tauri::command]
+pub(crate) async fn settings_update_install(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    lifecycle: State<'_, ShellLifecycleState>,
+    runtime_log: State<'_, RuntimeLogService>,
+) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    let lifecycle_handle = lifecycle.handle.clone();
+    install(
+        &app_handle,
+        &current_executable_directory()?,
+        runtime_log.inner(),
+        move || {
+            lifecycle_handle
+                .as_ref()
+                .ok_or_else(|| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?
+                .shutdown_and_wait(std::time::Duration::from_secs(5))
+                .map_err(str::to_string)
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) fn settings_update_open_portable_download(
+    window: WebviewWindow,
+    url: String,
+) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    open_portable_download(&url)
 }
 
 #[cfg(test)]

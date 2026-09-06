@@ -1,5 +1,7 @@
 use serde::Serialize;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Runtime, State, WebviewWindow};
+
+use crate::product_shell;
 use tauri_plugin_autostart::{AutoLaunchManager, ManagerExt};
 
 const READ_FAILED: &str = "AUTOSTART_SETTINGS_READ_FAILED";
@@ -81,6 +83,31 @@ pub fn save<R: Runtime>(
     launch_at_login: bool,
 ) -> Result<AutostartSettingsSnapshot, String> {
     save_with(app.autolaunch().inner(), window_generation, launch_at_login)
+}
+
+#[tauri::command]
+pub(crate) fn settings_autostart_get(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+) -> Result<AutostartSettingsSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    snapshot(&app_handle, shell.generation()?)
+}
+
+#[tauri::command]
+pub(crate) fn settings_autostart_save(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    window_generation: u64,
+    launch_at_login: bool,
+) -> Result<AutostartSettingsSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    save(&app_handle, window_generation, launch_at_login)
 }
 
 #[cfg(test)]

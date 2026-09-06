@@ -50,12 +50,17 @@ use platform::{
     NativeDiagnosticsBackendImpl, NativeDiagnosticsRequest, NativeWindowInteractionBackend,
     WindowInteractionBackend, SHARED_INSTANCE_ID,
 };
+use product_shell::assert_settings_identity;
 use runtime_log::{
     Correlation, RuntimeLogEvent, RuntimeLogService, Severity, WebviewDiagnosticEntry,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use shared_instance::NativeInstanceLockBackend;
+use shell_lifecycle::{
+    dispatch_settings_request, load_current_character_presentation, settings_core_handle,
+    settings_response_payload, ShellLifecycleState,
+};
 use tauri::{Emitter, Manager, State, WebviewWindow};
 use window_geometry::{
     apply_window_layout, apply_window_layout_with_fit_bounds,
@@ -208,11 +213,6 @@ impl Default for WindowGeometrySession {
             hit_regions: None,
         }
     }
-}
-
-struct ShellLifecycleState {
-    handle: Option<shell_lifecycle::ShellLifecycleHandle>,
-    runtime_log: RuntimeLogService,
 }
 
 #[tauri::command]
@@ -3967,599 +3967,12 @@ fn record_screen_capture(
     );
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TtsPrepareSegmentRequest {
-    operation_id: String,
-    segment_index: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TtsCancelSynthesisRequest {
-    operation_id: String,
-}
-
-#[tauri::command]
-async fn tts_prepare_segment(
-    window: WebviewWindow,
-    payload: TtsPrepareSegmentRequest,
-    app_handle: tauri::AppHandle,
-    lifecycle: State<'_, ShellLifecycleState>,
-    audio_state: State<'_, audio::AudioState>,
-    runtime_log: State<'_, RuntimeLogService>,
-) -> Result<audio::AudioDescriptor, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    if payload.operation_id.trim().is_empty() || payload.operation_id.len() > 128 {
-        return Err("TTS_SEGMENT_NOT_AUTHORIZED".to_string());
-    }
-    let handle = settings_core_handle(&lifecycle)?;
-    let generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "STALE_GENERATION".to_string())?;
-    let callback_app = app_handle.clone();
-    let observer_handle = handle.clone();
-    let observer_generation = generation_id.clone();
-    let playback_log = runtime_log.inner().clone();
-    let playback_generation = generation_id.clone();
-    let manager = audio_state.manager(
-        &generation_id,
-        Arc::new(move |event| {
-            record_tts_playback(&playback_log, &playback_generation, &event);
-            let _ = callback_app.emit_to("main", "sakura://tts-playback-event", event.clone());
-            observe_tts_playback(observer_handle.clone(), observer_generation.clone(), event);
-        }),
-    )?;
-    let registration_revision = manager.registration_revision()?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "tts.synthesis.start",
-        json!({
-            "operationId": payload.operation_id,
-            "segmentIndex": payload.segment_index,
-        }),
-        std::time::Duration::from_secs(305),
-    )
-    .await?;
-    if handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .as_deref()
-        != Some(generation_id.as_str())
-    {
-        return Err("STALE_GENERATION".to_string());
-    }
-    let descriptor: audio::AudioDescriptor =
-        serde_json::from_value(settings_response_payload(response)?)
-            .map_err(|_| "AUDIO_RECORDING_INVALID".to_string())?;
-    manager.register_at_revision(&descriptor, registration_revision)?;
-    app_handle
-        .emit_to(
-            "main",
-            "sakura://tts-synthesis-event",
-            json!({
-                "type": "tts.synthesis.ready",
-                "operationId": payload.operation_id,
-                "segmentIndex": payload.segment_index,
-                "descriptor": descriptor.clone(),
-            }),
-        )
-        .map_err(|_| "TTS_PUBLICATION_FAILED".to_string())?;
-    Ok(descriptor)
-}
-
-#[tauri::command]
-async fn tts_cancel_synthesis(
-    window: WebviewWindow,
-    payload: TtsCancelSynthesisRequest,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<bool, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    if payload.operation_id.trim().is_empty() || payload.operation_id.len() > 128 {
-        return Err("TTS_SYNTHESIS_CANCELLED".to_string());
-    }
-    let handle = settings_core_handle(&lifecycle)?;
-    let response = dispatch_settings_request(
-        handle,
-        None,
-        "tts.synthesis.cancel",
-        json!({"operationId": payload.operation_id}),
-        std::time::Duration::from_secs(3),
-    )
-    .await?;
-    Ok(settings_response_payload(response)?
-        .get("accepted")
-        .and_then(Value::as_bool)
-        .unwrap_or(false))
-}
-
-#[tauri::command]
-fn tts_play_prepared(
-    window: WebviewWindow,
-    payload: audio::PlayPreparedRequest,
-    lifecycle: State<'_, ShellLifecycleState>,
-    audio_state: State<'_, audio::AudioState>,
-) -> Result<(), String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    let generation_id = lifecycle
-        .handle
-        .as_ref()
-        .ok_or_else(|| "STALE_GENERATION".to_string())?
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "STALE_GENERATION".to_string())?;
-    audio_state.current(&generation_id)?.play(payload)
-}
-
-#[tauri::command]
-fn tts_stop_playback(
-    window: WebviewWindow,
-    audio_state: State<'_, audio::AudioState>,
-) -> Result<(), String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    // Playback belongs to the active AudioState, not to whichever Core
-    // generation happens to be queryable at command time. During restart the
-    // lifecycle intentionally exposes no available generation.
-    audio_state.shutdown();
-    Ok(())
-}
-
-#[tauri::command]
-async fn settings_voice_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    let window_generation = shell.generation()?;
-    let core_generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "tts.settings.get",
-        json!({}),
-        std::time::Duration::from_secs(3),
-    )
-    .await?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let mut payload = settings_response_payload(response)?;
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "TTS_SETTINGS_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(window_generation));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_voice_status_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    let window_generation = shell.generation()?;
-    let core_generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "tts.status.get",
-        json!({}),
-        std::time::Duration::from_secs(4),
-    )
-    .await?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let mut payload = settings_response_payload(response)?;
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "TTS_STATUS_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(window_generation));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_voice_save(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    draft: Value,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "tts.settings.save",
-        json!({"settings": draft}),
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
-    let payload = settings_response_payload(response)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    Ok(payload)
-}
-
-fn observe_tts_playback(
-    handle: shell_lifecycle::ShellLifecycleHandle,
-    generation_id: String,
-    event: audio::AudioPlaybackEvent,
-) {
-    tauri::async_runtime::spawn(async move {
-        let current = handle.available_generation_id().ok().flatten();
-        if current.as_deref() != Some(generation_id.as_str()) {
-            return;
-        }
-        let error_code = event.error.as_ref().map(|error| error.code);
-        let _ = dispatch_settings_request(
-            handle,
-            None,
-            "tts.playback.observe",
-            json!({
-                "playbackId": event.playback_id,
-                "recordingId": event.recording_id,
-                "state": event.state,
-                "errorCode": error_code,
-            }),
-            std::time::Duration::from_secs(2),
-        )
-        .await;
-    });
-}
-
-fn record_tts_playback(
-    runtime_log: &RuntimeLogService,
-    generation_id: &str,
-    event: &audio::AudioPlaybackEvent,
-) {
-    let (event_name, message, severity) = match event.state {
-        "started" => (
-            "tts.playback.started",
-            "TTS playback started",
-            Severity::Info,
-        ),
-        "finished" => (
-            "tts.playback.finished",
-            "TTS playback finished",
-            Severity::Info,
-        ),
-        "stopped" => (
-            "tts.playback.stopped",
-            "TTS playback stopped",
-            Severity::Info,
-        ),
-        _ => (
-            "tts.playback.failed",
-            "TTS playback failed",
-            Severity::Error,
-        ),
-    };
-    let code = event.error.as_ref().map(|error| error.code);
-    let _ = runtime_log.submit(
-        RuntimeLogEvent::rust(severity, "tts", event_name, message)
-            .correlation(Correlation {
-                generation_id: Some(generation_id.to_string()),
-                request_id: Some(event.playback_id.clone()),
-                ..Correlation::default()
-            })
-            .attributes(json!({
-                "playbackId": event.playback_id,
-                "recordingId": event.recording_id,
-                "status": event.state,
-                "code": code,
-            })),
-    );
-}
-
-#[tauri::command]
-fn current_chat_presentation_timing(
-    window: WebviewWindow,
-    timing: State<'_, chat_settings::ChatPresentationTimingState>,
-) -> Result<chat_settings::ChatPresentationTiming, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    timing.get()
-}
-
-#[tauri::command]
-fn current_bubble_auto_hide(
-    window: WebviewWindow,
-    settings: State<'_, chat_settings::BubbleAutoHideState>,
-) -> Result<chat_settings::BubbleAutoHideSettings, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    settings.get()
-}
-
-#[tauri::command]
-fn current_subtitle_language(
-    window: WebviewWindow,
-    subtitle: State<'_, chat_settings::SubtitleLanguageState>,
-) -> Result<chat_settings::SubtitleLanguage, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    subtitle.get()
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HistoryBootstrap {
-    core_generation_id: String,
-    character_id: String,
-    assistant_name: String,
-    subtitle_language: chat_settings::SubtitleLanguage,
-    theme_tokens: std::collections::BTreeMap<String, String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct HistoryPageRequest {
-    core_generation_id: String,
-    character_id: String,
-    before_cursor: Option<String>,
-}
-
-async fn request_history_page(
-    handle: shell_lifecycle::ShellLifecycleHandle,
-    character_id: String,
-    before_cursor: Option<String>,
-) -> Result<history_window::HistoryPage, String> {
-    let response = dispatch_settings_request(
-        handle,
-        None,
-        "ui.history.page",
-        json!({
-            "expectedCharacterId": character_id,
-            "beforeCursor": before_cursor,
-            "limit": history_window::HISTORY_PAGE_LIMIT,
-        }),
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
-    history_window::validate_page(settings_response_payload(response)?)
-}
-
-#[tauri::command]
-fn history_bootstrap(
-    window: WebviewWindow,
-    lifecycle: State<'_, ShellLifecycleState>,
-    resources: State<'_, character_presentation::CharacterPresentationState>,
-    appearance: State<'_, character_appearance::CharacterAppearanceState>,
-    subtitle: State<'_, chat_settings::SubtitleLanguageState>,
-) -> Result<HistoryBootstrap, String> {
-    history_window::validate_history_window(&window)?;
-    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
-    let active_appearance = appearance.persisted(&presentation.presentation)?;
-    if active_appearance.core_generation_id != presentation.presentation.generation_id
-        || active_appearance.character_id != presentation.presentation.character_id
-    {
-        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
-    }
-    Ok(HistoryBootstrap {
-        core_generation_id: presentation.presentation.generation_id,
-        character_id: presentation.presentation.character_id,
-        assistant_name: presentation.presentation.display_name,
-        subtitle_language: subtitle.get()?,
-        theme_tokens: active_appearance.values.theme_tokens,
-    })
-}
-
-#[tauri::command]
-async fn history_page(
-    window: WebviewWindow,
-    request: HistoryPageRequest,
-    lifecycle: State<'_, ShellLifecycleState>,
-    resources: State<'_, character_presentation::CharacterPresentationState>,
-) -> Result<history_window::HistoryPage, String> {
-    history_window::validate_history_window(&window)?;
-    if request.core_generation_id.trim().is_empty()
-        || request.character_id.trim().is_empty()
-        || request
-            .before_cursor
-            .as_deref()
-            .is_some_and(|cursor| cursor.trim().is_empty())
-    {
-        return Err("HISTORY_REQUEST_INVALID".to_string());
-    }
-    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
-    if presentation.presentation.generation_id != request.core_generation_id
-        || presentation.presentation.character_id != request.character_id
-    {
-        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
-    }
-    let page = request_history_page(
-        settings_core_handle(&lifecycle)?,
-        request.character_id.clone(),
-        request.before_cursor,
-    )
-    .await?;
-    if page.core_generation_id != request.core_generation_id
-        || page.character_id != request.character_id
-    {
-        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
-    }
-    Ok(page)
-}
-
-#[tauri::command]
-fn close_history_window(window: WebviewWindow) -> Result<(), String> {
-    history_window::validate_history_window(&window)?;
-    window.destroy().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn reveal_history_window(window: WebviewWindow) -> Result<(), String> {
-    history_window::validate_history_window(&window)?;
-    window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn runtime_log_viewer_bootstrap(
-    window: WebviewWindow,
-    runtime_log: State<'_, RuntimeLogService>,
-    resources: State<'_, character_presentation::CharacterPresentationState>,
-    appearance: State<'_, character_appearance::CharacterAppearanceState>,
-) -> Result<runtime_log_window::RuntimeLogViewerBootstrap, String> {
-    runtime_log_window::validate_runtime_log_window(&window)?;
-    let theme_tokens = resources
-        .active_presentation()
-        .ok()
-        .flatten()
-        .and_then(|presentation| appearance.current(&presentation).ok())
-        .map(|publication| publication.values.theme_tokens)
-        .unwrap_or_else(runtime_log_window::fallback_theme_tokens);
-    let snapshot = runtime_log.viewer_snapshot(None).map_err(str::to_string)?;
-    Ok(runtime_log_window::RuntimeLogViewerBootstrap {
-        schema_version: 2,
-        theme_tokens,
-        snapshot,
-    })
-}
-
-#[tauri::command]
-fn runtime_log_viewer_snapshot(
-    window: WebviewWindow,
-    after_sequence: Option<u64>,
-    runtime_log: State<'_, RuntimeLogService>,
-) -> Result<runtime_log::RuntimeLogViewerSnapshot, String> {
-    runtime_log_window::validate_runtime_log_window(&window)?;
-    runtime_log
-        .viewer_snapshot(after_sequence)
-        .map_err(str::to_string)
-}
-
-#[tauri::command]
-fn close_runtime_log_viewer(window: WebviewWindow) -> Result<(), String> {
-    runtime_log_window::validate_runtime_log_window(&window)?;
-    window.destroy().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn reveal_runtime_log_viewer(window: WebviewWindow) -> Result<(), String> {
-    runtime_log_window::validate_runtime_log_window(&window)?;
-    window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn settings_chat_presentation_timing_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    timing: State<'_, chat_settings::ChatPresentationTimingState>,
-) -> Result<chat_settings::ChatPresentationTimingSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    timing.snapshot(shell.generation()?)
-}
-
-#[tauri::command]
-fn settings_chat_presentation_timing_save(
-    window: WebviewWindow,
-    window_generation: u64,
-    values: chat_settings::ChatPresentationTiming,
-    app_handle: tauri::AppHandle,
-    shell: State<'_, product_shell::ProductShellState>,
-    timing: State<'_, chat_settings::ChatPresentationTimingState>,
-) -> Result<chat_settings::ChatPresentationTiming, String> {
-    product_shell::validate_settings_window(&window)?;
-    if shell.generation()? != window_generation {
-        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
-    }
-    let saved = timing.save(values)?;
-    if shell.generation()? != window_generation {
-        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
-    }
-    app_handle
-        .emit_to("main", chat_settings::CHAT_TIMING_CHANGED_EVENT, saved)
-        .map_err(|error| format!("CHAT_TIMING_PUBLICATION_FAILED: {error}"))?;
-    Ok(saved)
-}
-
-#[tauri::command]
-fn settings_bubble_auto_hide_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    settings: State<'_, chat_settings::BubbleAutoHideState>,
-) -> Result<chat_settings::BubbleAutoHideSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    settings.snapshot(shell.generation()?)
-}
-
-#[tauri::command]
-fn settings_bubble_auto_hide_save(
-    window: WebviewWindow,
-    window_generation: u64,
-    values: chat_settings::BubbleAutoHideSettings,
-    app_handle: tauri::AppHandle,
-    shell: State<'_, product_shell::ProductShellState>,
-    settings: State<'_, chat_settings::BubbleAutoHideState>,
-) -> Result<chat_settings::BubbleAutoHideSettings, String> {
-    product_shell::validate_settings_window(&window)?;
-    if shell.generation()? != window_generation {
-        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
-    }
-    let saved = settings.save(values)?;
-    if shell.generation()? != window_generation {
-        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
-    }
-    app_handle
-        .emit_to("main", chat_settings::BUBBLE_AUTO_HIDE_CHANGED_EVENT, saved)
-        .map_err(|error| format!("BUBBLE_AUTO_HIDE_PUBLICATION_FAILED: {error}"))?;
-    Ok(saved)
-}
-
 #[tauri::command]
 fn current_character_presentation(
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
 ) -> Result<character_presentation::FrontendCharacterPresentation, String> {
     load_current_character_presentation(&lifecycle, &resources)
-}
-
-fn load_current_character_presentation(
-    lifecycle: &ShellLifecycleState,
-    resources: &character_presentation::CharacterPresentationState,
-) -> Result<character_presentation::FrontendCharacterPresentation, String> {
-    let handle = lifecycle
-        .handle
-        .as_ref()
-        .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?;
-    let generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
-
-    let value = handle
-        .character_presentation()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
-    let presentation =
-        character_presentation::CharacterPresentation::from_value(&value, &generation_id)?;
-    resources.activate(presentation, &generation_id)
 }
 
 #[derive(Serialize)]
@@ -4987,75 +4400,6 @@ fn sync_settings_window_appearance_background(
         .get("pageBackground")
         .ok_or_else(|| "APPEARANCE_THEME_INVALID".to_string())?;
     product_shell::set_settings_window_theme_background(window, background)
-}
-
-fn settings_core_handle(
-    lifecycle: &State<'_, ShellLifecycleState>,
-) -> Result<shell_lifecycle::ShellLifecycleHandle, String> {
-    lifecycle
-        .handle
-        .clone()
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())
-}
-
-fn settings_response_payload(response: Value) -> Result<Value, String> {
-    if response.get("ok").and_then(Value::as_bool) == Some(true) {
-        return response
-            .get("payload")
-            .cloned()
-            .filter(Value::is_object)
-            .ok_or_else(|| "SETTINGS_RESPONSE_INVALID".to_string());
-    }
-    let code = response
-        .pointer("/error/code")
-        .and_then(Value::as_str)
-        .unwrap_or("SETTINGS_REQUEST_FAILED");
-    let message = response
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .unwrap_or("设置请求失败。");
-    let feature = response
-        .pointer("/error/details/feature")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let field = response
-        .pointer("/error/details/field")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    Err(format!("{code}|{feature}|{field}|{message}"))
-}
-
-async fn dispatch_settings_request(
-    handle: shell_lifecycle::ShellLifecycleHandle,
-    request_id: Option<String>,
-    name: &'static str,
-    payload: Value,
-    deadline: std::time::Duration,
-) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        handle.settings_request(request_id.as_deref(), name, payload, deadline)
-    })
-    .await
-    .map_err(|_| "SETTINGS_REQUEST_ABORTED".to_string())?
-}
-
-fn assert_settings_identity(
-    shell: &product_shell::ProductShellState,
-    handle: &shell_lifecycle::ShellLifecycleHandle,
-    window_generation: u64,
-    core_generation_id: &str,
-) -> Result<(), String> {
-    if shell.generation()? != window_generation {
-        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
-    }
-    let current = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    if current != core_generation_id {
-        return Err("SETTINGS_CORE_GENERATION_MISMATCH".to_string());
-    }
-    Ok(())
 }
 
 fn validate_character_settings_snapshot(value: &Value) -> Result<(), String> {
@@ -5784,228 +5128,6 @@ async fn settings_storage_get(
         json!({}),
     )
     .await
-}
-
-fn current_executable_directory() -> Result<std::path::PathBuf, String> {
-    std::env::current_exe()
-        .map_err(|_| "EXECUTABLE_DIRECTORY_UNAVAILABLE".to_string())?
-        .parent()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| "EXECUTABLE_DIRECTORY_UNAVAILABLE".to_string())
-}
-
-#[tauri::command]
-async fn settings_update_get(
-    window: WebviewWindow,
-    app_handle: tauri::AppHandle,
-    runtime_log: State<'_, RuntimeLogService>,
-) -> Result<update_settings::UpdateSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    update_settings::check(
-        &app_handle,
-        &current_executable_directory()?,
-        runtime_log.inner(),
-        "manual",
-    )
-    .await
-}
-
-#[tauri::command]
-fn settings_update_cached_get(
-    window: WebviewWindow,
-    coordinator: State<'_, update_settings::UpdateCoordinator>,
-) -> Result<Option<update_settings::UpdateSnapshot>, String> {
-    product_shell::validate_settings_window(&window)?;
-    coordinator.checked_snapshot()
-}
-
-#[tauri::command]
-fn settings_update_preferences_get(
-    window: WebviewWindow,
-    coordinator: State<'_, update_settings::UpdateCoordinator>,
-) -> Result<update_settings::UpdatePreferencesSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    coordinator.preferences()
-}
-
-#[tauri::command]
-fn settings_update_preferences_set(
-    window: WebviewWindow,
-    app_handle: tauri::AppHandle,
-    coordinator: State<'_, update_settings::UpdateCoordinator>,
-    auto_check_enabled: bool,
-) -> Result<update_settings::UpdatePreferencesSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    let snapshot = coordinator.set_auto_check_enabled(auto_check_enabled)?;
-    let _ = app_handle.emit_to(
-        "main",
-        update_settings::UPDATE_PREFERENCES_CHANGED_EVENT,
-        &snapshot,
-    );
-    Ok(snapshot)
-}
-
-#[tauri::command]
-fn settings_autostart_get(
-    window: WebviewWindow,
-    app_handle: tauri::AppHandle,
-    shell: State<'_, product_shell::ProductShellState>,
-) -> Result<autostart_settings::AutostartSettingsSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    autostart_settings::snapshot(&app_handle, shell.generation()?)
-}
-
-#[tauri::command]
-fn settings_autostart_save(
-    window: WebviewWindow,
-    app_handle: tauri::AppHandle,
-    shell: State<'_, product_shell::ProductShellState>,
-    window_generation: u64,
-    launch_at_login: bool,
-) -> Result<autostart_settings::AutostartSettingsSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    if shell.generation()? != window_generation {
-        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
-    }
-    autostart_settings::save(&app_handle, window_generation, launch_at_login)
-}
-
-#[tauri::command]
-async fn startup_update_check(
-    window: WebviewWindow,
-    app_handle: tauri::AppHandle,
-    coordinator: State<'_, update_settings::UpdateCoordinator>,
-    runtime_log: State<'_, RuntimeLogService>,
-) -> Result<update_settings::StartupUpdateSnapshot, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    Ok(coordinator
-        .startup_check(
-            &app_handle,
-            &current_executable_directory()?,
-            runtime_log.inner(),
-        )
-        .await)
-}
-
-#[tauri::command]
-async fn chat_update_announce(
-    window: WebviewWindow,
-    lifecycle: State<'_, ShellLifecycleState>,
-    coordinator: State<'_, update_settings::UpdateCoordinator>,
-) -> Result<chat_bridge::ChatSendPublication, String> {
-    if window.label() != "main" {
-        return Err("PET_WINDOW_REQUIRED".to_string());
-    }
-    let (event, version) = coordinator.pending_event()?;
-    let handle = lifecycle
-        .handle
-        .as_ref()
-        .ok_or_else(|| "CHAT_BRIDGE_UNAVAILABLE".to_string())?;
-    let pending = handle
-        .chat_bridge()?
-        .send_update_available(window.label(), event, version)?;
-    tauri::async_runtime::spawn_blocking(move || pending.wait())
-        .await
-        .map_err(|_| "CHAT_DISPATCH_ABORTED".to_string())?
-}
-
-#[tauri::command]
-fn settings_about_get(window: WebviewWindow) -> Result<update_settings::AboutSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    Ok(update_settings::about_snapshot())
-}
-
-#[tauri::command]
-fn settings_telemetry_get(
-    window: WebviewWindow,
-    telemetry: State<'_, telemetry::TelemetryService>,
-) -> Result<telemetry::TelemetrySettingsSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    telemetry.snapshot()
-}
-
-#[tauri::command]
-fn settings_telemetry_set_enabled(
-    window: WebviewWindow,
-    telemetry: State<'_, telemetry::TelemetryService>,
-    enabled: bool,
-) -> Result<telemetry::TelemetrySettingsSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    telemetry.set_enabled(enabled)
-}
-
-#[tauri::command]
-fn settings_telemetry_regenerate_installation_id(
-    window: WebviewWindow,
-    telemetry: State<'_, telemetry::TelemetryService>,
-) -> Result<telemetry::TelemetrySettingsSnapshot, String> {
-    product_shell::validate_settings_window(&window)?;
-    telemetry.regenerate_installation_id()
-}
-
-#[tauri::command]
-fn settings_telemetry_open_documentation(window: WebviewWindow) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    telemetry::open_documentation()
-}
-
-#[tauri::command]
-fn settings_about_open_website(window: WebviewWindow) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    update_settings::open_website()
-}
-
-#[tauri::command]
-fn settings_about_open_repository(window: WebviewWindow) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    update_settings::open_repository()
-}
-
-#[tauri::command]
-fn settings_about_open_changelog(window: WebviewWindow) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    update_settings::open_changelog()
-}
-
-#[tauri::command]
-fn settings_about_open_sponsor(window: WebviewWindow) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    update_settings::open_sponsor()
-}
-
-#[tauri::command]
-async fn settings_update_install(
-    window: WebviewWindow,
-    app_handle: tauri::AppHandle,
-    lifecycle: State<'_, ShellLifecycleState>,
-    runtime_log: State<'_, RuntimeLogService>,
-) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    let lifecycle_handle = lifecycle.handle.clone();
-    update_settings::install(
-        &app_handle,
-        &current_executable_directory()?,
-        runtime_log.inner(),
-        move || {
-            lifecycle_handle
-                .as_ref()
-                .ok_or_else(|| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?
-                .shutdown_and_wait(std::time::Duration::from_secs(5))
-                .map_err(str::to_string)
-        },
-    )
-    .await
-}
-
-#[tauri::command]
-fn settings_update_open_portable_download(
-    window: WebviewWindow,
-    url: String,
-) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    update_settings::open_portable_download(&url)
 }
 
 fn open_directory(path: &std::path::Path) -> Result<(), String> {
@@ -9242,24 +8364,24 @@ fn main() {
             clear_screen_awareness_batch,
             composer_tools_get,
             composer_tool_invoke,
-            tts_prepare_segment,
-            tts_cancel_synthesis,
-            tts_play_prepared,
-            tts_stop_playback,
-            settings_voice_get,
-            settings_voice_status_get,
-            settings_voice_save,
-            current_chat_presentation_timing,
-            current_bubble_auto_hide,
-            current_subtitle_language,
-            history_bootstrap,
-            history_page,
-            close_history_window,
-            reveal_history_window,
-            runtime_log_viewer_bootstrap,
-            runtime_log_viewer_snapshot,
-            close_runtime_log_viewer,
-            reveal_runtime_log_viewer,
+            audio::tts_prepare_segment,
+            audio::tts_cancel_synthesis,
+            audio::tts_play_prepared,
+            audio::tts_stop_playback,
+            audio::settings_voice_get,
+            audio::settings_voice_status_get,
+            audio::settings_voice_save,
+            chat_settings::current_chat_presentation_timing,
+            chat_settings::current_bubble_auto_hide,
+            chat_settings::current_subtitle_language,
+            history_window::history_bootstrap,
+            history_window::history_page,
+            history_window::close_history_window,
+            history_window::reveal_history_window,
+            runtime_log_window::runtime_log_viewer_bootstrap,
+            runtime_log_window::runtime_log_viewer_snapshot,
+            runtime_log_window::close_runtime_log_viewer,
+            runtime_log_window::reveal_runtime_log_viewer,
             current_character_presentation,
             current_character_appearance,
             apply_input_visual_effect,
@@ -9312,25 +8434,25 @@ fn main() {
             settings_storage_open_user_root,
             settings_storage_choose_tts_root,
             settings_storage_reset_tts_root,
-            settings_update_get,
-            settings_update_cached_get,
-            settings_update_preferences_get,
-            settings_update_preferences_set,
-            settings_autostart_get,
-            settings_autostart_save,
-            startup_update_check,
-            chat_update_announce,
-            settings_update_install,
-            settings_update_open_portable_download,
-            settings_about_get,
-            settings_about_open_website,
-            settings_about_open_repository,
-            settings_about_open_changelog,
-            settings_about_open_sponsor,
-            settings_telemetry_get,
-            settings_telemetry_set_enabled,
-            settings_telemetry_regenerate_installation_id,
-            settings_telemetry_open_documentation,
+            update_settings::settings_update_get,
+            update_settings::settings_update_cached_get,
+            update_settings::settings_update_preferences_get,
+            update_settings::settings_update_preferences_set,
+            autostart_settings::settings_autostart_get,
+            autostart_settings::settings_autostart_save,
+            update_settings::startup_update_check,
+            update_settings::chat_update_announce,
+            update_settings::settings_update_install,
+            update_settings::settings_update_open_portable_download,
+            update_settings::settings_about_get,
+            update_settings::settings_about_open_website,
+            update_settings::settings_about_open_repository,
+            update_settings::settings_about_open_changelog,
+            update_settings::settings_about_open_sponsor,
+            telemetry::settings_telemetry_get,
+            telemetry::settings_telemetry_set_enabled,
+            telemetry::settings_telemetry_regenerate_installation_id,
+            telemetry::settings_telemetry_open_documentation,
             settings_character_appearance_get,
             settings_character_visual_preview,
             settings_character_appearance_preview,
@@ -9340,10 +8462,10 @@ fn main() {
             settings_character_appearance_layout_frame,
             settings_character_appearance_save,
             settings_character_appearance_cancel_preview,
-            settings_chat_presentation_timing_get,
-            settings_chat_presentation_timing_save,
-            settings_bubble_auto_hide_get,
-            settings_bubble_auto_hide_save,
+            chat_settings::settings_chat_presentation_timing_get,
+            chat_settings::settings_chat_presentation_timing_save,
+            chat_settings::settings_bubble_auto_hide_get,
+            chat_settings::settings_bubble_auto_hide_save,
             settings_provider_model_get,
             settings_provider_model_save,
             settings_provider_model_probe,
@@ -9428,7 +8550,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn character_settings_snapshot_accepts_empty_state_and_requires_selected_membership() {
@@ -9602,22 +8723,6 @@ mod tests {
             validate_storage_settings_snapshot(&available_with_reason).unwrap_err(),
             "STORAGE_SETTINGS_RESPONSE_INVALID"
         );
-    }
-
-    #[test]
-    fn plugin_kernel_v3_tts_cancel_accepts_only_operation_identity() {
-        let request: TtsCancelSynthesisRequest =
-            serde_json::from_value(json!({"operationId": "operation-1"})).unwrap();
-        assert_eq!(request.operation_id, "operation-1");
-        assert!(serde_json::from_value::<TtsCancelSynthesisRequest>(json!({
-            "requestId": "tts-private-job"
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<TtsCancelSynthesisRequest>(json!({
-            "operationId": "operation-1",
-            "requestId": "tts-private-job"
-        }))
-        .is_err());
     }
 
     #[test]
@@ -10587,39 +9692,6 @@ mod tests {
             42,
             &different_dpi,
         ));
-    }
-
-    #[test]
-    fn wp_4_05_playback_failure_is_logged_at_the_audio_callback_source() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "sakura-tts-playback-log-{}-{nonce}",
-            std::process::id()
-        ));
-        let path = root.join("data/logs/sakura-runtime.log");
-        let runtime_log = RuntimeLogService::start(path.clone());
-        record_tts_playback(
-            &runtime_log,
-            "generation-tts-1",
-            &audio::AudioPlaybackEvent {
-                playback_id: "playback-1".to_string(),
-                recording_id: Some("recording-1".to_string()),
-                state: "failed",
-                error: Some(audio::AudioPlaybackError {
-                    code: "AUDIO_DEVICE_UNAVAILABLE",
-                    message: "not persisted",
-                }),
-            },
-        );
-        assert!(runtime_log.shutdown(std::time::Duration::from_millis(500)));
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("[TTS]"));
-        assert!(contents.contains("code=AUDIO_DEVICE_UNAVAILABLE"));
-        assert!(!contents.contains("not persisted"));
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
