@@ -124,7 +124,10 @@ async function characterSettings(options = {}) {
     onDirty: () => feature.syncControls(),
     onError: (message) => { if (message) errors.push(message); },
     notify() {}, enhanceSelect() {}, refreshSelect() {},
-    disableRuntimeControl: (control) => { control.disabled = true; },
+    disableRuntimeControl: (control) => {
+      control.disabled = true;
+      control.setAttribute("aria-disabled", "true");
+    },
     hasCharacterDrafts: () => state.dirty,
     isSubmitting: () => state.submitting,
     applyPreviewTheme: (theme) => previews.push(theme),
@@ -340,6 +343,16 @@ test("archive export keeps voice eligibility and the native path handoff while c
   await fields.characterImportButton.click();
   assert.deepEqual(calls, [["settings_character_choose_import", { kind: "character" }]]);
   assert.equal(fields.characterImportButton.disabled, false);
+  feature.dispose();
+});
+
+test("preparing migrated archive controls keeps their accessible state usable", async () => {
+  const { feature, fields } = await characterSettings();
+  feature.prepareControls();
+  for (const id of ["characterExportButton", "ttsVoiceImportButton"]) {
+    assert.equal(fields[id].disabled, false);
+    assert.notEqual(fields[id].getAttribute("aria-disabled"), "true");
+  }
   feature.dispose();
 });
 

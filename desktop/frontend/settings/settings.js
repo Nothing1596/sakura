@@ -2863,7 +2863,6 @@ async function startSettingsFrontend() {
     notify,
     enhanceSelect,
     refreshSelect,
-    disableRuntimeControl,
     hasCharacterDrafts: currentCharacterHasDrafts,
     isSubmitting: () => submissionBusy,
     applyPreviewTheme: (theme) => runThemeTransition(() => applyThemeTokens(theme)),

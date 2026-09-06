@@ -21,7 +21,6 @@ export function createCharacterSettingsFeature({
   notify,
   enhanceSelect,
   refreshSelect,
-  disableRuntimeControl,
   hasCharacterDrafts: currentCharacterHasDrafts,
   isSubmitting,
   applyPreviewTheme,
@@ -529,9 +528,6 @@ export function createCharacterSettingsFeature({
       }
     },
     prepareControls() {
-      for (const control of [fields.ttsVoiceImportButton, fields.characterExportButton]) {
-        disableRuntimeControl(control, { markRow: false });
-      }
       enhanceSelect(fields.characterSelect);
       refreshSelect(fields.characterSelect);
       syncCharacterArchiveState();
