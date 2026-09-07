@@ -912,12 +912,12 @@ mod tests {
     #[test]
     fn presentation_is_optional_bounded_display_metadata() {
         let mut value = snapshot();
-        assert!(validate_snapshot(&value, false).is_ok());
+        assert!(validate_snapshot(&value).is_ok());
         value["plugins"][0]["presentation"] = json!({"kind": "provider", "category": "voice"});
-        assert!(validate_snapshot(&value, false).is_ok());
+        assert!(validate_snapshot(&value).is_ok());
         for icon in ["", "brain", "future-icon"] {
             value["plugins"][0]["presentation"]["icon"] = json!(icon);
-            assert!(validate_snapshot(&value, false).is_ok());
+            assert!(validate_snapshot(&value).is_ok());
         }
         for icon in [
             json!(null),
@@ -928,14 +928,14 @@ mod tests {
             json!("brain\n"),
         ] {
             value["plugins"][0]["presentation"]["icon"] = icon;
-            assert!(validate_snapshot(&value, false).is_err());
+            assert!(validate_snapshot(&value).is_err());
         }
         value["plugins"][0]["presentation"]["icon"] = json!("brain");
         value["plugins"][0]["presentation"]["category"] = json!("unknown");
-        assert!(validate_snapshot(&value, false).is_err());
+        assert!(validate_snapshot(&value).is_err());
         value["plugins"][0]["presentation"] =
             json!({"kind": "provider", "category": "voice", "path": "private"});
-        assert!(validate_snapshot(&value, false).is_err());
+        assert!(validate_snapshot(&value).is_err());
     }
 
     fn snapshot() -> serde_json::Value {
