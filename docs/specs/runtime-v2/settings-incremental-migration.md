@@ -184,6 +184,8 @@ WP-3-04 提供可由用户维护的真实聊天配置。
 - 密钥输入采用“空白保持原值 + 显式清除动作”；`configured=true` 可以显示，密钥本体不能回显。
 - 使用新输入或 Core 内已保存凭据执行有界 `list_models`/`test_connection`；错误必须脱敏，control/
   shutdown 不得被网络探测阻塞。
+- 模型发现仅向当前 Provider 对象交付最新请求的结果。删除 Provider、快照回读替换对象或 generation
+  重绑后，旧发现的成功和失败结果失效，已打开的模型选择弹窗关闭；弹窗提交时再次确认目标与请求仍有效。
 - 保存 Core 与当前 active 插件注册的动态 Chat Completion 模型槽；引用不存在 Provider/模型或遗漏必选
   槽位时，在任何 owner 写入前拒绝。
 - Provider、Core-owned 槽与当前 PluginApplication 的插件槽在一次请求中保存，并按稳定 identity 顺序调用插件槽位

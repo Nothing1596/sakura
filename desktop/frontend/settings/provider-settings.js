@@ -41,6 +41,7 @@ export function createProviderSettingsFeature({
   let apiView = null;
   let disposed = false;
   const overlays = new Set();
+  const modelDiscoveries = new Map();
   const listeners = [];
   const controller = createProviderModelController({
     invoke,
@@ -99,6 +100,7 @@ export function createProviderSettingsFeature({
   ];
 
   function initializeProviderState() {
+    invalidateModelDiscoveries();
     providerState.profiles = (apiView.profiles || []).map((profile) => ({
       id: profile.id || makeProfileId(),
       alias: profile.alias || profile.id || "供应商",
@@ -437,6 +439,7 @@ export function createProviderSettingsFeature({
   }
 
   async function autoDetectModels(profile, button) {
+    if (disposed || !providerState.profiles.includes(profile)) return;
     const baseUrl = (profile.base_url || "").trim();
     const apiKey = (profile.api_key || "").trim();
     if (!baseUrl) {
@@ -450,25 +453,33 @@ export function createProviderSettingsFeature({
       return;
     }
     setError("");
+    invalidateModelDiscovery(profile);
     const original = button.textContent;
+    const discovery = {
+      resetButton() {
+        button.disabled = false;
+        button.textContent = original;
+      },
+    };
+    modelDiscoveries.set(profile, discovery);
+    const isCurrent = () => !disposed
+      && providerState.profiles.includes(profile)
+      && modelDiscoveries.get(profile) === discovery;
     button.disabled = true;
     button.textContent = "检测中…";
     try {
       const result = await controller.listModels(runtimeProbeProfile(profile, ""));
-      if (disposed) return;
+      if (!isCurrent()) return;
       const models = Array.isArray(result?.models) ? result.models : [];
       if (!models.length) {
         notify("未检测到任何模型。", "info");
         return;
       }
-      openModelPicker(profile, models);
+      discovery.closePicker = openModelPicker(profile, models, isCurrent);
     } catch (error) {
-      if (!disposed) setError(`自动检测失败：${error}`);
+      if (isCurrent()) setError(`自动检测失败：${error}`);
     } finally {
-      if (!disposed) {
-        button.disabled = false;
-        button.textContent = original;
-      }
+      if (isCurrent()) discovery.resetButton();
     }
   }
 
@@ -504,6 +515,7 @@ export function createProviderSettingsFeature({
   }
 
   function removeProvider(profile) {
+    invalidateModelDiscovery(profile);
     providerState.profiles = providerState.profiles.filter((item) => item.id !== profile.id);
     if (providerState.selectedId === profile.id) {
       providerState.selectedId = providerState.profiles[0]?.id || "";
@@ -595,8 +607,19 @@ export function createProviderSettingsFeature({
     document.body.append(overlay);
   }
 
-  function openModelPicker(profile, models) {
-    if (disposed) return;
+  function invalidateModelDiscovery(profile) {
+    const discovery = modelDiscoveries.get(profile);
+    modelDiscoveries.delete(profile);
+    discovery?.resetButton();
+    discovery?.closePicker?.();
+  }
+
+  function invalidateModelDiscoveries() {
+    for (const profile of modelDiscoveries.keys()) invalidateModelDiscovery(profile);
+  }
+
+  function openModelPicker(profile, models, isCurrent) {
+    if (!isCurrent()) return;
     const existing = new Set(profile.models || []);
     const overlay = document.createElement("div");
     overlay.className = "confirm-overlay";
@@ -640,6 +663,10 @@ export function createProviderSettingsFeature({
     actions.append(
       makeModalButton("取消", "secondary-button", close),
       makeModalButton("添加", "primary-button", () => {
+        if (!isCurrent() || !overlays.has(overlay)) {
+          close();
+          return;
+        }
         const chosen = checks.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
         const added = addModelsToProfile(profile, chosen);
         close();
@@ -655,6 +682,7 @@ export function createProviderSettingsFeature({
     overlay.append(dialog);
     overlays.add(overlay);
     document.body.append(overlay);
+    return close;
   }
 
   function modelSlotElements(slot) {
@@ -1082,7 +1110,10 @@ export function createProviderSettingsFeature({
     },
     isDirty: () => !disposed && controller.isDirty(),
     refreshCurrent: controller.refreshCurrent,
-    rebindIdentity: controller.rebindIdentity,
+    rebindIdentity(coreGenerationId) {
+      controller.rebindIdentity(coreGenerationId);
+      invalidateModelDiscoveries();
+    },
     cancelOperations: controller.cancelOperations,
     hasModelSettings: (pluginId) => (apiView?.slot_fields || [])
       .some((slot) => slot.owner_id === pluginId),
@@ -1093,6 +1124,7 @@ export function createProviderSettingsFeature({
     dispose() {
       if (disposed) return;
       disposed = true;
+      invalidateModelDiscoveries();
       listeners.splice(0).forEach((remove) => remove());
       overlays.forEach((overlay) => overlay.remove());
       overlays.clear();

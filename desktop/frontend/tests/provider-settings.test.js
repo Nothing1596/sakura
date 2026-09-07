@@ -442,3 +442,81 @@ test("probe and cancellation use rebound identity; disposal removes owned overla
   assert.deepEqual(ui.notifications, []);
   assert.deepEqual(ui.errors, [""]);
 });
+
+for (const change of ["remove", "refresh", "rebind"]) {
+  for (const outcome of ["success", "failure"]) {
+    test(`model discovery ignores late ${outcome} after provider ${change}`, async () => {
+      let finish;
+      const ui = featureFixture(snapshot(), (command) => {
+        if (command === "settings_provider_model_probe") {
+          return new Promise((resolve, reject) => {
+            finish = () => outcome === "success"
+              ? resolve({ models: ["stale-model"] })
+              : reject(new Error("STALE_DISCOVERY_FAILURE"));
+          });
+        }
+        return undefined;
+      });
+      await ui.feature.initialize();
+      const probing = ui.button("自动检测").fire("click");
+      await settle();
+      if (change === "remove") await ui.button("删除供应商").fire("click");
+      if (change === "refresh") await ui.feature.refreshCurrent();
+      if (change === "rebind") ui.feature.rebindIdentity("generation-b");
+      const dirtyNotifications = ui.dirtyNotifications;
+      finish();
+      await probing;
+      assert.equal(ui.document.querySelector(".model-picker-dialog"), null);
+      assert.deepEqual(ui.notifications, []);
+      assert.deepEqual(ui.errors, [""]);
+      assert.equal(ui.dirtyNotifications, dirtyNotifications);
+      ui.feature.dispose();
+    });
+  }
+
+  test(`an open model picker is invalidated by provider ${change}`, async () => {
+    const ui = featureFixture(snapshot(), (command) => command === "settings_provider_model_probe"
+      ? { models: ["stale-model"] } : undefined);
+    await ui.feature.initialize();
+    await ui.button("自动检测").fire("click");
+    const submit = ui.button("添加", ui.document.querySelector(".model-picker-dialog"));
+    if (change === "remove") await ui.button("删除供应商").fire("click");
+    if (change === "refresh") await ui.feature.refreshCurrent();
+    if (change === "rebind") ui.feature.rebindIdentity("generation-b");
+    assert.equal(ui.document.querySelector(".model-picker-dialog"), null);
+    const dirtyNotifications = ui.dirtyNotifications;
+    await submit.fire("click");
+    assert.equal(ui.dirtyNotifications, dirtyNotifications);
+    assert.deepEqual(ui.notifications, []);
+    if (change !== "remove") {
+      await ui.feature.save();
+      const draft = ui.calls.find(([command]) => command === "settings_provider_model_save")[1].draft;
+      assert.equal(draft.providers[0].models.includes("stale-model"), false);
+    }
+    ui.feature.dispose();
+  });
+}
+
+test("a newer discovery supersedes an older request for the same provider", async () => {
+  const finish = [];
+  const ui = featureFixture(snapshot(), (command) => command === "settings_provider_model_probe"
+    ? new Promise((resolve) => finish.push(resolve)) : undefined);
+  await ui.feature.initialize();
+  const first = ui.button("自动检测").fire("click");
+  await settle();
+  // Reselecting the provider renders a new detect button while its first request is pending.
+  await ui.control("providerList").querySelector(".provider-card").fire("click");
+  const second = ui.button("自动检测").fire("click");
+  await settle();
+  finish[1]({ models: ["current-model"] });
+  await second;
+  finish[0]({ models: ["stale-model"] });
+  await first;
+  assert.equal(ui.document.querySelectorAll(".model-picker-dialog").length, 1);
+  await ui.button("添加", ui.document.querySelector(".model-picker-dialog")).fire("click");
+  await ui.feature.save();
+  const draft = ui.calls.find(([command]) => command === "settings_provider_model_save")[1].draft;
+  assert.equal(draft.providers[0].models.includes("current-model"), true);
+  assert.equal(draft.providers[0].models.includes("stale-model"), false);
+  ui.feature.dispose();
+});
