@@ -2436,6 +2436,7 @@ export function createPluginSettingsFeature({
   return Object.freeze({
     initialize: runtimePluginController.initialize,
     isDirty: () => runtimePluginController.isDirty() || hasCollectionDrafts(),
+    hasCollectionDrafts,
     async save() {
       if (hasCollectionDrafts()) {
         throw new Error("请先保存或还原正在编辑的集合记录，再保存设置。");

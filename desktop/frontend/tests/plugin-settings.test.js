@@ -204,9 +204,12 @@ for (const surface of ["memory", null]) {
       assert.fail("a Settings save must not submit or discard an open collection editor");
     });
     feature.initialize(data);
+    assert.equal(feature.hasCollectionDrafts(), false);
     const beforeEdit = dirtyNotifications();
     const add = document.querySelector(surface === "memory" ? ".memory-add-button" : ".plugin-collection-head button");
     await add.fire("click");
+    assert.equal(feature.hasCollectionDrafts(), true);
+    assert.equal(feature.characterDraftCount(), surface === "memory" ? 1 : 0);
     let choices = 0;
     let closed = false;
     const decision = await executeSettingsClose({
@@ -223,6 +226,7 @@ for (const surface of ["memory", null]) {
     await assert.rejects(() => feature.save(), /集合/);
     assert.equal(feature.isDirty(), true);
     feature.discard();
+    assert.equal(feature.hasCollectionDrafts(), false);
     assert.equal(feature.isDirty(), false);
     feature.dispose();
   });

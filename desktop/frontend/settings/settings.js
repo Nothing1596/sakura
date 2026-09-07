@@ -1558,8 +1558,8 @@ async function refreshRuntimeVoiceCurrent() {
 }
 
 async function saveRuntimeSettings() {
-  if ((runtimePluginController?.characterDraftCount() || 0) > 0) {
-    throw new Error("请先使用“保存记忆”提交当前记忆草稿，或还原草稿后再关闭设置。");
+  if (runtimePluginController?.hasCollectionDrafts()) {
+    throw new Error("请先保存或还原正在编辑的集合记录，再保存设置。");
   }
   if (runtimeAppearanceController?.isDirty()) await runtimeAppearanceController.save();
   let result = null;
