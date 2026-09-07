@@ -1,3 +1,4 @@
+import { createIcon } from "../core/icons.js";
 import {
   createProviderModelController,
   findProviderModelSelectionIssue,
@@ -368,7 +369,7 @@ export function createProviderSettingsFeature({
         remove.type = "button";
         remove.className = "model-chip-remove";
         remove.setAttribute("aria-label", `删除 ${model}`);
-        remove.textContent = "×";
+        remove.append(createIcon(document, "x"));
         remove.addEventListener("click", () => {
           profile.models = profile.models.filter((item) => item !== model);
           renderProviderPage();
@@ -588,7 +589,7 @@ export function createProviderSettingsFeature({
     });
     const customIcon = document.createElement("span");
     customIcon.className = "provider-avatar is-initial";
-    customIcon.textContent = "＋";
+    customIcon.append(createIcon(document, "plus"));
     const customLabel = document.createElement("span");
     customLabel.textContent = "自定义";
     custom.append(customIcon, customLabel);

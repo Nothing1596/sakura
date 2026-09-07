@@ -1,3 +1,4 @@
+import { enhanceSelect, refreshSelect, closeSelects, focusSelect } from "./select-control.js";
 import {
   createRootSettingsClient,
   formatSettingsError,
@@ -81,6 +82,7 @@ const fields = {
   updateCheckLabel: document.getElementById("updateCheckLabel"),
   updateAutoCheck: document.getElementById("updateAutoCheck"),
   updateActionButton: document.getElementById("updateActionButton"),
+  updateActionIcon: document.getElementById("updateActionIcon"),
   updateActionLabel: document.getElementById("updateActionLabel"),
   telemetryEnabled: document.getElementById("telemetryEnabled"),
   telemetryHelpButton: document.getElementById("telemetryHelpButton"),
@@ -495,6 +497,8 @@ function confirmAction(
     }
     function onKey(event) {
       if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         close(false);
       }
     }
@@ -506,7 +510,7 @@ function confirmAction(
     cancel.addEventListener("click", () => close(false));
     confirm.addEventListener("click", () => close(true));
     document.addEventListener("keydown", onKey, true);
-    document.body.append(overlay);
+    (runtimePluginController?.dialogElement() || document.body).append(overlay);
     confirm.focus();
   });
 }
@@ -548,6 +552,8 @@ async function chooseUnsavedClose() {
     }
     function onKey(event) {
       if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         close(CloseDecision.STAY);
       }
     }
@@ -560,7 +566,7 @@ async function chooseUnsavedClose() {
     discard.addEventListener("click", () => close(CloseDecision.DISCARD));
     save.addEventListener("click", () => close(CloseDecision.SAVE));
     document.addEventListener("keydown", onKey, true);
-    document.body.append(overlay);
+    (runtimePluginController?.dialogElement() || document.body).append(overlay);
     save.focus();
   });
 }
@@ -589,136 +595,6 @@ function replayMotion(element, className) {
 function markThemeChanged() {
   themeChanged = true;
   applyThemeTokens(collectThemeSettings());
-}
-
-// 自定义下拉框：WebView2 在 Windows 上的原生 <select> 弹层无法被 CSS 主题化，
-// 这里保留原生 <select>（隐藏）承载取值与 change 事件，只把视觉换成可控弹层。
-// 弹层用 position:fixed + getBoundingClientRect 定位，避开 .page-scroll 的 overflow 裁剪。
-function enhanceSelect(select) {
-  if (!select || select.__customSelect) {
-    return;
-  }
-  const wrapper = document.createElement("div");
-  wrapper.className = "custom-select";
-  const trigger = document.createElement("button");
-  trigger.type = "button";
-  trigger.className = "custom-select__trigger";
-  const label = document.createElement("span");
-  label.className = "custom-select__label";
-  const caret = document.createElement("span");
-  caret.className = "custom-select__caret";
-  caret.setAttribute("aria-hidden", "true");
-  trigger.append(label, caret);
-  const menu = document.createElement("div");
-  menu.className = "custom-select__menu";
-  menu.setAttribute("role", "listbox");
-
-  select.parentNode.insertBefore(wrapper, select);
-  // menu 不挂在 wrapper 内：打开时才挂到 <body>（见 openMenu），避免被祖先的
-  // transform 包含块推偏定位。
-  wrapper.append(trigger, select);
-
-  function syncTrigger() {
-    const option = select.options[select.selectedIndex];
-    label.textContent = option ? option.textContent : "";
-    trigger.disabled = select.disabled;
-  }
-
-  function buildMenu() {
-    menu.textContent = "";
-    Array.from(select.options).forEach((option) => {
-      const item = document.createElement("div");
-      item.className = "custom-select__option";
-      item.setAttribute("role", "option");
-      item.textContent = option.textContent;
-      if (option.value === select.value) {
-        item.classList.add("is-selected");
-        item.setAttribute("aria-selected", "true");
-      }
-      if (option.disabled) {
-        item.classList.add("is-disabled");
-        item.setAttribute("aria-disabled", "true");
-      }
-      item.addEventListener("click", () => {
-        if (option.disabled) {
-          return;
-        }
-        if (select.value !== option.value) {
-          select.value = option.value;
-          select.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-        syncTrigger();
-        closeMenu();
-      });
-      menu.append(item);
-    });
-  }
-
-  // 弹层挂在 <body> 上，按视口坐标定位；下方空间不足且上方更宽裕时向上弹出。
-  function positionMenu() {
-    const rect = trigger.getBoundingClientRect();
-    const maxWidth = Math.max(120, window.innerWidth - 16);
-    menu.style.minWidth = `${rect.width}px`;
-    menu.style.width = "max-content";
-    menu.style.maxWidth = `${maxWidth}px`;
-    const menuWidth = Math.min(menu.offsetWidth, maxWidth);
-    menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8))}px`;
-    const menuHeight = menu.offsetHeight;
-    const spaceBelow = window.innerHeight - rect.bottom;
-    if (spaceBelow < menuHeight + 12 && rect.top > spaceBelow) {
-      menu.style.top = `${Math.max(8, rect.top - 6 - menuHeight)}px`;
-    } else {
-      menu.style.top = `${rect.bottom + 6}px`;
-    }
-  }
-
-  function onDocPointer(event) {
-    if (!wrapper.contains(event.target) && !menu.contains(event.target)) {
-      closeMenu();
-    }
-  }
-  function onKey(event) {
-    if (event.key === "Escape") {
-      closeMenu();
-    }
-  }
-  function openMenu() {
-    if (select.disabled) {
-      return;
-    }
-    buildMenu();
-    document.body.appendChild(menu);
-    menu.classList.add("is-open");
-    positionMenu();
-    wrapper.classList.add("is-open");
-    document.addEventListener("pointerdown", onDocPointer, true);
-    document.addEventListener("keydown", onKey, true);
-    window.addEventListener("scroll", closeMenu, true);
-    window.addEventListener("resize", closeMenu, true);
-  }
-  function closeMenu() {
-    wrapper.classList.remove("is-open");
-    menu.classList.remove("is-open");
-    menu.remove();
-    document.removeEventListener("pointerdown", onDocPointer, true);
-    document.removeEventListener("keydown", onKey, true);
-    window.removeEventListener("scroll", closeMenu, true);
-    window.removeEventListener("resize", closeMenu, true);
-  }
-
-  trigger.addEventListener("click", () => {
-    wrapper.classList.contains("is-open") ? closeMenu() : openMenu();
-  });
-  select.addEventListener("change", syncTrigger);
-
-  select.__customSelect = { refresh: syncTrigger };
-  syncTrigger();
-}
-
-function refreshSelect(select) {
-  if (select && select.__customSelect) {
-    select.__customSelect.refresh();
-  }
 }
 
 function setNumericBounds(input, bounds) {
@@ -1008,6 +884,9 @@ function applyUpdateSnapshot(snapshot) {
   fields.updateActionLabel.textContent = snapshot.mode === "portable"
     ? `下载 v${snapshot.version} ZIP`
     : `更新到 v${snapshot.version}`;
+  fields.updateActionButton.dataset.widthLabel = fields.updateActionLabel.textContent;
+  fields.updateActionIcon.classList.toggle("icon-download", snapshot.mode === "portable");
+  fields.updateActionIcon.classList.toggle("icon-circle-arrow-up", snapshot.mode !== "portable");
   fields.updateCheckButton.classList.toggle("primary-button", !snapshot.available);
   fields.updateCheckButton.classList.toggle("secondary-button", snapshot.available);
   fields.updateCheckLabel.textContent = snapshot.available ? "重新检查" : "检查更新";
@@ -1975,11 +1854,15 @@ async function startSettingsFrontend() {
         notify,
         confirmAction,
         enhanceSelect,
+        refreshSelect,
+        closeSelects,
+        focusSelect,
+        replayMotion,
+        getVoiceController: () => runtimeVoiceController,
         removeOverlayAfterExit,
         showPage,
         isMemoryTransitioning: () => runtimeCharacterFeature?.isTransitioning(),
         hasPendingCharacterSelection: () => Boolean(runtimeCharacterFeature?.pendingCharacterId()),
-        hasModelSettings: (pluginId) => runtimeProviderFeature?.hasModelSettings(pluginId),
       });
       runtimePluginController.initialize(await invoke("settings_plugins_get"));
     });
@@ -1996,6 +1879,7 @@ async function startSettingsFrontend() {
         openPlugins: () => showPage("plugins"),
         onDirty: refreshDirty,
         onStatus: notify,
+        onSectionsRendered: () => runtimePluginController?.onVoiceSectionsRendered(),
       });
       await runtimeVoiceController.refreshCurrent();
     });

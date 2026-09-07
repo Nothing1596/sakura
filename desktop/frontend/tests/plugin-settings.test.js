@@ -1,200 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-import { createPluginSettingsFeature } from "../settings/plugin-settings.js";
 import { executeSettingsClose } from "../settings/close-flow.js";
-
-const settle = () => new Promise((resolve) => setImmediate(resolve));
-
-// Only the browser boundary is replaced. The feature renders its real controls,
-// handles their events, and calls the real plugin protocol controller.
-function browserFixture() {
-  const dataKey = (name) => name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-  class Element {
-    constructor(tagName) {
-      this.tagName = tagName;
-      this.children = [];
-      this.parentElement = null;
-      this.attributes = new Map();
-      this.dataset = {};
-      this.listeners = new Map();
-      this.className = "";
-      this.value = "";
-      this.disabled = false;
-      this.hidden = false;
-      this.style = { setProperty() {}, removeProperty() {} };
-      this.classList = {
-        contains: (name) => this.className.split(/\s+/).includes(name),
-        add: (...names) => { this.className = [...new Set([...this.className.split(/\s+/), ...names])].filter(Boolean).join(" "); },
-        remove: (...names) => { this.className = this.className.split(/\s+/).filter((name) => !names.includes(name)).join(" "); },
-        toggle: (name, force = !this.classList.contains(name)) => {
-          this.classList[force ? "add" : "remove"](name);
-          return force;
-        },
-      };
-    }
-    get childNodes() { return this.children; }
-    get textContent() { return (this.text || "") + this.children.map((child) => child.textContent).join(""); }
-    set textContent(value) { this.children.slice().forEach((child) => child.remove()); this.text = String(value); }
-    append(...children) {
-      for (const child of children) { child.remove(); child.parentElement = this; this.children.push(child); }
-    }
-    remove() {
-      if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1);
-      this.parentElement = null;
-    }
-    insertBefore(child, reference) {
-      child.remove();
-      child.parentElement = this;
-      const index = this.children.indexOf(reference);
-      this.children.splice(index < 0 ? this.children.length : index, 0, child);
-    }
-    setAttribute(name, value) {
-      if (name.startsWith("data-")) this.dataset[dataKey(name)] = String(value);
-      else this.attributes.set(name, String(value));
-    }
-    getAttribute(name) {
-      return name.startsWith("data-") ? this.dataset[dataKey(name)] ?? null : this.attributes.get(name) ?? null;
-    }
-    hasAttribute(name) { return this.getAttribute(name) !== null; }
-    removeAttribute(name) {
-      if (name.startsWith("data-")) delete this.dataset[dataKey(name)];
-      else this.attributes.delete(name);
-    }
-    addEventListener(type, listener) {
-      if (!this.listeners.has(type)) this.listeners.set(type, new Set());
-      this.listeners.get(type).add(listener);
-    }
-    removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
-    async fire(type, detail = {}) {
-      const event = { target: this, preventDefault() {}, stopPropagation() {}, ...detail };
-      await Promise.all([...this.listeners.get(type) || []].map((listener) => listener(event)));
-      await settle();
-    }
-    contains(element) { return element === this || this.children.some((child) => child.contains(element)); }
-    focus() { document.activeElement = this; }
-    setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
-    matches(selector) {
-      const tokens = selector.match(/\[[^\]]+\]|[.#]?[\w-]+/g) || [];
-      return tokens.every((token) => {
-        if (token[0] === ".") return this.classList.contains(token.slice(1));
-        if (token[0] === "#") return this.id === token.slice(1);
-        if (token[0] === "[") {
-          const [, name, value] = token.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);
-          return value === undefined ? this.hasAttribute(name) : this.getAttribute(name) === value;
-        }
-        return this.tagName === token;
-      });
-    }
-    querySelectorAll(selector) {
-      const selectors = selector.split(",").map((part) => part.trim().split(/\s+/));
-      const matches = (element, parts) => {
-        if (!element.matches(parts.at(-1))) return false;
-        let ancestor = element.parentElement;
-        for (let index = parts.length - 2; index >= 0; index -= 1) {
-          while (ancestor && !ancestor.matches(parts[index])) ancestor = ancestor.parentElement;
-          if (!ancestor) return false;
-          ancestor = ancestor.parentElement;
-        }
-        return true;
-      };
-      const descendants = this.children.flatMap((child) => [child, ...child.querySelectorAll("*")]);
-      return selector === "*" ? descendants : descendants.filter((element) => selectors.some((parts) => matches(element, parts)));
-    }
-    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
-  }
-  const document = new Element("document");
-  document.createElement = (tagName) => new Element(tagName);
-  document.getElementById = (id) => document.querySelector(`#${id}`);
-  document.body = new Element("body");
-  document.append(document.body);
-  const shell = new Element("main");
-  shell.className = "settings-shell";
-  document.body.append(shell);
-  for (const id of [
-    "pluginSearch", "pluginInstallMenuRoot", "pluginInstallMenuButton", "pluginInstallMenu",
-    "pluginInstallZipButton", "pluginInstallFolderButton", "pluginList", "pluginDetail",
-    "aboutComponentsSummary", "aboutComponentsRefresh", "aboutComponentsState", "aboutComponentsList",
-    "memorySurface", "page-memory", "page-plugins", "page-about",
-  ]) {
-    const element = new Element("div");
-    element.id = id;
-    shell.append(element);
-  }
-  document.getElementById("pluginInstallMenu").hidden = true;
-  const timers = new Map();
-  let nextTimer = 0;
-  const window = {
-    matchMedia: () => ({ matches: true }),
-    setTimeout(callback, milliseconds) { const id = ++nextTimer; timers.set(id, { callback, milliseconds }); return id; },
-    clearTimeout(id) { timers.delete(id); },
-  };
-  return {
-    document, window, timers,
-    async runTimers(milliseconds) {
-      for (const [id, timer] of [...timers]) {
-        if (timer.milliseconds !== milliseconds || !timers.has(id)) continue;
-        timers.delete(id);
-        timer.callback();
-        await settle();
-      }
-    },
-  };
-}
-
-function field(key, overrides = {}) {
-  return {
-    key, label: key, type: "string", default: "", description: "", options: [],
-    minimum: null, maximum: null, step: null, maxLength: 1000, placement: "row",
-    actionIds: [], enabledWhen: null, required: false, readonly: false, copyable: false,
-    restartRequired: false, ...overrides,
-  };
-}
-
-function snapshot(coreGenerationId = "generation-a", label = "fixture") {
-  return {
-    schemaVersion: 1, revision: "0123456789abcdef", state: "ready", reasonCode: "READY",
-    windowGeneration: 7, coreGenerationId,
-    plugins: [{
-      installId: "pi_0123456789abcdef01234567", pluginId: "fixture_plugin", name: "Fixture Plugin",
-      version: "1.0.0", author: "Sakura Tests", description: "Fixture", enabled: true, required: false,
-      supported: true, source: "bundled", canUninstall: false, provides: ["fixture.service"],
-      requires: ["sakura.host.settings"], missingServices: [], state: "active", reasonCode: "ACTIVE",
-      sections: [{
-        sectionId: "general", title: "General", surface: null, reasonCode: "READY",
-        fields: [field("label", { value: label })], values: { label }, actions: [], collections: [],
-      }, {
-        sectionId: "archive", title: "Memory", surface: "memory", reasonCode: "READY",
-        fields: [], values: {}, actions: [], collections: [{
-          collectionId: "entries", title: "Memory", description: "",
-          columns: [{ key: "content", label: "内容", type: "string", maxLength: 1000 }],
-          fields: [field("content", { required: true })], filters: [], searchable: true,
-          pageSize: 20, canCreate: true, canUpdate: true, canDelete: true, deleteConfirmation: "删除？",
-        }],
-      }],
-    }],
-  };
-}
-
-function featureFixture(invoke, options = {}) {
-  const browser = browserFixture();
-  let dirtyNotifications = 0;
-  const errors = [];
-  const feature = createPluginSettingsFeature({
-    ...browser, invoke,
-    onDirty: () => { dirtyNotifications += 1; }, onError: (error) => { if (error) errors.push(error); },
-    notify() {}, confirmAction: async () => true, enhanceSelect() {},
-    removeOverlayAfterExit: async (overlay) => overlay.remove(), showPage() {},
-    isMemoryTransitioning: () => false, hasPendingCharacterSelection: () => false,
-    hasModelSettings: () => false,
-    ...options,
-  });
-  return { ...browser, feature, errors, dirtyNotifications: () => dirtyNotifications };
-}
-
-function queryResult(itemId, content = itemId) {
-  return { items: [{ itemId, values: { content } }], total: 1, nextCursor: null };
-}
+import { field, snapshot, featureFixture, queryResult, settle } from "./fixtures/plugin-settings-fixture.js";
 
 for (const surface of ["memory", null]) {
   test(`an open ${surface || "plugin"} collection draft prevents silent Settings close`, async () => {
@@ -205,6 +12,7 @@ for (const surface of ["memory", null]) {
     });
     feature.initialize(data);
     assert.equal(feature.hasCollectionDrafts(), false);
+    if (surface !== "memory") await document.querySelector(".plugin-configure").fire("click");
     const beforeEdit = dirtyNotifications();
     const add = document.querySelector(surface === "memory" ? ".memory-add-button" : ".plugin-collection-head button");
     await add.fire("click");
@@ -347,47 +155,51 @@ test("a detached collection save callback cannot submit into the next generation
   feature.dispose();
 });
 
-test("plugin feature owns ordinary field drafts, saves with the current generation, and discards locally", async () => {
+test("plugin dialog preserves drafts across refresh, restores cancel, and saves with rebound identity", async () => {
   let nextSnapshot = snapshot();
   const saves = [];
-  const pages = [];
-  const fixture = featureFixture(async (command, args) => {
+  const ui = featureFixture(async (command, args) => {
     if (command === "settings_plugins_get") return nextSnapshot;
     assert.equal(command, "settings_plugins_save");
     saves.push(args);
     nextSnapshot = snapshot("generation-b", args.values.label);
     return { saved: true, pluginId: "fixture_plugin", sectionId: "general", changePlan: "applied",
       applicationState: "applied", applicationReasonCode: "READY" };
-  }, {
-    hasModelSettings: (pluginId) => pluginId === "fixture_plugin",
-    showPage: (page) => pages.push(page),
   });
-  const { feature, document } = fixture;
+  const { feature, document } = ui;
   feature.initialize(nextSnapshot);
-  await document.querySelectorAll(".plugin-surface-link").at(-1).fire("click");
-  assert.deepEqual(pages, ["model"]);
-  assert.equal(feature.isDirty(), false);
-  const input = document.querySelector("#pluginDetail .form-row input");
+  await ui.openSettings();
+  const input = document.querySelector(".plugin-settings-dialog .form-row input");
   input.value = "draft";
   await input.fire("input");
+  await feature.refreshCurrent();
+  assert.equal(document.querySelector(".plugin-settings-dialog .form-row input"), input);
+  assert.equal(input.value, "draft");
   assert.equal(feature.isDirty(), true);
   nextSnapshot = snapshot("generation-b");
   await feature.refreshCurrent();
-  assert.equal(document.querySelector("#pluginDetail .form-row input").value, "draft");
+  await settle();
+  assert.equal(document.querySelector(".plugin-settings-dialog"), null);
+  await ui.openSettings();
+  assert.equal(document.querySelector(".plugin-settings-dialog .form-row input").value, "draft");
+  await document.querySelector(".plugin-settings-dialog form").fire("submit");
+  assert.equal(saves.length, 0, "Done leaves a Settings draft until the global Apply");
   await feature.save();
   assert.deepEqual(saves, [{
     windowGeneration: 7, coreGenerationId: "generation-b", pluginId: "fixture_plugin",
     sectionId: "general", values: { label: "draft" },
   }]);
   assert.equal(feature.isDirty(), false);
-  const savedInput = document.querySelector("#pluginDetail .form-row input");
-  savedInput.value = "discard me";
+  await ui.openSettings();
+  const savedInput = document.querySelector(".plugin-settings-dialog .form-row input");
+  savedInput.value = "cancel me";
   await savedInput.fire("input");
-  feature.discard();
-  assert.equal(document.querySelector("#pluginDetail .form-row input").value, "draft");
+  await document.querySelector(".plugin-dialog-close").fire("click");
   assert.equal(feature.isDirty(), false);
-  assert.ok(fixture.dirtyNotifications() >= 3);
+  await ui.openSettings();
+  assert.equal(document.querySelector(".plugin-settings-dialog .form-row input").value, "draft");
   feature.dispose();
+  assert.equal(document.querySelector(".plugin-settings-dialog"), null);
 });
 
 test("plugin feature owns page polling and removes mounted listeners and pending work on disposal", async () => {
@@ -495,12 +307,62 @@ test("About component actions use the owning plugin section and refresh its rend
   feature.initialize(resourceSnapshot(false));
   assert.equal(document.querySelectorAll("#aboutComponentsList .resource-card").length, 1);
   await document.querySelector("#aboutComponentsList button").fire("click");
+  assert.equal(actions.length, 0, "the overview navigates to its owning settings dialog");
+  assert.ok(document.querySelector(".plugin-settings-dialog"));
+  await document.querySelector(".plugin-settings-dialog .resource-card button").fire("click");
   assert.deepEqual(actions, [{
     windowGeneration: 7, coreGenerationId: "generation-a", pluginId: "fixture_plugin",
     sectionId: "components", actionId: "download", values: {},
   }]);
-  assert.equal(document.querySelector("#aboutComponentsList button"), null);
+  assert.equal(document.querySelector(".plugin-settings-dialog .resource-card button"), null);
   assert.match(document.getElementById("aboutComponentsSummary").textContent, /^1\/1/);
   assert.deepEqual(fixture.errors, []);
   feature.dispose();
+});
+
+test("voice sections initialized after opening the dialog mount once and cancel restores their draft", async () => {
+  let voice = null;
+  const calls = [];
+  const ui = featureFixture(async () => snapshot(), { getVoiceController: () => voice });
+  ui.feature.initialize(snapshot());
+  await ui.openSettings();
+  voice = {
+    hasPluginSections: () => true,
+    pluginDraft: () => ({ pluginId: "fixture_plugin", values: { timeout: 60 } }),
+    restorePluginDraft: (draft) => calls.push(["restore", draft]),
+    mountPluginSections(id, container) {
+      calls.push(["mount", id]);
+      container.append(ui.document.createElement("input"));
+    },
+    unmountPluginSections: () => calls.push(["unmount"]),
+  };
+  ui.feature.onVoiceSectionsRendered();
+  ui.feature.onVoiceSectionsRendered();
+  assert.deepEqual(calls, [["mount", "fixture_plugin"]]);
+  await ui.document.querySelector(".plugin-dialog-close").fire("click");
+  await ui.openSettings();
+  await ui.document.querySelector(".plugin-dialog-close").fire("click");
+  assert.deepEqual(calls, [
+    ["mount", "fixture_plugin"], ["unmount"], ["mount", "fixture_plugin"],
+    ["restore", { pluginId: "fixture_plugin", values: { timeout: 60 } }], ["unmount"],
+  ]);
+  ui.feature.dispose();
+});
+
+test("disposing during dialog exit releases it once and ignores the late animation callback", async () => {
+  const ui = featureFixture(async () => snapshot());
+  ui.feature.initialize(snapshot());
+  await ui.openSettings();
+  const dialog = ui.document.querySelector(".plugin-settings-dialog");
+  let finish;
+  dialog.getAnimations = () => [{ finished: new Promise((resolve) => { finish = resolve; }) }];
+  await ui.document.querySelector(".plugin-dialog-close").fire("click");
+  ui.feature.dispose();
+  assert.equal(ui.document.querySelector(".plugin-settings-dialog"), null);
+  const notifications = ui.dirtyNotifications();
+  finish();
+  await settle();
+  assert.equal(ui.dirtyNotifications(), notifications);
+  assert.equal(ui.feature.dialogElement(), undefined);
+  assert.equal(ui.timers.size, 0);
 });

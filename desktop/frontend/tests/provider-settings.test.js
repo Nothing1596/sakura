@@ -356,7 +356,7 @@ test("provider chooser, search and manual model events edit the same draft consu
   await ui.feature.initialize();
   await ui.control("addProviderButton").fire("click");
   const chooser = ui.document.querySelector(".provider-add-dialog");
-  await ui.button("＋自定义", chooser).fire("click");
+  await ui.button("自定义", chooser).fire("click");
   assert.equal(ui.document.querySelector(".confirm-overlay"), null);
   ui.field("base_url").value = "https://new.invalid/v1";
   await ui.field("base_url").fire("input");
