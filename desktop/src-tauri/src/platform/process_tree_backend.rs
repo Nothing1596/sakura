@@ -2545,18 +2545,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn assert_posix_group_gone(process_group_id: libc::pid_t) {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while native_process_exists(-process_group_id) {
-            assert!(
-                Instant::now() < deadline,
-                "expired finalization must still kill PGID {process_group_id}"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    #[cfg(unix)]
     fn native_resource_count() -> u32 {
         (0..1024)
             .filter(|descriptor| {
