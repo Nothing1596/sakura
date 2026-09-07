@@ -265,7 +265,7 @@ impl Drop for ManagedProcessTree {
 }
 
 impl ManagedProcessTree {
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     pub fn spawn(spec: &ManagedProcessSpec) -> ManagedProcessResult<Self> {
         Self::spawn_internal(spec, SpawnFailureInjection::None)
     }
@@ -294,7 +294,7 @@ impl ManagedProcessTree {
         Self::spawn_internal(spec, SpawnFailureInjection::Resume)
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     fn spawn_internal(
         spec: &ManagedProcessSpec,
         failure_injection: SpawnFailureInjection,
@@ -467,7 +467,7 @@ impl ManagedProcessTree {
         Err(ManagedProcessError::UnsupportedPlatform)
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     pub fn verify_tree_exited(&self, timeout: Duration) -> ManagedProcessResult<bool> {
         let job = self
             .job
@@ -481,7 +481,7 @@ impl ManagedProcessTree {
         Err(ManagedProcessError::UnsupportedPlatform)
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     pub fn release_exited_handles(&mut self) -> ManagedProcessResult<()> {
         if self.process.is_none() && self.job.is_none() {
             return Ok(());

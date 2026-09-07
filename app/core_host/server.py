@@ -9,12 +9,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Any, BinaryIO, Callable
+from typing import TYPE_CHECKING, Any, BinaryIO, Callable
 
 from app.core.cancellation import OperationCancelled
 from app.storage.runtime_roots import RuntimeRoots
 
 from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, error_payload, read_frame, response, write_frame
+
+if TYPE_CHECKING:
+    from app.agent.mcp.provider import MCPToolProvider
+    from app.agent.tools import ToolRegistry
 
 
 CORE_VERSION = "0.1.0"
@@ -124,10 +128,12 @@ class NegotiationError(ValueError):
         self.code = code
 
 
-def _default_initializer_factory(roots: RuntimeRoots) -> object:
+def _default_initializer_factory(
+    roots: RuntimeRoots, tool_registry: ToolRegistry, mcp_provider: MCPToolProvider | None,
+) -> object:
     from .assistant_adapter import AssistantAdapter
 
-    return AssistantAdapter(roots)
+    return AssistantAdapter(roots, tool_registry=tool_registry, mcp_provider=mcp_provider)
 
 
 @dataclass
@@ -144,7 +150,9 @@ class ReadinessController:
         self,
         config: HostConfig,
         *,
-        initializer_factory: Callable[[RuntimeRoots], object] = _default_initializer_factory,
+        initializer_factory: Callable[
+            [RuntimeRoots, ToolRegistry, MCPToolProvider | None], object
+        ] = _default_initializer_factory,
     ) -> None:
         self._config = config
         self._initializer_factory = initializer_factory
@@ -167,8 +175,8 @@ class ReadinessController:
         self._mcp_enabled = False
         self._plugins_enabled = False
         self._session_published_callback: Callable[[], None] | None = None
-        self._application_tools: object | None = None
-        self._application_mcp: object | None = None
+        self._application_tools: ToolRegistry | None = None
+        self._application_mcp: MCPToolProvider | None = None
         self._plugin_application: object | None = None
         self._chat_boundary: object | None = None
 
@@ -265,6 +273,10 @@ class ReadinessController:
             if self._closed:
                 return None
             return self._plugin_application
+
+    def published_mcp_provider(self) -> MCPToolProvider | None:
+        with self._lock:
+            return None if self._closed else self._application_mcp
 
     def apply_provider_configuration(self) -> None:
         """Apply Provider settings or replace/retire only the Assistant Session."""
@@ -417,24 +429,7 @@ class ReadinessController:
             close_thread = self._initializer_close_thread
         if close_thread is not None:
             close_thread.join(timeout=max(0.0, deadline - monotonic()))
-        if plugin_application is not None:
-            try:
-                getattr(plugin_application, "close")()
-            except BaseException as error:  # noqa: BLE001 - preserve primary shutdown failure
-                with self._lock:
-                    if self._background_close_error is None:
-                        self._background_close_error = error
-                    else:
-                        self._add_cleanup_note(self._background_close_error, error)
-        if application_mcp is not None:
-            try:
-                getattr(application_mcp, "close")()
-            except BaseException as error:  # noqa: BLE001 - preserve shutdown failure
-                with self._lock:
-                    if self._background_close_error is None:
-                        self._background_close_error = error
-                    else:
-                        self._add_cleanup_note(self._background_close_error, error)
+        self._close_application_resources([application_mcp, plugin_application])
         with self._lock:
             background_error = self._background_close_error
             self._background_close_error = None
@@ -457,10 +452,24 @@ class ReadinessController:
         if primary_error is not None:
             raise primary_error.with_traceback(primary_traceback)
 
+    def _close_application_resources(self, resources: list[object | None]) -> None:
+        for resource in reversed(resources):
+            if resource is None:
+                continue
+            try:
+                getattr(resource, "close")()
+            except BaseException as error:  # noqa: BLE001 - preserve shutdown failure
+                with self._lock:
+                    if self._background_close_error is None:
+                        self._background_close_error = error
+                    else:
+                        self._add_cleanup_note(self._background_close_error, error)
+
     def _initialize(self) -> None:
         initializer: object | None = None
         session_callback: Callable[[], None] | None = None
         application_to_bind: object | None = None
+        unpublished_resources: list[object | None] = []
         try:
             with self._lock:
                 tools_enabled = self._tools_enabled
@@ -474,71 +483,44 @@ class ReadinessController:
                 from app.agent.tools import ToolRegistry
 
                 application_tools = ToolRegistry([])
-            application_mcp: object | None = None
+            application_mcp: MCPToolProvider | None = None
             if mcp_enabled:
                 from app.agent.mcp.provider import start_mcp_tools_from_config
-                from app.core.runtime_resources import ResourceRegistry
 
                 application_mcp = start_mcp_tools_from_config(
                     self._config.user_root,
                     application_tools,
-                    resource_registry=ResourceRegistry(),
                     distribution_root=self._config.distribution_root,
                 )
+                unpublished_resources.append(application_mcp)
             plugin_application: object | None = None
             if plugins_enabled:
                 from app.core_host.plugin_application import PluginApplicationHost
 
-                try:
-                    plugin_application = PluginApplicationHost(
-                        self._config.roots,
-                        self._config.generation_id,
-                        application_tools,
-                    )
-                    with self._lock:
-                        chat_boundary = self._chat_boundary
-                    if chat_boundary is not None:
-                        plugin_application.bind_chat_boundary(chat_boundary)
-                    plugin_application.start()
-                except BaseException:
-                    if application_mcp is not None:
-                        getattr(application_mcp, "close")()
-                    raise
+                plugin_application = PluginApplicationHost(
+                    self._config.roots,
+                    self._config.generation_id,
+                    application_tools,
+                )
+                unpublished_resources.append(plugin_application)
+                with self._lock:
+                    chat_boundary = self._chat_boundary
+                if chat_boundary is not None:
+                    plugin_application.bind_chat_boundary(chat_boundary)
+                plugin_application.start()
             with self._lock:
                 application_closed = self._closed
-                if application_closed:
-                    close_application_now = plugin_application
-                else:
+                if not application_closed:
                     self._application_tools = application_tools
                     self._application_mcp = application_mcp
                     self._plugin_application = plugin_application
-                    close_application_now = None
+                    unpublished_resources.clear()
             if application_closed:
-                if close_application_now is not None:
-                    getattr(close_application_now, "close")()
-                if application_mcp is not None:
-                    getattr(application_mcp, "close")()
                 return
 
-            initializer = self._initializer_factory(self._config.roots)
-            bind_generation = getattr(initializer, "bind_generation", None)
-            if callable(bind_generation):
-                bind_generation(self._config.generation_id)
-            bind_application = getattr(initializer, "bind_application_resources", None)
-            if callable(bind_application):
-                bind_application(application_tools, application_mcp)
-            if tools_enabled:
-                enable_tools = getattr(initializer, "enable_tools", None)
-                if callable(enable_tools):
-                    enable_tools()
-            if mcp_enabled:
-                enable_mcp = getattr(initializer, "enable_mcp", None)
-                if callable(enable_mcp):
-                    enable_mcp()
-            if plugins_enabled:
-                enable_plugins = getattr(initializer, "enable_plugins", None)
-                if callable(enable_plugins):
-                    enable_plugins()
+            initializer = self._initializer_factory(
+                self._config.roots, application_tools, application_mcp,
+            )
             with self._lock:
                 self._initializer = initializer
                 close_now = self._closed
@@ -609,6 +591,10 @@ class ReadinessController:
                     claimed = None
             if claimed is not None:
                 self._start_initializer_close(claimed)
+
+        finally:
+            # Ownership transfers only when all Application resources are published.
+            self._close_application_resources(unpublished_resources)
 
     def _claim_initializer_close_locked(self) -> object | None:
         if self._initializer is None or self._initializer_close_claimed:
@@ -807,7 +793,9 @@ class ControlDispatcher:
         self,
         config: HostConfig,
         *,
-        initializer_factory: Callable[[Path], object] = _default_initializer_factory,
+        initializer_factory: Callable[
+            [RuntimeRoots, ToolRegistry, MCPToolProvider | None], object
+        ] = _default_initializer_factory,
         chat_boundary: object | None = None,
     ) -> None:
         self._config = config
@@ -896,6 +884,9 @@ class ControlDispatcher:
 
     def published_plugin_application(self) -> object | None:
         return self._readiness.published_plugin_application()
+
+    def published_mcp_provider(self) -> MCPToolProvider | None:
+        return self._readiness.published_mcp_provider()
 
     def apply_provider_configuration(self) -> None:
         self._readiness.apply_provider_configuration()
@@ -1297,7 +1288,6 @@ def run_host(
             config.generation_credential,
             config.user_root,
             app_version=read_app_version(config.distribution_root),
-            session_provider=getattr(dispatcher, "published_session", lambda: None),
             plugin_application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None
             ),
@@ -1321,7 +1311,7 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            session_provider=getattr(dispatcher, "published_session", lambda: None),
+            mcp_provider_getter=getattr(dispatcher, "published_mcp_provider", lambda: None),
         )
         plugin_settings = PluginSettingsBoundary(
             config.generation_id,

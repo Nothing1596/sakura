@@ -145,29 +145,6 @@ impl CoreHostGateway {
         })
     }
 
-    pub fn dispatch(
-        &self,
-        window_label: &str,
-        command: &str,
-        payload: Value,
-        cancel_handle: Option<&ChatCancelHandle>,
-    ) -> Result<Option<ChatSubmission>, String> {
-        match command {
-            "chat.send" => self.send(window_label, payload).map(Some),
-            "chat.cancel" => {
-                if !payload.as_object().is_some_and(|object| object.is_empty()) {
-                    return Err("INVALID_CHAT_CANCEL: cancel payload must be empty".to_string());
-                }
-                let handle = cancel_handle.ok_or_else(|| {
-                    "INVALID_CHAT_CANCEL: Rust-issued cancel handle required".to_string()
-                })?;
-                self.cancel(window_label, handle)?;
-                Ok(None)
-            }
-            _ => Err("GATEWAY_COMMAND_DENIED: command is not allowlisted".to_string()),
-        }
-    }
-
     pub fn send(&self, window_label: &str, payload: Value) -> Result<ChatSubmission, String> {
         authorize_window(window_label)?;
         validate_chat_payload(&payload)?;
@@ -326,6 +303,7 @@ impl CoreHostGateway {
         }
     }
 
+    #[cfg(test)]
     pub fn registry_len(&self) -> usize {
         self.state.lock().map_or(0, |state| state.entries.len())
     }
@@ -590,12 +568,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_window_command_and_transport_fields_are_denied() {
+    fn unknown_window_and_transport_fields_are_denied() {
         let (gateway, transport) = gateway();
-        assert!(gateway
-            .dispatch("main", "future.command", json!({}), None)
-            .unwrap_err()
-            .starts_with("GATEWAY_COMMAND_DENIED:"));
         assert!(gateway.send("settings", json!({"message": "x"})).is_err());
         for field in [
             "protocolMajor",

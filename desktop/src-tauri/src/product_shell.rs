@@ -11,6 +11,7 @@ use tauri::{App, AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, Webview
 
 use crate::{
     runtime_log::{RuntimeLogEvent, RuntimeLogService, Severity},
+    shell_lifecycle,
     ui_config::UiConfigRepository,
 };
 
@@ -777,6 +778,25 @@ impl SettingsCapabilityManifest {
         }
         manifest
     }
+}
+
+pub(crate) fn assert_settings_identity(
+    shell: &ProductShellState,
+    handle: &shell_lifecycle::ShellLifecycleHandle,
+    window_generation: u64,
+    core_generation_id: &str,
+) -> Result<(), String> {
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    let current = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    if current != core_generation_id {
+        return Err("SETTINGS_CORE_GENERATION_MISMATCH".to_string());
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_settings_window(window: &WebviewWindow) -> Result<(), String> {

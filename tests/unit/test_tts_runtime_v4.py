@@ -514,7 +514,6 @@ class Plugin:
         call_timeout=1.0,
     )
     session = SimpleNamespace(
-        plugin_application=application,
         character=SimpleNamespace(id="genie-character"),
     )
     boundary = TTSBoundary(
@@ -522,6 +521,7 @@ class Plugin:
         _CREDENTIAL,
         roots.user_root,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: application,
     )
     try:
         application.start()

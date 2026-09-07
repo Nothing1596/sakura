@@ -52,12 +52,10 @@ class MCPBridge:
         self,
         config: MCPServerConfig,
         default_call_timeout: float,
-        *,
-        resource_registry: ResourceRegistry | None = None,
     ) -> None:
         self.config = config
         self.default_call_timeout = default_call_timeout
-        self._resource_registry = resource_registry or ResourceRegistry()
+        self._resource_registry = ResourceRegistry()
         self._loop_resource: AsyncLoopResource = self._resource_registry.track_async_loop(
             label=f"mcp:{self.config.name}",
             shutdown_order=900,

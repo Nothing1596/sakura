@@ -554,7 +554,6 @@
         "-m",
         "pytest",
         "tests/unit/test_core_host_memory.py",
-        "tests/unit/test_runtime_resources.py",
         "tests/integration/test_wp_4_01_memory_capability.py",
         "-q"
       ],

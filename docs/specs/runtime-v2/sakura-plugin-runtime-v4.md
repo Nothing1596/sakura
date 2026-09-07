@@ -363,6 +363,8 @@ Runner 接收的仍只是当前插件自己的 dependency root。
   不丢弃其他插件草稿，不回滚已经执行的 Action、Collection 操作或下载任务。底栏提交继续使用原有错误和部分成功结果。
 - 资源状态刷新不得覆盖正在编辑的字段；同一 generation、同一角色的语音草稿在普通插件刷新后保留。
   插件设置贡献或 Core generation 失效时关闭窗口，不将旧草稿写回新实例。
+- 插件页面持有设置弹窗、集合草稿和释放逻辑；根入口只装配语音控件与关闭确认。页面释放时关闭弹窗、
+  归还借用的语音控件；尚未完成的退出动画不得在释放后重新渲染页面。
 
 GPT-SoVITS 与 Genie 的现有 `aboutBundle` 区块改为 `surface=plugin`，在各自设置窗口展示整合包资源。
 只迁移入口，保留 section ID、Resource 字段、load callback 和 Action；语音页不重复提供这两项下载。

@@ -652,12 +652,6 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
                 .map_err(|error| map_error("set_visible", error.to_string()))
         }
     }
-
-    fn focus_text_input(&self, window: &tauri::WebviewWindow) -> PlatformResult<()> {
-        window
-            .set_focus()
-            .map_err(|error| map_error("focus_text_input", error.to_string()))
-    }
 }
 
 impl NativeWindowInteractionBackend {

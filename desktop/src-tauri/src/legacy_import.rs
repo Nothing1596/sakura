@@ -22,7 +22,7 @@ use crate::{
     },
     product_shell,
     runtime_log::{looks_absolute_path, Correlation, RuntimeLogEvent, RuntimeLogService, Severity},
-    ShellLifecycleState,
+    shell_lifecycle::ShellLifecycleState,
 };
 
 pub const LEGACY_IMPORT_PROGRESS_EVENT: &str = "sakura://legacy-import-progress";

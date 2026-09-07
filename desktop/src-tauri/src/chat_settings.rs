@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ui_config::UiConfigRepository;
+use tauri::{Emitter, State, WebviewWindow};
+
+use crate::{product_shell, ui_config::UiConfigRepository};
 
 pub const CHAT_TIMING_CHANGED_EVENT: &str = "sakura://chat-presentation-timing-changed";
 pub const SUBTITLE_LANGUAGE_CHANGED_EVENT: &str = "sakura://subtitle-language-changed";
@@ -450,6 +452,105 @@ fn timing_from_document(document: &Value) -> Result<ChatPresentationTiming, Stri
         reply_segment_pause_ms: read("reply_segment_pause_ms", defaults.reply_segment_pause_ms)?,
     }
     .validate()
+}
+
+#[tauri::command]
+pub(crate) fn current_chat_presentation_timing(
+    window: WebviewWindow,
+    timing: State<'_, ChatPresentationTimingState>,
+) -> Result<ChatPresentationTiming, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    timing.get()
+}
+
+#[tauri::command]
+pub(crate) fn current_bubble_auto_hide(
+    window: WebviewWindow,
+    settings: State<'_, BubbleAutoHideState>,
+) -> Result<BubbleAutoHideSettings, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    settings.get()
+}
+
+#[tauri::command]
+pub(crate) fn current_subtitle_language(
+    window: WebviewWindow,
+    subtitle: State<'_, SubtitleLanguageState>,
+) -> Result<SubtitleLanguage, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    subtitle.get()
+}
+
+#[tauri::command]
+pub(crate) fn settings_chat_presentation_timing_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    timing: State<'_, ChatPresentationTimingState>,
+) -> Result<ChatPresentationTimingSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    timing.snapshot(shell.generation()?)
+}
+
+#[tauri::command]
+pub(crate) fn settings_chat_presentation_timing_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    values: ChatPresentationTiming,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    timing: State<'_, ChatPresentationTimingState>,
+) -> Result<ChatPresentationTiming, String> {
+    product_shell::validate_settings_window(&window)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    let saved = timing.save(values)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    app_handle
+        .emit_to("main", CHAT_TIMING_CHANGED_EVENT, saved)
+        .map_err(|error| format!("CHAT_TIMING_PUBLICATION_FAILED: {error}"))?;
+    Ok(saved)
+}
+
+#[tauri::command]
+pub(crate) fn settings_bubble_auto_hide_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    settings: State<'_, BubbleAutoHideState>,
+) -> Result<BubbleAutoHideSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    settings.snapshot(shell.generation()?)
+}
+
+#[tauri::command]
+pub(crate) fn settings_bubble_auto_hide_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    values: BubbleAutoHideSettings,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    settings: State<'_, BubbleAutoHideState>,
+) -> Result<BubbleAutoHideSettings, String> {
+    product_shell::validate_settings_window(&window)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    let saved = settings.save(values)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    app_handle
+        .emit_to("main", BUBBLE_AUTO_HIDE_CHANGED_EVENT, saved)
+        .map_err(|error| format!("BUBBLE_AUTO_HIDE_PUBLICATION_FAILED: {error}"))?;
+    Ok(saved)
 }
 
 #[cfg(test)]
