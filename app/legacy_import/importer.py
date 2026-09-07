@@ -15,8 +15,6 @@ from pathlib import Path, PureWindowsPath
 
 import yaml
 
-from app.agent.builtin_tools import TodoStore
-from app.agent.desktop_tools import NotesStore
 from app.agent.mcp.config import load_mcp_config
 from app.agent.reminders import ReminderStore
 from app.config.character_loader import CharacterRegistry
@@ -1908,7 +1906,7 @@ def _validate_staged(staged: Path, *, import_id: str = "direct-check") -> None:
             "LEGACY_REMINDERS_VALIDATION_FAILED", "validating", "data/reminders.json"
         ) from exc
     try:
-        TodoStore(staged / "data" / "tasks.json").list_todos({})
+        _validate_tasks(staged / "data" / "tasks.json")
     except Exception as exc:  # noqa: BLE001 - legacy content must not cross the boundary
         raise LegacyImportError(
             "LEGACY_TASKS_VALIDATION_FAILED", "validating", "data/tasks.json"
@@ -1931,7 +1929,7 @@ def _quarantine_invalid_auxiliary_data(
         ),
         (
             Path("data/tasks.json"),
-            lambda: TodoStore(staged / "data/tasks.json").list_todos({}),
+            lambda: _validate_tasks(staged / "data/tasks.json"),
             "tasks",
         ),
         (
@@ -2127,6 +2125,20 @@ def _validate_character_studio(staged: Path) -> None:
             ) from exc
 
 
+def _validate_tasks(path: Path) -> None:
+    """Keep the legacy reader's acceptance rules without rewriting task data."""
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"待办文件不是有效 JSON：{path}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("tasks"), list):
+        raise ValueError("待办文件格式无效，顶层必须是包含 tasks 列表的对象。")
+    # The old reader ignored non-object entries and unknown fields in memory.
+    # Migration preserves them in the copied file, including its original bytes.
+
+
 def _validate_notes_and_screen_state(staged: Path) -> None:
     _validate_notes(staged)
     _validate_screen_state(staged)
@@ -2135,13 +2147,28 @@ def _validate_notes_and_screen_state(staged: Path) -> None:
 def _validate_notes(staged: Path) -> None:
     notes_root = staged / "data" / "notes"
     if notes_root.is_dir():
-        store = NotesStore(notes_root)
         for path in sorted(item for item in notes_root.rglob("*") if item.is_file()):
             relative = path.relative_to(staged).as_posix()
             try:
                 if path.parent != notes_root or path.suffix.casefold() != ".txt":
                     raise ValueError("unsupported note path")
-                store.read_note({"name": path.name})
+                # Preserve the old reader's name normalization, including its
+                # case-sensitive suffix rule; migration must not broaden it.
+                name = path.name.strip()
+                if any(separator in name for separator in ("/", "\\")):
+                    raise ValueError("笔记名不能包含路径分隔符。")
+                if name in {".", ".."}:
+                    raise ValueError("笔记名无效。")
+                if not name.endswith(".txt"):
+                    name = f"{name}.txt"
+                note = (notes_root / name).resolve()
+                if note.parent != notes_root.resolve():
+                    raise ValueError("笔记路径必须位于 data/notes 内。")
+                if not note.exists():
+                    raise ValueError(f"笔记不存在：{note.name}")
+                if not note.is_file():
+                    raise ValueError(f"不是笔记文件：{note.name}")
+                note.read_text(encoding="utf-8")
             except Exception as exc:  # noqa: BLE001 - note contents remain private
                 raise LegacyImportError(
                     "LEGACY_NOTE_VALIDATION_FAILED", "validating", relative

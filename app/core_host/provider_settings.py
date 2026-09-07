@@ -38,7 +38,6 @@ class ProviderSettingsBoundary:
         app_root: Path,
         *,
         app_version: str | None = None,
-        session_provider: Callable[[], object | None] = lambda: None,
         plugin_application_provider: Callable[[], object | None] | None = None,
         runtime_apply: Callable[[], None] | None = None,
     ) -> None:
@@ -46,7 +45,6 @@ class ProviderSettingsBoundary:
         self._generation_credential = generation_credential
         self._repository = ProviderModelSettingsRepository(app_root)
         self._app_version = app_version
-        self._session_provider = session_provider
         self._plugin_application_provider = plugin_application_provider
         self._runtime_apply = runtime_apply
         self._lock = threading.Lock()
@@ -157,8 +155,7 @@ class ProviderSettingsBoundary:
     def _application(self) -> object | None:
         if self._plugin_application_provider is not None:
             return self._plugin_application_provider()
-        session = self._session_provider()
-        return getattr(session, "plugin_application", None) if session is not None else None
+        return None
 
     def _plugin_slots(self) -> list[dict[str, Any]]:
         return self._plugin_slots_for_application(self._application())

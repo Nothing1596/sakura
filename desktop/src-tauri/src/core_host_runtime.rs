@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(test)]
 use std::path::Path;
 
 #[cfg(unix)]
@@ -115,6 +115,7 @@ impl CoreSnapshotCache {
         })
     }
 
+    #[cfg(test)]
     pub fn begin_generation(&mut self, generation_id: &str) -> Result<(), String> {
         if generation_id.trim().is_empty() {
             return Err("Snapshot generation ID must not be empty".to_string());
@@ -275,6 +276,7 @@ impl CoreSnapshotCache {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn current(&self) -> Option<&Value> {
         self.snapshot.as_ref()
     }
@@ -453,12 +455,14 @@ pub struct CoreHostLifecycleFailure {
 }
 
 pub(crate) struct CoreHostRecovery {
-    tree: Box<dyn ManagedProcessTree>,
+    // Keep the failed tree owned until this recovery is consumed or dropped.
+    _tree: Box<dyn ManagedProcessTree>,
 }
 
+#[cfg(test)]
 impl CoreHostRecovery {
     pub(crate) fn finalize_until(self, deadline: Instant) -> ProcessTreeFinalizationResult {
-        self.tree.finalize_until(deadline, DEADLINE_EXIT_CODE)
+        self._tree.finalize_until(deadline, DEADLINE_EXIT_CODE)
     }
 }
 
@@ -470,16 +474,13 @@ impl CoreHostLifecycleFailure {
         }
     }
 
+    #[cfg(test)]
     pub fn diagnostic(&self) -> &str {
         &self.diagnostic
     }
 
     pub(crate) fn into_recovery(self) -> Option<CoreHostRecovery> {
         self.recovery
-    }
-
-    pub(crate) fn into_terminal_diagnostic(self) -> String {
-        self.diagnostic
     }
 }
 
@@ -1489,55 +1490,7 @@ impl CoreHostRuntime {
         )
     }
 
-    #[cfg(debug_assertions)]
-    pub(crate) fn launch_acceptance_fault(
-        layout: &RuntimeLayout,
-        generation_id: &str,
-        script: &Path,
-        fault_mode: &str,
-        fault_directory: &Path,
-    ) -> Result<Self, CoreHostLifecycleFailure> {
-        validate_runtime_layout(layout).map_err(CoreHostLifecycleFailure::without_recovery)?;
-        let script = fs::canonicalize(script).map_err(|error| {
-            CoreHostLifecycleFailure::without_recovery(format!(
-                "Phase 1C fault harness script could not be resolved: {error}"
-            ))
-        })?;
-        if !script.starts_with(&layout.core_root) || !fault_directory.is_absolute() {
-            return Err(CoreHostLifecycleFailure::without_recovery(
-                "Phase 1C fault harness paths escaped their approved roots",
-            ));
-        }
-        let request = ManagedProcessRequest {
-            program: layout.python_executable.clone(),
-            args: vec![
-                "-I".into(),
-                "-B".into(),
-                "-X".into(),
-                "utf8".into(),
-                script.into_os_string(),
-                "--repo-root".into(),
-                layout.core_root.as_os_str().to_owned(),
-                "--distribution-root".into(),
-                layout.distribution_root.as_os_str().to_owned(),
-                "--user-root".into(),
-                layout.user_root.as_os_str().to_owned(),
-                "--generation-id".into(),
-                generation_id.into(),
-                "--fault-mode".into(),
-                fault_mode.into(),
-                "--fault-directory".into(),
-                fault_directory.as_os_str().to_owned(),
-                "--python-path-entry".into(),
-                layout.python_path_entries[0].as_os_str().to_owned(),
-            ],
-            current_directory: Some(layout.core_root.clone()),
-            environment_overrides: Vec::new(),
-            stdio: ProcessStdio::Piped,
-        };
-        Self::launch_with_router_backend(&NativeManagedProcessTreeBackend, request, generation_id)
-    }
-
+    #[cfg(test)]
     fn launch_with_backend(
         backend: &dyn ManagedProcessTreeBackend,
         request: ManagedProcessRequest,
@@ -1546,6 +1499,7 @@ impl CoreHostRuntime {
         Self::launch_with_backend_mode(backend, request, generation_id, false, 1, None)
     }
 
+    #[cfg(test)]
     fn launch_with_router_backend(
         backend: &dyn ManagedProcessTreeBackend,
         request: ManagedProcessRequest,
@@ -1748,10 +1702,6 @@ impl CoreHostRuntime {
         self.shutdown_written_at = Some(observed);
     }
 
-    pub fn pid(&self) -> u32 {
-        self.tree.as_ref().map_or(0, |tree| tree.root_pid())
-    }
-
     pub fn request(
         &mut self,
         request_id: &str,
@@ -1807,66 +1757,6 @@ impl CoreHostRuntime {
             .ok_or_else(|| "Core Host control request deadline overflowed".to_string())?;
         let response = self.read_response_until(response_deadline)?;
         self.validate_response(response, expectation)
-    }
-
-    #[cfg(debug_assertions)]
-    pub(crate) fn request_with_acceptance_identity(
-        &mut self,
-        request_id: &str,
-        name: &str,
-        supplied_generation_id: &str,
-        supplied_generation_credential: Option<&str>,
-        deadline: Duration,
-    ) -> Result<Value, String> {
-        let supplied_generation_credential = supplied_generation_credential
-            .unwrap_or(self.generation_credential.as_str())
-            .to_string();
-        let protocol_minor = self
-            .negotiation
-            .as_ref()
-            .map_or(PROTOCOL_MINOR, |negotiation| negotiation.minor);
-        let request = json!({
-            "protocolMajor": PROTOCOL_MAJOR,
-            "protocolMinor": protocol_minor,
-            "kind": "request",
-            "generationId": supplied_generation_id,
-            "generationCredential": supplied_generation_credential,
-            "id": request_id,
-            "name": name,
-            "payload": {},
-            "deadlineMs": deadline.as_millis().min(u64::MAX as u128) as u64,
-            "priority": CONTROL_PRIORITY,
-        });
-        if let Some(router) = self.router.as_ref() {
-            let response = router.handle().request(request, deadline)?;
-            return self.validate_response(
-                response,
-                RequestExpectation {
-                    id: request_id.to_string(),
-                    name: name.to_string(),
-                    protocol_minor,
-                    is_hello: false,
-                },
-            );
-        }
-        let stdin = self
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "TRANSPORT_WRITE_FAILED: Core Host stdin is closed".to_string())?;
-        write_frame(stdin, &request).map_err(|error| error.to_string())?;
-        stdin
-            .flush()
-            .map_err(|_| "TRANSPORT_WRITE_FAILED: Core Host stdin flush failed".to_string())?;
-        let response = self.read_response_until(Instant::now() + deadline)?;
-        self.validate_response(
-            response,
-            RequestExpectation {
-                id: request_id.to_string(),
-                name: name.to_string(),
-                protocol_minor,
-                is_hello: false,
-            },
-        )
     }
 
     fn write_request_frame(
@@ -2092,6 +1982,7 @@ impl CoreHostRuntime {
         Ok(snapshot)
     }
 
+    #[cfg(test)]
     pub fn cached_snapshot(&self) -> Option<&Value> {
         self.snapshot_cache.current()
     }
@@ -2107,15 +1998,6 @@ impl CoreHostRuntime {
 
     pub fn shutdown(self) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
         self.shutdown_using_policy(PRODUCTION_SHUTDOWN_POLICY)
-    }
-
-    #[cfg(debug_assertions)]
-    pub(crate) fn shutdown_with_acceptance_policy(
-        self,
-        graceful: Duration,
-        total: Duration,
-    ) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
-        self.shutdown_using_policy(ShutdownPolicy { graceful, total })
     }
 
     #[cfg(test)]
@@ -2219,6 +2101,7 @@ impl CoreHostRuntime {
         self.finish_exit_until(absolute_deadline, graceful_deadline, primary)
     }
 
+    #[cfg(test)]
     pub fn close_stdin_and_wait(self) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
         let started = Instant::now();
         let absolute_deadline = started
@@ -2429,7 +2312,7 @@ fn aggregate_exit_or_retain_recovery(
         Some(Err(failure)) => {
             let (error, tree) = failure.into_parts();
             diagnostics.push(format!("Core Host process tree cleanup failed: {error}"));
-            recovery = Some(CoreHostRecovery { tree });
+            recovery = Some(CoreHostRecovery { _tree: tree });
         }
         None => diagnostics.push("Core Host process tree owner was unavailable".to_string()),
     }
@@ -2687,9 +2570,11 @@ fn fill_os_random(bytes: &mut [u8]) -> Result<(), String> {
 fn process_exit_code(status: ProcessExitStatus) -> u32 {
     match status {
         ProcessExitStatus::Code(code) => u32::try_from(code).unwrap_or(u32::MAX),
+        #[cfg(unix)]
         ProcessExitStatus::Signal(signal) => {
             128_u32.saturating_add(u32::try_from(signal).unwrap_or_default())
         }
+        #[cfg(any(unix, test))]
         ProcessExitStatus::Unknown => u32::MAX,
     }
 }
@@ -4317,7 +4202,7 @@ mod tests {
         let mut host =
             CoreHostRuntime::launch_observed(&layout, GENERATION_ID, 1, runtime_log.clone())
                 .expect("real Core Host should launch in a managed Job");
-        assert!(host.pid() > 0);
+        assert!(host.root_pid() > 0);
 
         let hello = request_predecessor_hello(&mut host, "hello", Duration::from_secs(3))
             .expect("hello should respond");

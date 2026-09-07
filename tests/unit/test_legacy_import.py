@@ -2062,6 +2062,58 @@ def test_current_validators_quarantine_invalid_auxiliary_or_configuration_data(
         assert (quarantine / "invalid-data" / Path(relative).name).is_file()
 
 
+@pytest.mark.parametrize(
+    ("files", "quarantined_domain"),
+    [
+        (
+            {
+                "tasks.json": b'{"tasks": [{"id": "old", "unknown": 7}, null, 3], "extra": true}\r\n',
+                "notes/note.txt": "旧笔记\r\n第二行\r\n".encode("utf-8"),
+            },
+            None,
+        ),
+        ({"tasks.json": b"{broken"}, "tasks.json"),
+        ({"tasks.json": b'{"tasks": {}}'}, "tasks.json"),
+        ({"notes/note.txt": b"\xff"}, "notes"),
+        ({"notes/nested/note.txt": b"nested"}, "notes"),
+        ({"notes/UPPER.TXT": b"legacy suffix rule"}, "notes"),
+    ],
+)
+def test_legacy_auxiliary_validation_preserves_bytes_and_core_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    files: dict[str, bytes],
+    quarantined_domain: str | None,
+) -> None:
+    source = _legacy_fixture(tmp_path)
+    for relative, content in files.items():
+        path = source / "data" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    target = tmp_path / "target"
+    target.mkdir()
+    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+
+    report, pending = run_legacy_import(
+        source, target, import_id="auxiliary-data", finalize=True
+    )
+
+    assert pending is None
+    TimelineStore(target / "data/chat_history/timeline.sqlite3").assert_activated()
+    quarantined = any(
+        warning["code"] == "LEGACY_AUXILIARY_DATA_QUARANTINED"
+        for warning in report.warnings
+    )
+    assert quarantined is (quarantined_domain is not None)
+    destination = target / "data"
+    if quarantined_domain is not None:
+        assert not (destination / quarantined_domain).exists()
+        destination /= "legacy-imports/auxiliary-data/quarantine/invalid-data"
+    for relative, content in files.items():
+        assert (destination / relative).read_bytes() == content
+        assert (source / "data" / relative).read_bytes() == content
+
+
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
 def test_identical_tts_duplicates_are_deduplicated_and_conflicts_skip_tts(tmp_path: Path) -> None:
     source = _legacy_fixture(tmp_path)

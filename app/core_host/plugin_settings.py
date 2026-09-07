@@ -68,7 +68,6 @@ class PluginSettingsBoundary:
         roots: RuntimeRoots | Path,
         *,
         application_provider: Callable[[], object | None] | None = None,
-        session_provider: Callable[[], object | None] | None = None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
@@ -76,7 +75,6 @@ class PluginSettingsBoundary:
         self._user_root = self._roots.user_root
         self._config_path = StoragePaths(self._user_root).plugins_config()
         self._application_provider = application_provider
-        self._session_provider = session_provider or (lambda: None)
         self._save_lock = threading.Lock()
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -428,8 +426,7 @@ class PluginSettingsBoundary:
     def _application(self) -> object | None:
         if self._application_provider is not None:
             return self._application_provider()
-        session = self._session_provider()
-        return getattr(session, "plugin_application", None) if session is not None else None
+        return None
 
     def _revision(self) -> str:
         return PluginInventory(self._roots).scan().revision

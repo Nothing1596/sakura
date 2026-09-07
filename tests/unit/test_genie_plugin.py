@@ -328,12 +328,13 @@ def test_custom_genie_provider_reaches_core_without_owning_or_mutating_endpoint(
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     worker = _worker(root, call_timeout=0.5)
-    session = SimpleNamespace(plugin_application=worker, character=SimpleNamespace(id="alpha"))
+    session = SimpleNamespace(character=SimpleNamespace(id="alpha"))
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
         root,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
     )
     try:
         worker.start()

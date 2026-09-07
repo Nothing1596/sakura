@@ -123,12 +123,11 @@ class _BoundaryWorker:
 def _plugin_boundary(app_root: Path, worker: _BoundaryWorker):
     from app.core_host.plugin_settings import PluginSettingsBoundary
 
-    session = type("Session", (), {"plugin_application": worker})()
     return PluginSettingsBoundary(
         "generation-local-install",
         "credential",
         app_root,
-        session_provider=lambda: session,
+        application_provider=lambda: worker,
     )
 
 

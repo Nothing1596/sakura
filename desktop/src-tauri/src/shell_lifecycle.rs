@@ -11,9 +11,10 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, State};
 
 use crate::{
+    character_presentation,
     chat_bridge::{ChatBridge, ChatEventPublication, CHAT_EVENT},
     core_host_protocol::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
     core_host_runtime::{ConcurrentRequestHandle, CoreHostRuntime},
@@ -25,6 +26,83 @@ use crate::{
     runtime_log::{Correlation, RuntimeLogEvent, RuntimeLogService, Severity},
     update_settings::UpdateCoordinator,
 };
+
+pub(crate) struct ShellLifecycleState {
+    pub(crate) handle: Option<ShellLifecycleHandle>,
+    pub(crate) runtime_log: RuntimeLogService,
+}
+
+pub(crate) fn settings_core_handle(
+    lifecycle: &State<'_, ShellLifecycleState>,
+) -> Result<ShellLifecycleHandle, String> {
+    lifecycle
+        .handle
+        .clone()
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())
+}
+
+pub(crate) fn settings_response_payload(response: Value) -> Result<Value, String> {
+    if response.get("ok").and_then(Value::as_bool) == Some(true) {
+        return response
+            .get("payload")
+            .cloned()
+            .filter(Value::is_object)
+            .ok_or_else(|| "SETTINGS_RESPONSE_INVALID".to_string());
+    }
+    let code = response
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .unwrap_or("SETTINGS_REQUEST_FAILED");
+    let message = response
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("设置请求失败。");
+    let feature = response
+        .pointer("/error/details/feature")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let field = response
+        .pointer("/error/details/field")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    Err(format!("{code}|{feature}|{field}|{message}"))
+}
+
+pub(crate) async fn dispatch_settings_request(
+    handle: ShellLifecycleHandle,
+    request_id: Option<String>,
+    name: &'static str,
+    payload: Value,
+    deadline: std::time::Duration,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        handle.settings_request(request_id.as_deref(), name, payload, deadline)
+    })
+    .await
+    .map_err(|_| "SETTINGS_REQUEST_ABORTED".to_string())?
+}
+
+pub(crate) fn load_current_character_presentation(
+    lifecycle: &ShellLifecycleState,
+    resources: &character_presentation::CharacterPresentationState,
+) -> Result<character_presentation::FrontendCharacterPresentation, String> {
+    let handle = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?;
+    let generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
+
+    let value = handle
+        .character_presentation()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
+    let presentation =
+        character_presentation::CharacterPresentation::from_value(&value, &generation_id)?;
+    resources.activate(presentation, &generation_id)
+}
 
 const HELLO_DEADLINE: Duration = Duration::from_secs(10);
 const INITIALIZE_DEADLINE: Duration = Duration::from_secs(5);
@@ -1038,7 +1116,6 @@ fn failure_reason(reason: FailureReason) -> &'static str {
         FailureReason::ConnectionLost => "connection_lost",
         FailureReason::ProtocolMajorIncompatible => "protocol_major_incompatible",
         FailureReason::MissingRequiredCapability => "missing_required_capability",
-        FailureReason::SetupRequired => "setup_required",
         FailureReason::DeterministicConfiguration => "deterministic_configuration",
         FailureReason::DeterministicRuntime => "deterministic_runtime",
         FailureReason::SecurityBoundary => "security_boundary",
@@ -1054,7 +1131,6 @@ fn failure_message(reason: FailureReason) -> &'static str {
         FailureReason::ConnectionLost => "与 Core 的连接已中断。",
         FailureReason::ProtocolMajorIncompatible => "Core 协议版本不兼容。",
         FailureReason::MissingRequiredCapability => "Core 缺少必需能力。",
-        FailureReason::SetupRequired => "Core 需要先完成基础设置。",
         FailureReason::DeterministicConfiguration => "Core 配置无效，无法启动。",
         FailureReason::DeterministicRuntime => "找不到可用的 Core 运行环境。",
         FailureReason::SecurityBoundary => "Core 安全校验失败。",

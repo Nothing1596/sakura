@@ -237,12 +237,13 @@ def test_real_gpt_sovits_provider_is_character_scoped_serial_and_core_consumed(
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     worker = _worker(root, call_timeout=0.5)
-    session = SimpleNamespace(plugin_application=worker, character=SimpleNamespace(id="alpha"))
+    session = SimpleNamespace(character=SimpleNamespace(id="alpha"))
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
         root,
         session_provider=lambda: session,
+        plugin_application_provider=lambda: worker,
     )
     try:
         worker.start()
