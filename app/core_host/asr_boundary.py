@@ -117,10 +117,7 @@ class ASRBoundary:
                     self._cancel(task)
                     result = self._snapshot(task)
                 elif name == "asr.input.capture_discarded":
-                    if task.resource_id:
-                        task.application.audio_input.producer_done(task.resource_id)
-                    self._cancel(task)
-                    result = self._snapshot(task)
+                    result = self._discard_capture(task, payload.get("errorCode"))
                 elif name == "asr.input.capture_target":
                     with self._lock:
                         self._require_context(task)
@@ -293,7 +290,7 @@ class ASRBoundary:
                 task.cancelled.wait(0.1)
         except Exception as error:
             with self._lock:
-                if task.state not in {"cancelled", "consumed"}:
+                if task.state not in {"cancelled", "consumed", "failed"}:
                     task.state = "failed"
                     task.error_code = getattr(error, "code", "ASR_PROVIDER_UNAVAILABLE")
                     if not isinstance(task.error_code, str) or not re.fullmatch(r"[A-Z0-9_]{1,80}", task.error_code):
@@ -327,13 +324,29 @@ class ASRBoundary:
             task.changed.set()
             return self._snapshot(task)
 
+    def _discard_capture(self, task: _Input, error_code: object) -> dict:
+        if error_code is not None and (not isinstance(error_code, str)
+                or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", error_code)):
+            raise AudioInputError("ASR_REQUEST_INVALID")
+        with self._lock:
+            if error_code and error_code != "ASR_CANCELLED" and task.state in _ACTIVE:
+                task.state = "failed"
+                task.error_code = error_code
+                self._log_state(task, "failed")
+            self._cancel(task)
+            if task.resource_id:
+                task.application.audio_input.producer_done(task.resource_id)
+            return self._snapshot(task)
+
     def _cancel(self, task: _Input) -> None:
         with self._lock:
             previous = task.state
             task.cancelled.set()
             task.changed.set()
             task.text = ""
-            task.state = "cancelled"
+            # Cleanup and late cancellation must not turn a failure into a silent cancel.
+            if previous != "failed":
+                task.state = "cancelled"
             if previous in _ACTIVE | {"succeeded"}:
                 self._log_state(task, "cancelled")
             if task.resource_id:
@@ -389,9 +402,7 @@ class ASRBoundary:
     def _require_context(self, task: _Input) -> None:
         if (self._closed or task.cancelled.is_set()
                 or (task.purpose == "draft" and self._character_id() != task.character_id)):
-            task.cancelled.set()
-            task.state = "cancelled"
-            task.text = ""
+            self._cancel(task)
             raise AudioInputError("ASR_CANCELLED")
 
     def _character_id(self) -> str:

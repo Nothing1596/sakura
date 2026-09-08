@@ -611,19 +611,24 @@ pub(crate) async fn asr_capture_start(
     let worker_app = app_handle.clone();
     let worker = thread::Builder::new().name("sakura-microphone".into()).spawn(move || {
         let result = capture(&worker_app, &handle, &generation, &worker_session, &path, &input_device_id, ready, playback_pause);
-        if let Err(error) = &result {
-            let _ = core_call(&handle, "asr.input.cancel", json!({"recordingId": worker_session.id}));
-            let _ = worker_app.emit_to(&worker_session.window_label, "sakura://asr-capture", json!({
-                "recordingId": worker_session.id, "state": "failed", "errorCode": error.split('|').next().unwrap_or("ASR_CAPTURE_FAILED")
-            }));
-        }
         if !worker_session.submitted.load(Ordering::SeqCst) {
             let _ = fs::remove_file(&path);
-            let _ = core_call(&handle, "asr.input.capture_discarded", json!({"recordingId": worker_session.id}));
-        } else if result.is_err() {
-            // An uncertain submit may never have reached Core. Production has
-            // ended in either case; Core revokes access but retains native reader
-            // leases until they release. Never unlink a submitted file locally.
+        }
+        if result.is_err() {
+            let code = capture_failure(&result, false).unwrap_or_else(|| "ASR_CAPTURE_FAILED".into());
+            let mut discarded = json!({"recordingId": worker_session.id});
+            if code != "ASR_CANCELLED" {
+                discarded["errorCode"] = json!(code);
+            }
+            // Publish a pollable failure before notifying the UI. A racing poll
+            // must not consume a silent cancellation and hide the device error.
+            // Core also ends the producer reservation, retaining any reader lease
+            // when a submit response was uncertain. Submitted files stay Core-owned.
+            let _ = core_call(&handle, "asr.input.capture_discarded", discarded);
+            let _ = worker_app.emit_to(&worker_session.window_label, "sakura://asr-capture", json!({
+                "recordingId": worker_session.id, "state": "failed", "errorCode": code
+            }));
+        } else if !worker_session.submitted.load(Ordering::SeqCst) {
             let _ = core_call(&handle, "asr.input.capture_discarded", json!({"recordingId": worker_session.id}));
         }
         worker_session.finish(result);

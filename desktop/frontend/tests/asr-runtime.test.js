@@ -133,6 +133,19 @@ test("host duration cutoff enters recognizing without sending; device interrupti
   f.controller.dispose();
 });
 
+test("polling a capture failure before its native event still reports the error exactly once", async () => {
+  const f = fixture({ asr_poll: async () => ({ state: "failed", errorCode: "ASR_MICROPHONE_DISCONNECTED" }) });
+  await f.controller.connect(); await f.controller.start();
+  await f.poll();
+  f.event("sakura://asr-capture", { recordingId: "recording-1", state: "failed", errorCode: "ASR_MICROPHONE_DISCONNECTED" });
+  assert.equal(f.controller.state(), "idle");
+  assert.equal(f.errors.length, 1);
+  assert.match(f.errors[0], /麦克风/);
+  assert.equal(f.draft().value, "hello world");
+  assert.equal(f.writes.length, 0);
+  f.controller.dispose();
+});
+
 test("stop and auto-stop cannot start a second poll while the single-delivery result is in flight", async () => {
   const result = deferred();
   const f = fixture({ asr_poll: () => result.promise });

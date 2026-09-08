@@ -147,8 +147,8 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
         option.textContent = `${item.label}${item.available === false ? "（未就绪）" : ""}`;
         provider.append(option);
       }
-      const selectedId = savedDraft?.selectedProviderId || value.selectedProviderId;
-      if (selectedId && !value.providers.some((item) => item.providerId === selectedId)) {
+      for (const selectedId of new Set([value.selectedProviderId, savedDraft?.selectedProviderId])) {
+        if (!selectedId || value.providers.some((item) => item.providerId === selectedId)) continue;
         const missing = document.createElement("option");
         missing.value = selectedId; missing.textContent = `${selectedId}（未加载）`; provider.append(missing);
       }
@@ -200,7 +200,11 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
     onPageChanged(page) { if (page !== "voice" && !pluginProvider) void inputTest?.cancel(); },
     isDirty: () => Boolean(snapshot) && JSON.stringify(draft()) !== baseline,
     async save() {
-      const result = await invoke("settings_asr_save", { payload: draft() });
+      if (!snapshot || disposed) throw new Error("ASR_SETTINGS_NOT_READY");
+      const saved = JSON.parse(baseline);
+      const values = Object.fromEntries(Object.entries(draft()).filter(([key, value]) => value !== saved[key]));
+      if (!Object.keys(values).length) return snapshot;
+      const result = await invoke("settings_asr_save", { payload: values });
       await refresh();
       return result;
     },

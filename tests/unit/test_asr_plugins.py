@@ -363,6 +363,37 @@ def test_new_model_resource_scope_removes_only_its_abandoned_download_staging(tm
     assert (unrelated / "keep.bin").read_bytes() == b"owned bytes"
 
 
+def test_official_provider_unregisters_on_disable_and_reregisters_in_a_new_scope(tmp_path):
+    root = Path(__file__).parents[2]
+    bundled = tmp_path / "distribution/plugins/builtin"
+    bundled.mkdir(parents=True)
+    for name in ("sakura_asr_hub", "sakura_asr_sensevoice"):
+        # Setup and teardown do not import inference dependencies or need model files.
+        shutil.copytree(root / "plugins/builtin" / name, bundled / name,
+                        ignore=shutil.ignore_patterns("__pycache__", "requirements.txt"))
+    roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
+    application = PluginRuntimeApplication(roots, "asr-unregister-test", ToolRegistry(),
+                                           PluginInventory(roots).scan().runtime_specs)
+    provider_id = "sakura.asr.sensevoice"
+    try:
+        application.start()
+        providers = application.call_service("sakura.asr", "listProviders")
+        assert [item["providerId"] for item in providers] == [provider_id]
+        first_identity = application.service_identity(providers[0]["serviceKey"])
+        application.set_plugin_enabled(provider_id, False)
+        assert application.call_service("sakura.asr", "listProviders") == []
+        # Removing a registration must not overwrite the user's explicit selection.
+        assert application.call_service("sakura.asr", "status")["providerId"] == provider_id
+        application.set_plugin_enabled(provider_id, True)
+        providers = application.call_service("sakura.asr", "listProviders")
+        assert [item["providerId"] for item in providers] == [provider_id]
+        assert application.service_identity(providers[0]["serviceKey"]) != first_identity
+        application.reload_plugin(provider_id)
+        assert len(application.call_service("sakura.asr", "listProviders")) == 1
+    finally:
+        application.close()
+
+
 def test_official_hub_and_third_party_provider_cross_process_audio_contract(tmp_path, monkeypatch):
     from app.core_host import plugin_host_services
 

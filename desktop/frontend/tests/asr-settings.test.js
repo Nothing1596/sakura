@@ -45,9 +45,40 @@ test("ASR choices are Hub supplied, unavailable explicit choice survives refresh
   assert.equal(f.calls.every(([name]) => name === "settings_asr_get"), true);
   await f.controller.save();
   assert.deepEqual(f.calls.find(([name]) => name === "settings_asr_save")[1].payload,
-    { selectedProviderId: "example.remote", language: "auto", inputDeviceId: "" });
+    { selectedProviderId: "example.remote" });
   assert.equal(f.controller.isDirty(), false);
   f.controller.dispose();
+});
+
+test("microphone changes save independently while Hub is disabled and retain its saved choices", async () => {
+  const controls = Object.fromEntries(["asrProvider", "asrLanguage", "asrStatus", "asrLocation",
+    "asrResources", "asrRefresh", "asrOpenPlugins", "asrInputDevice"].map((key) => [key, element()]));
+  const saved = { selectedProviderId: "engine.saved", language: "ja", inputDeviceId: "old-mic" };
+  let enabled = false;
+  const controller = createAsrSettingsController({
+    document: { getElementById: (key) => controls[key], createElement: element },
+    invoke: async (name, args) => {
+      if (name === "settings_asr_save") {
+        if (!enabled && Object.keys(args.payload).some((key) => key !== "inputDeviceId")) {
+          throw new Error("SERVICE_MISSING");
+        }
+        Object.assign(saved, args.payload);
+      }
+      return { providers: [], sections: [], available: enabled, inputDeviceId: saved.inputDeviceId,
+        ...(enabled ? saved : { selectedProviderId: null }) };
+    },
+  });
+  try {
+    await controller.refresh();
+    controls.asrInputDevice.value = "new-mic";
+    await controller.save();
+    assert.equal(controller.isDirty(), false);
+    enabled = true; // The settings save may now continue to the staged plugin enable.
+    await controller.refresh();
+    assert.deepEqual(saved, { selectedProviderId: "engine.saved", language: "ja", inputDeviceId: "new-mic" });
+    assert.equal(controls.asrProvider.value, "engine.saved");
+    assert.equal(controls.asrLanguage.value, "ja");
+  } finally { controller.dispose(); }
 });
 
 test("model installation only invokes the selected provider's contributed resource action on click", async () => {

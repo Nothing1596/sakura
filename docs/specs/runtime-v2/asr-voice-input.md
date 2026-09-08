@@ -141,6 +141,7 @@ Hub 管理应用级 `selectedProviderId` 与默认识别语言，Provider 私有
 语音输入页和已登记 Provider 的插件设置提供麦克风选择与输入测试。Rust 枚举设备并提供设备 ID 和名称，
 Core 在宿主系统配置的 `audio_input.device_id` 保存选择，空字符串表示系统默认；不写入角色、TTS 或模型私有配置。
 设备列表只作枚举，不开始采集。选择暂不可用的设备仍保留配置，由用户重新选择。
+设置保存只提交改动字段；单独修改麦克风不依赖 Hub 活动，也不覆盖 Hub 保存的引擎和语言。
 
 测试由用户点击开始，再次点击停止并识别，准备、录音和识别期间都可取消。测试使用当前设置中的 Provider 和
 麦克风，可以在保存前试用；临时选择不改变全局配置。沿用正式采集、Hub 路由、音频授权、TTS 暂停和清理链路，
@@ -230,6 +231,8 @@ generation 关闭时统一回收。任务回收不依赖 UI 继续轮询，不�
 Core 的 `asr.input.prepare/poll/cancel` 绑定录音 ID、输入上下文、草稿版本及选区；`capture_target` 只向
 Rust 分配私有文件路径，设备成功打开后 `capture_ready` 进入录音。停止写入后 `submit` 转交 Core，异常
 或取消由 `capture_discarded` 结束生产者占用。Core 后台持续处理准备、识别与清理，不依赖 UI 继续轮询。
+采集故障通过 `capture_discarded.errorCode` 提交稳定错误码，使尚未结束的任务进入可轮询的 `failed` 状态；
+随后才发送前端故障事件。清理和迟到的取消不覆盖失败原因，已取消的任务也不会因迟到故障改为失败。
 Rust 录音期间通过只读 `capture_status` 观察任务失效，该接口不消费转写结果。
 成功结果通过 `poll` 至多交付一次，后续返回 `consumed`；前端仍核对本地任务和上下文，保留最新草稿与附件。
 `asr.input.availability` 只查询 Hub 服务是否活动，不探测 Provider 或下载资源。设置窗口的 `prepare` 使用

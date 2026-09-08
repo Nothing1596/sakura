@@ -70,7 +70,9 @@ class SakuraASRHub:
             item = self.providers.get(provider_id)
             removed = bool(item and item["serviceKey"] == service_key)
             if removed:
-                self.audio.verifyProvider(provider_id, service_key)
+                # Runtime authenticates this caller, including its draining process.
+                # The Service is already removed when dispose effects run; reload
+                # waits for that process to exit before starting the next scope.
                 del self.providers[provider_id]
                 for request_id, binding in list(self.jobs.items()):
                     if binding.descriptor == item and binding.terminal is None:

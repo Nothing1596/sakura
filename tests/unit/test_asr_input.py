@@ -209,6 +209,10 @@ def test_hub_availability_does_not_depend_on_provider_readiness(runtime):
     assert request("asr.input.availability")["payload"] == {"enabled": True}
     app.set_plugin_enabled("sakura.asr", False)
     assert request("asr.input.availability")["payload"] == {"enabled": False}
+    result = request("asr.settings.save", inputDeviceId="mic-without-hub")
+    assert result["ok"] and result["payload"]["inputDeviceId"] == "mic-without-hub"
+    app.set_plugin_enabled("sakura.asr", True)
+    assert request("asr.settings.get")["payload"]["selectedProviderId"] == "not.installed"
 
 
 def test_draft_rejects_test_overrides_and_invalid_device_does_not_change_saved_setting(runtime):
@@ -293,6 +297,30 @@ def test_cancel_before_device_ready_and_invalid_wav_release_producer(runtime):
                    lambda r: r["payload"]["state"] == "failed")
     assert result["payload"]["errorCode"] == "ASR_AUDIO_INVALID"
     assert app.audio_input.count == 0
+
+
+@pytest.mark.parametrize("cancel_first", [False, True])
+def test_capture_failure_survives_cleanup_and_worker_exit_without_overriding_user_cancel(runtime, cancel_first):
+    app, boundary, request, _ = runtime
+    path = ready(request)
+    wav(path)
+    if cancel_first:
+        request("asr.input.cancel", recordingId="record-1")
+    result = request("asr.input.capture_discarded", recordingId="record-1",
+                     errorCode="ASR_MICROPHONE_DISCONNECTED")["payload"]
+    expected = "cancelled" if cancel_first else "failed"
+    assert result["state"] == expected
+    boundary._tasks["record-1"].worker.join(2)
+    assert not boundary._tasks["record-1"].worker.is_alive()
+    # A frontend cleanup or duplicate producer notification cannot erase the failure.
+    request("asr.input.cancel", recordingId="record-1")
+    request("asr.input.capture_discarded", recordingId="record-1")
+    polled = request("asr.input.poll", recordingId="record-1")["payload"]
+    assert polled["state"] == expected
+    assert polled.get("errorCode") == (None if cancel_first else "ASR_MICROPHONE_DISCONNECTED")
+    assert "text" not in polled
+    assert app.audio_input.count == 0 and not path.exists()
+    assert app.call_service("test.asr.one.service", "probe")["jobs"] == 0
 
 
 def test_cancel_overtaking_prepare_blocks_late_capture_and_service_caller_cannot_be_spoofed(runtime):
