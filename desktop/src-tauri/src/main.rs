@@ -6784,8 +6784,7 @@ async fn studio_request(
                 payload["runtimeReload"] = json!("requested");
             } else {
                 payload["runtimeReload"] = json!("failed");
-                payload["reloadError"] =
-                    json!("角色已保存，但修改暂时未能生效。请重启 Sakura。");
+                payload["reloadError"] = json!("角色已保存，但修改暂时未能生效。请重启 Sakura。");
                 let _ = app_handle.emit_to(
                     product_shell::SETTINGS_WINDOW_LABEL,
                     character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,

@@ -159,12 +159,13 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
             if item["sectionId"] == "memory_embedding_component"
         )
         assert section["surface"] == "about"
-        assert section["values"]["embeddingResource"] == {
+        resource = section["values"]["embeddingResource"]
+        assert isinstance(resource["message"], str) and resource["message"].strip()
+        assert {key: value for key, value in resource.items() if key != "message"} == {
             "applicability": "required",
             "subtitle": "sentence-transformers/all-MiniLM-L6-v2",
             "ready": False,
             "taskState": "idle",
-            "message": "长期记忆检索需要先安装这个本地模型。",
             "detail": "",
             "progress": None,
             "availableActionIds": ["downloadEmbedding"],

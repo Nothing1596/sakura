@@ -2637,7 +2637,13 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         value if value.starts_with("reply.") => &REPLY_PRIORITY,
         value if value.starts_with("screen.capture.") => &SCREEN_PRIORITY,
         value if value.starts_with("tts.") => &TTS_PRIORITY,
-        value if value.starts_with("asr.") => &["recording_id", "duration_ms", "reason_code", "provider", "status"],
+        value if value.starts_with("asr.") => &[
+            "recording_id",
+            "duration_ms",
+            "reason_code",
+            "provider",
+            "status",
+        ],
         value if value.starts_with("legacy_import.tts_copy_") => &LEGACY_COPY_PRIORITY,
         _ => &DEFAULT_PRIORITY,
     };

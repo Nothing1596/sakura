@@ -68,15 +68,38 @@ struct CaptureLog {
 impl CaptureLog {
     fn record(&self, id: &str, state: &str, reason_code: &str) {
         let (event, message, severity) = match state {
-            "started" => ("asr.capture.started", "Microphone capture started", Severity::Info),
-            "finished" => ("asr.capture.finished", "Microphone capture finished", Severity::Info),
-            "cancelled" => ("asr.capture.cancelled", "Microphone capture cancelled", Severity::Info),
-            _ => ("asr.capture.failed", "Microphone capture failed", Severity::Warning),
+            "started" => (
+                "asr.capture.started",
+                "Microphone capture started",
+                Severity::Info,
+            ),
+            "finished" => (
+                "asr.capture.finished",
+                "Microphone capture finished",
+                Severity::Info,
+            ),
+            "cancelled" => (
+                "asr.capture.cancelled",
+                "Microphone capture cancelled",
+                Severity::Info,
+            ),
+            _ => (
+                "asr.capture.failed",
+                "Microphone capture failed",
+                Severity::Warning,
+            ),
         };
-        let reason_code = reason_code.split(['|', ':']).next().filter(|code| {
-            !code.is_empty() && code.len() <= 64
-                && code.bytes().all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
-        }).unwrap_or("ASR_CAPTURE_FAILED");
+        let reason_code = reason_code
+            .split(['|', ':'])
+            .next()
+            .filter(|code| {
+                !code.is_empty()
+                    && code.len() <= 64
+                    && code.bytes().all(|byte| {
+                        byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                    })
+            })
+            .unwrap_or("ASR_CAPTURE_FAILED");
         let _ = self.service.submit(
             RuntimeLogEvent::rust(severity, "asr", event, message)
                 .correlation(Correlation {
@@ -110,12 +133,21 @@ impl CaptureSession {
     }
     fn observe(&self, service: RuntimeLogService, generation: String) {
         if let Ok(mut log) = self.log.lock() {
-            *log = Some(CaptureLog { service, generation, started: None, duration: None, finished: false });
+            *log = Some(CaptureLog {
+                service,
+                generation,
+                started: None,
+                duration: None,
+                finished: false,
+            });
         }
     }
     fn started_capture(&self) {
         if let Ok(mut log) = self.log.lock() {
-            if let Some(log) = log.as_mut().filter(|log| log.started.is_none() && !log.finished) {
+            if let Some(log) = log
+                .as_mut()
+                .filter(|log| log.started.is_none() && !log.finished)
+            {
                 log.started = Some(Instant::now());
                 log.record(&self.id, "started", "ASR_CAPTURE_STARTED");
             }
@@ -154,11 +186,17 @@ impl CaptureSession {
         if let Ok(mut log) = self.log.lock() {
             if let Some(log) = log.as_mut().filter(|log| !log.finished) {
                 log.finished = true;
-                log.duration = log.duration.or_else(|| log.started.map(|started| started.elapsed()));
+                log.duration = log
+                    .duration
+                    .or_else(|| log.started.map(|started| started.elapsed()));
                 let (state, reason) = match result.as_ref() {
-                    Ok(_) if self.stop.load(Ordering::SeqCst) => ("finished", "ASR_CAPTURE_STOPPED"),
+                    Ok(_) if self.stop.load(Ordering::SeqCst) => {
+                        ("finished", "ASR_CAPTURE_STOPPED")
+                    }
                     Ok(_) => ("finished", "ASR_RECORDING_LIMIT"),
-                    Err(error) if error.split(['|', ':']).next() == Some("ASR_CANCELLED") => ("cancelled", "ASR_CANCELLED"),
+                    Err(error) if error.split(['|', ':']).next() == Some("ASR_CANCELLED") => {
+                        ("cancelled", "ASR_CANCELLED")
+                    }
                     Err(error) => ("failed", error.as_str()),
                 };
                 log.record(&self.id, state, reason);
@@ -560,7 +598,10 @@ pub(crate) async fn asr_capture_start(
         .map_err(str::to_owned)?
         .ok_or("STALE_GENERATION")?;
     let session = state.reserve(&payload.recording_id, window.label())?;
-    session.observe(app_handle.state::<RuntimeLogService>().inner().clone(), generation.clone());
+    session.observe(
+        app_handle.state::<RuntimeLogService>().inner().clone(),
+        generation.clone(),
+    );
     let target = proxy(
         &lifecycle,
         "asr.input.capture_target",
@@ -609,30 +650,50 @@ pub(crate) async fn asr_capture_start(
     let (ready, opened) = tokio::sync::oneshot::channel();
     let worker_session = session.clone();
     let worker_app = app_handle.clone();
-    let worker = thread::Builder::new().name("sakura-microphone".into()).spawn(move || {
-        let result = capture(&worker_app, &handle, &generation, &worker_session, &path, &input_device_id, ready, playback_pause);
-        if !worker_session.submitted.load(Ordering::SeqCst) {
-            let _ = fs::remove_file(&path);
-        }
-        if result.is_err() {
-            let code = capture_failure(&result, false).unwrap_or_else(|| "ASR_CAPTURE_FAILED".into());
-            let mut discarded = json!({"recordingId": worker_session.id});
-            if code != "ASR_CANCELLED" {
-                discarded["errorCode"] = json!(code);
+    let worker = thread::Builder::new()
+        .name("sakura-microphone".into())
+        .spawn(move || {
+            let result = capture(
+                &worker_app,
+                &handle,
+                &generation,
+                &worker_session,
+                &path,
+                &input_device_id,
+                ready,
+                playback_pause,
+            );
+            if !worker_session.submitted.load(Ordering::SeqCst) {
+                let _ = fs::remove_file(&path);
             }
-            // Publish a pollable failure before notifying the UI. A racing poll
-            // must not consume a silent cancellation and hide the device error.
-            // Core also ends the producer reservation, retaining any reader lease
-            // when a submit response was uncertain. Submitted files stay Core-owned.
-            let _ = core_call(&handle, "asr.input.capture_discarded", discarded);
-            let _ = worker_app.emit_to(&worker_session.window_label, "sakura://asr-capture", json!({
-                "recordingId": worker_session.id, "state": "failed", "errorCode": code
-            }));
-        } else if !worker_session.submitted.load(Ordering::SeqCst) {
-            let _ = core_call(&handle, "asr.input.capture_discarded", json!({"recordingId": worker_session.id}));
-        }
-        worker_session.finish(result);
-    });
+            if result.is_err() {
+                let code =
+                    capture_failure(&result, false).unwrap_or_else(|| "ASR_CAPTURE_FAILED".into());
+                let mut discarded = json!({"recordingId": worker_session.id});
+                if code != "ASR_CANCELLED" {
+                    discarded["errorCode"] = json!(code);
+                }
+                // Publish a pollable failure before notifying the UI. A racing poll
+                // must not consume a silent cancellation and hide the device error.
+                // Core also ends the producer reservation, retaining any reader lease
+                // when a submit response was uncertain. Submitted files stay Core-owned.
+                let _ = core_call(&handle, "asr.input.capture_discarded", discarded);
+                let _ = worker_app.emit_to(
+                    &worker_session.window_label,
+                    "sakura://asr-capture",
+                    json!({
+                        "recordingId": worker_session.id, "state": "failed", "errorCode": code
+                    }),
+                );
+            } else if !worker_session.submitted.load(Ordering::SeqCst) {
+                let _ = core_call(
+                    &handle,
+                    "asr.input.capture_discarded",
+                    json!({"recordingId": worker_session.id}),
+                );
+            }
+            worker_session.finish(result);
+        });
     match worker {
         Ok(worker) => {
             *session.worker.lock().map_err(|_| "ASR_CAPTURE_FAILED")? = Some(worker);
@@ -1149,7 +1210,8 @@ mod tests {
     #[test]
     fn capture_logs_keep_bounded_stages_and_safe_correlated_diagnostics() {
         use crate::runtime_log::{RuntimeLogConfig, Verbosity};
-        let root = std::env::temp_dir().join(format!("sakura-asr-capture-log-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("sakura-asr-capture-log-{}", uuid::Uuid::new_v4()));
         let path = root.join("runtime.log");
         let mut config = RuntimeLogConfig::production(path.clone());
         config.level = Verbosity::Info;
@@ -1157,7 +1219,10 @@ mod tests {
         for (id, error) in [
             ("capture-stop", None),
             ("capture-cancel", Some("ASR_CANCELLED|Cancelled by user")),
-            ("capture-device-fault", Some("ASR_MICROPHONE_DISCONNECTED|C:\\private\\device-id")),
+            (
+                "capture-device-fault",
+                Some("ASR_MICROPHONE_DISCONNECTED|C:\\private\\device-id"),
+            ),
         ] {
             let session = CaptureSession::new(id.into());
             session.observe(log.clone(), "test-generation".into());
@@ -1173,8 +1238,13 @@ mod tests {
         for pair in records.chunks_exact(2) {
             assert_eq!(pair[0].event_code, "asr.capture.started");
             assert_eq!(pair[0].correlation_id, pair[1].correlation_id);
-            assert!(pair.iter().all(|record| record.source == "rust" && record.plugin_id.is_none() && record.scopes == ["software"]));
-            assert!(pair[1].details.iter().any(|detail| detail.label == "录音编号"));
+            assert!(pair.iter().all(|record| record.source == "rust"
+                && record.plugin_id.is_none()
+                && record.scopes == ["software"]));
+            assert!(pair[1]
+                .details
+                .iter()
+                .any(|detail| detail.label == "录音编号"));
             assert!(pair[1].details.iter().any(|detail| detail.label == "耗时"));
         }
         assert_eq!(records[1].event_code, "asr.capture.finished");
