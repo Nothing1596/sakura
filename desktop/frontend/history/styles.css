@@ -1,4 +1,5 @@
 @import url("../assets/fonts/fonts.css");
+@import url("../core/selection.css");
 
 :root {
   --primary: #4b9ac4;
@@ -162,13 +163,6 @@ h1 {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
-}
-
-.entry-bubble::selection,
-.entry-bubble *::selection {
-  color: var(--text);
-  background: color-mix(in srgb, var(--primary), transparent 72%);
-  text-shadow: none;
 }
 
 .entry-bubble-assistant {

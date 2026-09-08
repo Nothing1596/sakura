@@ -1,4 +1,5 @@
 @import url("../assets/fonts/fonts.css");
+@import url("../core/selection.css");
 
 :root {
   --sakura-primary: #4b9ac4;

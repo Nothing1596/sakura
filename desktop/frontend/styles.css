@@ -1,5 +1,6 @@
 @import url("./core/icons.css");
 @import url("./assets/fonts/fonts.css");
+@import url("./core/selection.css");
 
 :root {
   color: #27445a;
@@ -381,14 +382,6 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .bubble [data-selectable-text] { cursor: text; }
-
-.bubble-copy::selection,
-.bubble-copy *::selection,
-.composer textarea::selection {
-  color: var(--text);
-  background: color-mix(in srgb, var(--primary), transparent 72%);
-  text-shadow: none;
-}
 
 .bubble-copy p { margin: 0 0 10px; }
 .bubble-copy p:last-child { margin-bottom: 0; }
