@@ -380,8 +380,7 @@ class RealChatBoundary:
                             message, screen_attachment.observations
                         )
                         observation_text = (
-                            f"用户手动选择的 {len(screen_attachment.observations)} 张屏幕截图"
-                            "已提交给对话模型。"
+                            f"你分享了 {len(screen_attachment.observations)} 张屏幕截图。"
                         )
                         append_manual_observation_batch_marker(
                             message,
