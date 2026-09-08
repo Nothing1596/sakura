@@ -39,7 +39,7 @@ export function nextGuideIndex(current, direction, count = FIRST_RUN_GUIDE_STEPS
 export function modelSlotFeatures(root) {
   if (!root?.querySelectorAll) return FALLBACK_MODEL_FEATURES;
   const features = Array.from(root.querySelectorAll(".model-slot-row")).map((row) => ({
-    label: row.querySelector?.(".setting-title")?.textContent?.trim() || "模型槽位",
+    label: row.querySelector?.(".setting-title")?.textContent?.trim() || "各项功能使用的模型",
     description: row.querySelector?.(".setting-desc")?.textContent?.trim() || "可单独选择供应商和模型。",
   })).filter(({ label }) => label).slice(0, 4);
   return features.length ? features : FALLBACK_MODEL_FEATURES;
@@ -302,7 +302,7 @@ export function createFirstRunGuide({
       if (firstRunGuideRequested(window.location.search)) {
         window.history.replaceState({}, "", window.location.pathname);
       }
-      notify("引导结束。配置好后再保存。", "success");
+      notify("引导已完成，调整好设置后记得保存。", "success");
       previousFocus?.focus?.({ preventScroll: true });
     } catch (error) {
       notify(`无法保存引导状态：${String(error)}`, "error");

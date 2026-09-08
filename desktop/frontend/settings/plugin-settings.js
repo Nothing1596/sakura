@@ -414,7 +414,7 @@ export function createPluginSettingsFeature({
     pluginState.enabledById[plugin.id] = plugin.required ? true : Boolean(enabled);
     syncPluginEnableSwitches();
     const label = fields.pluginDetail.querySelector(".plugin-enable-label");
-    if (label) label.textContent = pluginState.enabledById[plugin.id] ? "已启用" : "已禁用";
+    if (label) label.textContent = pluginState.enabledById[plugin.id] ? "已启用" : "已停用";
     refreshDirty();
   }
 
@@ -618,7 +618,7 @@ export function createPluginSettingsFeature({
     fields.aboutComponentsState.textContent = aboutComponentsReadError;
     const snapshot = runtimePluginController?.snapshot?.();
     if (!aboutComponentsReadError && snapshot && ["starting", "waiting"].includes(snapshot.state)) {
-      fields.aboutComponentsState.textContent = "插件 Worker 正在初始化…";
+      fields.aboutComponentsState.textContent = "插件正在启动…";
     }
     fields.aboutComponentsList.textContent = "";
     contributions.forEach(({ plugin, section, field, value }) => {
@@ -2142,7 +2142,7 @@ export function createPluginSettingsFeature({
     enableCopy.append(pluginNode('h3', '', '启用插件'), pluginNode('p', '', plugin.required ? 'Sakura 运行需要这个插件。' : '允许 Sakura 使用此插件的能力'));
     const enabled = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
     const enableControls = pluginNode('div', 'plugin-enable-controls');
-    enableControls.append(pluginNode('span', 'plugin-enable-label', enabled ? '已启用' : '已禁用'));
+    enableControls.append(pluginNode('span', 'plugin-enable-label', enabled ? '已启用' : '已停用'));
     const switchLabel = previousId === plugin.id && previousToggle ? previousToggle : pluginNode('label', 'plugin-enable-switch');
     if (!switchLabel.firstChild) {
       const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.setAttribute('role', 'switch');

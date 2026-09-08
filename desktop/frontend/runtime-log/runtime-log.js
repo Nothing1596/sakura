@@ -299,7 +299,7 @@ async function bootstrap() {
     viewerState = null;
     applySnapshot(result.snapshot);
     status.textContent = result.snapshot.records.length
-      ? "已显示本次启动以来可观察到的运行事件。"
+      ? "已显示本次启动以来的运行记录。"
       : "等待新的运行事件。";
     scrollToLatest();
   } catch {

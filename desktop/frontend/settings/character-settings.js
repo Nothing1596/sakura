@@ -429,7 +429,7 @@ export function createCharacterSettingsFeature({
     syncCharacterArchiveState();
     refreshDirty();
     if (pendingRuntimeCharacterId()) {
-      notify("角色选择已暂存，点击“应用”或“保存并关闭”后生效。", "info");
+      notify("已选好角色，点击“应用”或“保存并关闭”即可切换。", "info");
     }
     try {
       await previewRuntimeCharacterVisual(characterId);

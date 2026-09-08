@@ -444,7 +444,7 @@ try {
   });
 } catch {
   presentationUnavailable = true;
-  showRecoverableError("当前角色表现加载失败；关闭并重新启动后可重试。");
+  showRecoverableError("角色加载失败，请重启 Sakura 后再试。");
   characterPresentation = Object.freeze({
     generationId: "unavailable",
     characterId: "unavailable",
@@ -960,7 +960,7 @@ function buildPortraitController(boundPresentation, {
     },
     reportError: ({ code }) => {
       if (!presentationUnavailable) {
-        showRecoverableError(code === "PORTRAIT_KEY_UNKNOWN" ? "表情映射无效，已恢复默认立绘。" : "立绘解码失败，仍可继续输入。");
+        showRecoverableError(code === "PORTRAIT_KEY_UNKNOWN" ? "没有找到对应的表情，已换回默认立绘。" : "立绘图片加载失败，你仍可以继续聊天。");
       }
     },
   });

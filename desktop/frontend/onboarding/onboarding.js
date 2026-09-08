@@ -296,7 +296,7 @@ function renderInspection(snapshot) {
     migrationIssues.append(item);
   }
   migrationStartButton.disabled = !inspection.compatible || !selectionId;
-  setAnimatedText(migrationError, inspection.compatible ? "" : "请先解决上面的阻断问题。");
+  setAnimatedText(migrationError, inspection.compatible ? "" : "请先处理上面的问题，再继续迁移。");
   if (inspectionWasHidden) replayAnimation(migrationInspection, "is-revealing");
 }
 

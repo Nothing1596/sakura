@@ -699,7 +699,7 @@ const pageMeta = {
   character: { title: "角色与布局", subtitle: "选择陪伴角色与桌宠布局" },
   appearance: { title: "外观", subtitle: "配色与输入栏视觉效果" },
   providers: { title: "供应商", subtitle: "管理 API 供应商、密钥与模型" },
-  model: { title: "模型", subtitle: "功能模型分配与高级参数" },
+  model: { title: "模型", subtitle: "为不同功能选择模型，调整回复参数" },
   voice: { title: "语音", subtitle: "选择语音引擎和服务来源" },
   interaction: { title: "交互", subtitle: "字幕、气泡与主动屏幕感知" },
   tools: { title: "工具", subtitle: "工具调用与循环上限" },
@@ -998,7 +998,7 @@ async function runUpdateAction() {
   try {
     if (snapshot.mode === "portable") {
       await rootSettingsClient.updateOpenPortableDownload(snapshot.downloadUrl);
-      fields.updateStatus.textContent = "已打开新版 Portable ZIP 下载地址。";
+      fields.updateStatus.textContent = "已打开新版便携版压缩包的下载链接。";
       updateActionBusy = false;
       fields.updateActionButton.disabled = false;
       fields.updateCheckButton.disabled = false;

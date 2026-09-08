@@ -4654,7 +4654,7 @@ fn observe_studio_character_restart(
                 "sakura://studio-runtime-reload",
                 json!({
                     "state": "failed",
-                    "message": "角色已经保存，但运行态未能重新加载。请重启 Sakura 后使用新数据。"
+                    "message": "角色已保存，但修改暂时未能生效。请重启 Sakura。"
                 }),
             );
         });
@@ -6779,7 +6779,7 @@ async fn studio_request(
             } else {
                 payload["runtimeReload"] = json!("failed");
                 payload["reloadError"] =
-                    json!("保存成功，运行态重载失败。请重启 Sakura 后使用新角色数据。");
+                    json!("角色已保存，但修改暂时未能生效。请重启 Sakura。");
                 let _ = app_handle.emit_to(
                     product_shell::SETTINGS_WINDOW_LABEL,
                     character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,

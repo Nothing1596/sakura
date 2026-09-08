@@ -182,7 +182,7 @@ async function loadInitial() {
     entries = page.entries.slice();
     applyPage(page);
     render({ animateRecent: firstPaint });
-    status.textContent = entries.length ? `已显示 ${entries.length} 条最近记录` : "这里还没有对话记录。";
+    status.textContent = entries.length ? `已显示最近 ${entries.length} 条记录` : "这里还没有对话记录。";
     requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
   } catch (error) {
     status.textContent = errorMessage(error);

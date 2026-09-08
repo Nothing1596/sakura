@@ -80,7 +80,7 @@ export function presentPluginStatus({ state = "", reasonCode = "", unavailable =
     return result("已停用");
   }
   if (reasonCode === "PLUGIN_APPLICATION_NOT_READY") {
-    return result("正在启动", "插件 Worker 正在初始化，请稍候。");
+    return result("正在启动", "插件正在启动，请稍等。");
   }
   if (reasonCode === "API_VERSION_UNSUPPORTED") {
     return result(
@@ -249,7 +249,7 @@ export function projectPluginActivity(plugin = {}) {
     return Object.freeze({
       state: "working",
       label: "正在启动",
-      message: "插件 Worker 正在初始化，请稍候。",
+      message: "插件正在启动，请稍等。",
       hasRunningResource: false,
       isTransient: true,
     });

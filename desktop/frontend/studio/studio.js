@@ -1885,9 +1885,9 @@ async function commitCharacter({ publish = false } = {}) {
     markBaseline();
     notify(payload.message || (publish ? "角色已发布。" : "角色已保存。"), "success");
     if (payload.runtime_reload === "failed") {
-      setError(payload.reload_error || "保存成功，运行态重载失败。请重启 Sakura 后使用新角色数据。");
+      setError(payload.reload_error || "角色已保存，但修改暂时未能生效。请重启 Sakura。");
     } else if (payload.runtime_reload === "requested") {
-      notify("角色已保存，正在重新加载运行态。", "info");
+      notify("角色已保存，正在应用修改。", "info");
     }
   });
 }
@@ -2138,7 +2138,7 @@ window.__TAURI__?.event?.listen?.("sakura://studio-runtime-reload", ({ payload }
   if (state === "ready") {
     notify("当前角色已在运行态生效。", "success");
   } else if (state === "failed") {
-    setError(payload.message || "角色已保存，但运行态重载失败。");
+    setError(payload.message || "角色已保存，但修改暂时未能生效。请重启 Sakura。");
   }
 });
 enhanceSelect(fields.studioCharacterSelect);

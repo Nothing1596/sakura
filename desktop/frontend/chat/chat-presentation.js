@@ -2,7 +2,7 @@ import { isChatReadyLifecycle } from "../lifecycle.js";
 
 const LIFECYCLE_COPY = Object.freeze({
   startup: ["正在启动", "正在启动"],
-  initializing: ["正在准备", "正在准备会话"],
+  initializing: ["正在准备", "正在准备聊天"],
   ready: ["在线", "可以开始对话"],
   setup_required: ["需要设置", "请先完成聊天供应商设置"],
   degraded: ["受限", "聊天服务当前处于受限状态"],
@@ -54,7 +54,7 @@ function initialState(defaultPortraitKey) {
 
 export function composerPlaceholder(displayName, phase) {
   const name = String(displayName || "当前角色");
-  return phase === "thinking" ? `${name}正在思考中…` : `和${name}说点什么……`;
+  return phase === "thinking" ? `${name}正在思考…` : `和${name}说点什么……`;
 }
 
 function normalizedSegments(reply) {
@@ -169,7 +169,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
               ? state.bubbleText
               : event.status === "failed" && typeof event.failure?.message === "string"
                 ? event.failure.message
-                : "正在准备会话……",
+                : "正在准备聊天……",
           segments: preserveVisualState || preserveGreeting || chatReady ? state.segments : Object.freeze([]),
           replyHistorySegments: state.replyHistorySegments,
           replyHistoryIndex: state.replyHistoryIndex,
@@ -274,7 +274,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           ...state,
           phase: "settled",
           operationId: null,
-          bubbleText: event.reason === "core_restart" ? "旧回复已随连接关闭。" : "已取消当前回复。",
+          bubbleText: event.reason === "core_restart" ? "连接已断开，这次回复停止了。" : "已取消当前回复。",
           segments: Object.freeze([]),
           showingReplyHistorySegment: false,
           error: null,

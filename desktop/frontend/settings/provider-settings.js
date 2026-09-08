@@ -281,7 +281,7 @@ export function createProviderSettingsFeature({
       const clearButton = document.createElement("button");
       clearButton.type = "button";
       clearButton.className = "secondary-button";
-      clearButton.textContent = profile.credential_action === "clear" ? "已标记清除" : "清除凭据";
+      clearButton.textContent = profile.credential_action === "clear" ? "保存后清除" : "清除凭据";
       clearButton.addEventListener("click", () => {
         profile.api_key = "";
         profile.credential_action = "clear";
