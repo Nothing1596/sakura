@@ -5613,8 +5613,13 @@ fn preview_pet_control_surface(
     Ok(())
 }
 
-#[tauri::command]
-async fn end_control_surface_preview(
+// Windows must settle the region on the IPC/UI thread, like begin/preview. A worker holding
+// geometry while hwnd()/scale_factor()/SetWindowRgn wait for the UI thread deadlocks when the
+// next slider command reaches that thread and tries to acquire geometry. Other platforms keep
+// their existing asynchronous dispatch for native surface preparation/settlement.
+#[cfg_attr(windows, tauri::command)]
+#[cfg_attr(not(windows), tauri::command(async))]
+fn end_control_surface_preview(
     window: WebviewWindow,
     revision: u64,
     trace: Option<interaction_latency::InteractionTraceContext>,
