@@ -58,14 +58,15 @@ export function createScreenAttachmentController({
   }
 
   function renderControls() {
+    const voiceActive = composer.dataset.voiceActive === "true";
     toggle.setAttribute("aria-expanded", open ? "true" : "false");
     toggle.dataset.attached = attachments.length ? "true" : "false";
     toggle.dataset.attachmentCount = String(attachments.length);
-    toggle.disabled = capturing || submitting;
+    toggle.disabled = !voiceActive && (capturing || submitting);
     captureItem.disabled = capturing || submitting || attachments.length >= attachmentLimit;
     const detail = attachments.length ? `，已附加 ${attachments.length} 张截图` : "";
-    toggle.setAttribute("aria-label", `添加附件${detail}`);
-    toggle.title = `添加附件${detail}`;
+    toggle.setAttribute("aria-label", voiceActive ? "取消语音输入" : `添加附件${detail}`);
+    toggle.title = voiceActive ? "取消语音输入 · Esc" : `添加附件${detail}`;
     captureItem.title = attachments.length >= attachmentLimit
       ? `每条消息最多附加 ${attachmentLimit} 张截图`
       : "框选屏幕区域并随消息发送";
@@ -123,7 +124,7 @@ export function createScreenAttachmentController({
   }
 
   async function setOpen(value, { focus = false } = {}) {
-    const next = Boolean(value) && !capturing;
+    const next = Boolean(value) && !capturing && composer.dataset.voiceActive !== "true";
     if (next === open) return false;
     open = next;
     const revision = ++layoutRevision;
@@ -168,7 +169,7 @@ export function createScreenAttachmentController({
   }
 
   async function startCapture() {
-    if (capturing || submitting) return false;
+    if (capturing || submitting || composer.dataset.voiceActive === "true") return false;
     if (attachments.length >= attachmentLimit) {
       onError(`每条消息最多附加 ${attachmentLimit} 张截图。`);
       return false;
@@ -215,7 +216,10 @@ export function createScreenAttachmentController({
     }
   }
 
-  toggle.addEventListener("click", () => { void setOpen(!open, { focus: !open }); });
+  toggle.addEventListener("click", () => {
+    if (composer.dataset.voiceActive === "true") return;
+    void setOpen(!open, { focus: !open });
+  });
   captureItem.addEventListener("click", () => { void startCapture(); });
   menu.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
@@ -248,6 +252,7 @@ export function createScreenAttachmentController({
     close(options) {
       return setOpen(false, options);
     },
+    refreshControls: renderControls,
     startCapture,
     isOpen: () => open,
     busy: () => open || capturing || submitting || attachments.length > 0,

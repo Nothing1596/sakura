@@ -87,6 +87,25 @@ test("plus control opens the toolbar overlay and starts one native capture actio
   assert.equal(env.menu.hidden, true);
 });
 
+test("voice input borrows the same plus control without opening tools or consuming attachments", async () => {
+  const env = harness();
+  const attachmentId = `screen-${"a".repeat(32)}`;
+  env.controller.handleAttached({ attachmentId, itemId: `shot-${"a".repeat(32)}`, width: 640, height: 480, count: 1 });
+  env.composer.dataset.voiceActive = "true";
+  env.controller.refreshControls();
+  env.toggle.emit("click");
+  assert.equal(env.controller.isOpen(), false);
+  assert.equal(await env.controller.startCapture(), false);
+  assert.equal(env.toggle.disabled, false);
+  assert.equal(env.controller.attachmentId(), attachmentId);
+  assert.equal(env.controller.attachments().length, 1);
+  env.composer.dataset.voiceActive = "false";
+  env.controller.refreshControls();
+  env.toggle.emit("click");
+  assert.equal(env.controller.isOpen(), true);
+  assert.equal(env.calls.length, 0);
+});
+
 test("tool dock acquires and releases its native click surface", async () => {
   const surfaces = [];
   const rect = [130, 882, 216, 88];

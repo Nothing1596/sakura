@@ -4,14 +4,14 @@ export const FIRST_RUN_GUIDE_STEPS = Object.freeze([
     page: "character",
     selector: "#characterImportButton",
     title: "导入角色",
-    description: "在这里导入 .char 角色包。角色包可以包含人设、立绘和语音。",
+    description: "导入 .char 角色包。",
   }),
   Object.freeze({
     id: "providers",
     page: "providers",
     selector: "#addProviderButton",
     title: "添加供应商",
-    description: "在这里填写 API 地址和密钥。模型列表也从这里获取。",
+    description: "填写 API 地址和密钥。",
   }),
   Object.freeze({
     id: "models",
@@ -302,7 +302,7 @@ export function createFirstRunGuide({
       if (firstRunGuideRequested(window.location.search)) {
         window.history.replaceState({}, "", window.location.pathname);
       }
-      notify("引导已完成，调整好设置后记得保存。", "success");
+      notify("引导已完成。", "success");
       previousFocus?.focus?.({ preventScroll: true });
     } catch (error) {
       notify(`无法保存引导状态：${String(error)}`, "error");

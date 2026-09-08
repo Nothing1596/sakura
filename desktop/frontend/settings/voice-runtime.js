@@ -183,7 +183,7 @@ export function createVoiceController({
   };
   const characterNotice = document.createElement("p");
   characterNotice.className = "page-note";
-  characterNotice.textContent = "尚未选择角色。你仍可配置语音引擎；导入并选择角色后可启用角色语音。";
+  characterNotice.textContent = "选择角色后可启用语音输出。";
   characterNotice.hidden = true;
   fields.settings.append(characterNotice);
   let snapshot = null;
@@ -470,7 +470,7 @@ export function createVoiceController({
     const previousBaseline = baseline ? JSON.parse(baseline) : null;
     if (!next.providers.length) {
       if (previousDraft && draftSignature(previousDraft) !== baseline) {
-        throw new Error("语音引擎暂不可用，未保存的语音改动已保留，请稍后重新检查。");
+        throw new Error("语音引擎暂不可用，请稍后重试。");
       }
       renderUnavailable();
       return;
@@ -535,7 +535,7 @@ export function createVoiceController({
   async function refreshCurrent({ preserveDraft = false } = {}) {
     if (!isAvailable()) {
       if (preserveDraft && snapshot && draftSignature(currentDraft()) !== baseline) {
-        throw new Error("语音管理暂不可用，未保存的语音改动已保留，请稍后重新检查。");
+        throw new Error("语音设置暂不可用，请稍后重试。");
       }
       if (!disposed) renderUnavailable();
       return null;
@@ -600,7 +600,7 @@ export function createVoiceController({
       }
       if (refreshFailed) throw new Error("TTS_SETTINGS_REFRESH_FAILED");
       if (result.applicationState === "restart_required") {
-        onStatus("配置已保存；请在对应语音引擎区块重新加载插件。", "info");
+        onStatus("已保存，请重新加载语音插件。", "info");
       } else if (result.applicationState === "error") {
         onStatus("配置已保存，但语音引擎配置应用失败。", "error");
       }

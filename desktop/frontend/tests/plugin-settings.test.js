@@ -366,3 +366,26 @@ test("disposing during dialog exit releases it once and ignores the late animati
   assert.equal(ui.feature.dialogElement(), undefined);
   assert.equal(ui.timers.size, 0);
 });
+
+test("ASR provider dialog mounts shared input controls, cancels capture on close and restores microphone draft", async () => {
+  const calls = [];
+  const asr = {
+    refresh: async () => {}, hasPluginControls: (id) => id === "fixture_plugin",
+    pluginDraft: () => ({ inputDeviceId: "saved-mic" }),
+    restorePluginDraft: (draft) => calls.push(["restore", draft]),
+    mountPluginControls: (id, container) => {
+      calls.push(["mount", id]); container.append(ui.document.createElement("select"));
+    },
+    cancelTest: () => calls.push(["cancel"]),
+    unmountPluginControls: () => calls.push(["unmount"]),
+  };
+  const ui = featureFixture(async () => snapshot(), { getAsrController: () => asr });
+  ui.feature.initialize(snapshot());
+  await ui.openSettings();
+  assert.ok(ui.document.querySelector(".plugin-dialog-asr select"));
+  await ui.document.querySelector(".plugin-dialog-close").fire("click");
+  assert.deepEqual(calls, [
+    ["mount", "fixture_plugin"], ["cancel"], ["restore", { inputDeviceId: "saved-mic" }], ["unmount"],
+  ]);
+  ui.feature.dispose();
+});

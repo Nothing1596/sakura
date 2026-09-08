@@ -18,6 +18,7 @@ export function createPluginSettingsFeature({
   focusSelect,
   replayMotion,
   getVoiceController,
+  getAsrController = () => null,
   removeOverlayAfterExit,
   showPage,
   isMemoryTransitioning,
@@ -144,16 +145,18 @@ export function createPluginSettingsFeature({
     title.textContent = model.title;
     const subtitle = document.createElement("span");
     subtitle.textContent = model.subtitle || "";
-    titleWrap.append(title, subtitle);
+    titleWrap.append(title);
+    if (model.subtitle) titleWrap.append(subtitle);
+    const statusLabel = model.statusLabel || resourceStatusLabel(model.status, model.ready);
     const status = renderSemanticStatus({
       state: model.statusTone || resourceStatusClass(model.status, model.ready),
-      label: model.statusLabel || resourceStatusLabel(model.status, model.ready),
+      label: statusLabel,
     }, "resource-card__status");
     head.append(titleWrap, status);
 
     const body = document.createElement("div");
     body.className = "resource-card__body";
-    if (model.message) {
+    if (model.message && model.message.trim() !== statusLabel.trim()) {
       const message = document.createElement("p");
       message.className = "resource-message";
       message.textContent = model.message;
@@ -216,7 +219,8 @@ export function createPluginSettingsFeature({
     if (actions.childNodes.length) {
       body.append(actions);
     }
-    container.append(head, body);
+    container.append(head);
+    if (body.childNodes.length) container.append(body);
   }
 
 
@@ -485,8 +489,8 @@ export function createPluginSettingsFeature({
           live.title = activity.label;
           live.setAttribute('aria-label', `运行状态：${activity.label}`);
           titleLine.append(title, live);
-          main.append(titleLine,
-            pluginNode('span', 'card-desc', plugin.description || '暂无说明。'));
+          main.append(titleLine);
+          if (plugin.description) main.append(pluginNode('span', 'card-desc', plugin.description));
           card.append(pluginIcon(plugin), main);
           card.addEventListener('click', () => selectManagedPlugin(plugin.id));
         }
@@ -690,7 +694,7 @@ export function createPluginSettingsFeature({
       input.checked = Boolean(value);
       input.addEventListener("change", () => setPluginFieldValue(plugin, section, field, input.checked));
       const text = document.createElement("span");
-      text.textContent = field.description || field.label;
+      text.textContent = field.label || field.key;
       label.append(input, text);
       return label;
     }
@@ -1273,17 +1277,15 @@ export function createPluginSettingsFeature({
             inputs.set(field.key, input);
             if (field.enabledWhen) conditional.push({ field, input, row });
           }
-          row.append(label, control);
-          if (field.description && field.type !== "boolean") row.append(pluginNode("small", "hint", field.description));
-        }
-        if (field.restart_required) {
-          const hint = document.createElement("p");
-          hint.className = "hint";
-          hint.textContent = "保存时会重新启动插件 Worker。";
-          row.append(hint);
+          if (field.type === "boolean") row.append(control);
+          else row.append(label, control);
+          if (field.description) row.append(pluginNode("small", "hint", field.description));
         }
         (field.placement === "advanced" ? advancedBody : block).append(row);
       });
+      if ((section.fields || []).some((field) => field.restart_required)) {
+        block.append(pluginNode("p", "hint", "应用后重启插件。"));
+      }
       const syncAvailability = () => {
         for (const { field, input, row } of conditional) {
           input.disabled = String(inputs.get(field.enabledWhen.field)?.value) !== field.enabledWhen.equals;
@@ -1548,17 +1550,10 @@ export function createPluginSettingsFeature({
     const head = document.createElement("header");
     head.className = "memory-dialog-head";
     const headingGroup = document.createElement("div");
-    const eyebrow = document.createElement("span");
-    eyebrow.className = "memory-eyebrow";
-    eyebrow.textContent = state.editor.itemId ? "长期记忆 · 编辑" : "长期记忆 · 新建";
     const heading = document.createElement("h2");
     heading.id = "memoryRecordDialogTitle";
-    heading.textContent = state.editor.itemId ? "编辑这条记忆" : "写下一条记忆";
-    const subtitle = document.createElement("p");
-    subtitle.textContent = state.editor.itemId
-      ? "修改后会直接更新当前角色的记忆库。"
-      : "只记录未来对话中仍然有用的事实、偏好或协作方式。";
-    headingGroup.append(eyebrow, heading, subtitle);
+    heading.textContent = state.editor.itemId ? "编辑记忆" : "新增记忆";
+    headingGroup.append(heading);
     const closeButton = document.createElement("button");
     closeButton.type = "button";
     closeButton.className = "memory-dialog-close";
@@ -1594,7 +1589,7 @@ export function createPluginSettingsFeature({
         control.rows = 7;
         if (Number.isSafeInteger(field.maxLength)) control.maxLength = field.maxLength;
         control.value = String(state.editor.values[field.key] ?? "");
-        control.placeholder = "例如：用户喜欢简洁直接的回答，并希望先给结论。";
+        control.placeholder = "例如：喜欢简洁的回答";
         control.addEventListener("input", () => {
           state.editor.values[field.key] = control.value;
           const counter = group.querySelector(".memory-character-count");
@@ -1888,7 +1883,7 @@ export function createPluginSettingsFeature({
     if (!initializing && !activityUnavailable && state.loading && !state.loaded) {
       const loading = document.createElement("div");
       loading.className = "memory-surface-state is-loading";
-      loading.innerHTML = '<span class="memory-state-orbit sakura-icon icon-loader-circle" aria-hidden="true"></span><strong>正在整理记忆档案</strong><p>插件准备完成后，内容会自动出现在这里。</p>';
+      loading.innerHTML = '<span class="memory-state-orbit sakura-icon icon-loader-circle" aria-hidden="true"></span><strong>正在加载记忆</strong>';
       body.append(loading);
     } else if (!initializing && !activityUnavailable && state.loaded && !state.items.length) {
       const empty = document.createElement("div");
@@ -1901,8 +1896,9 @@ export function createPluginSettingsFeature({
       const hint = document.createElement("p");
       hint.textContent = state.search || Object.keys(state.filters).length
         ? "换一个关键词或清除筛选后再试。"
-        : "新增一条值得 Sakura 在未来对话中记住的内容。";
-      empty.append(mark, heading, hint);
+        : "";
+      empty.append(mark, heading);
+      if (hint.textContent) empty.append(hint);
       body.append(empty);
     } else if (!initializing && !activityUnavailable) {
       state.items.forEach((item) => {
@@ -1998,7 +1994,7 @@ export function createPluginSettingsFeature({
       const switching = document.createElement("div");
       switching.className = "memory-surface-state";
       switching.setAttribute("role", "status");
-      switching.textContent = "正在切换角色，记忆将在新角色就绪后重新加载。";
+      switching.textContent = "正在切换角色…";
       fields.memorySurface.append(switching);
       return;
     }
@@ -2122,7 +2118,8 @@ export function createPluginSettingsFeature({
     identity.append(pluginIcon(plugin), title);
     const aside = pluginNode('div', 'plugin-detail-aside');
     if (pluginSettingsSections(plugin).some((section) => section.surface !== 'memory')
-        || getVoiceController()?.hasPluginSections(plugin.plugin_id)) {
+        || getVoiceController()?.hasPluginSections(plugin.plugin_id)
+        || getAsrController()?.hasPluginControls(plugin.plugin_id)) {
       const configure = pluginNode('button', 'secondary-button plugin-configure', '插件设置');
       configure.prepend(createIcon(document, 'settings'));
       configure.type = 'button'; configure.setAttribute('aria-haspopup', 'dialog');
@@ -2130,7 +2127,8 @@ export function createPluginSettingsFeature({
     }
     const live = renderSemanticStatus(status); live.setAttribute('aria-label', `运行状态：${status.label}`); aside.append(live);
     heading.append(identity, aside);
-    fields.pluginDetail.append(heading, pluginNode('p', 'detail-desc', plugin.description || '暂无说明。'));
+    fields.pluginDetail.append(heading);
+    if (plugin.description) fields.pluginDetail.append(pluginNode('p', 'detail-desc', plugin.description));
     if (status.message || status.diagnostic) {
       const notice = pluginNode('div', 'plugin-health-notice');
       if (status.message) notice.append(pluginNode('p', '', status.message));
@@ -2139,7 +2137,8 @@ export function createPluginSettingsFeature({
     }
     const enableRow = pluginNode('section', 'plugin-enable-row');
     const enableCopy = pluginNode('div', '');
-    enableCopy.append(pluginNode('h3', '', '启用插件'), pluginNode('p', '', plugin.required ? 'Sakura 运行需要这个插件。' : '允许 Sakura 使用此插件的能力'));
+    enableCopy.append(pluginNode('h3', '', '启用插件'));
+    if (plugin.required) enableCopy.append(pluginNode('p', '', 'Sakura 必需组件'));
     const enabled = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
     const enableControls = pluginNode('div', 'plugin-enable-controls');
     enableControls.append(pluginNode('span', 'plugin-enable-label', enabled ? '已启用' : '已停用'));
@@ -2206,7 +2205,7 @@ export function createPluginSettingsFeature({
       const result = await runtimePluginController.install(sourceKind);
       if (!result) return;
       installedId = result.installId;
-      notify("安装完成。打开开关并应用后即可使用。", "success");
+      notify("插件已安装。", "success");
     } catch (error) {
       setError(String(error));
     } finally {
@@ -2279,6 +2278,7 @@ export function createPluginSettingsFeature({
   }
 
   function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = null } = {}) {
+    void getAsrController()?.refresh({ preserveDraft: true });
     pluginView = {
       permission_labels: pluginView?.permission_labels || {},
       items: snapshot.plugins.map((plugin) => ({
@@ -2576,23 +2576,26 @@ export function createPluginSettingsFeature({
     header.append(identity, close);
     const body = pluginNode('div', 'plugin-dialog-body');
     const general = renderPluginSettings(plugin); const voice = pluginNode('div', 'plugin-dialog-voice');
-    body.append(general, voice);
+    const asr = pluginNode('div', 'plugin-dialog-asr');
+    body.append(general, voice, asr);
     const error = pluginNode('p', 'error plugin-dialog-error'); error.hidden = true; error.setAttribute('role', 'alert');
     const footer = pluginNode('footer', 'plugin-dialog-footer');
-    footer.append(pluginNode('span', '', '更改将在点击底栏“应用”后保存'));
+    footer.append(pluginNode('span', '', '应用设置后生效'));
     const actions = pluginNode('div', '');
     const cancel = pluginNode('button', 'secondary-button', '取消'); cancel.type = 'button';
     const done = pluginNode('button', '', '完成'); done.type = 'submit'; actions.append(cancel, done); footer.append(actions);
     form.append(header, body, error, footer); dialog.append(form);
     const editor = {
-      dialog, general, voice, installId: plugin.id, generation: runtimePluginController?.snapshot()?.coreGenerationId,
+      dialog, general, voice, asr, installId: plugin.id, generation: runtimePluginController?.snapshot()?.coreGenerationId,
       schema: pluginDialogSchema(plugin), error, closing: false,
       initial: Object.fromEntries(pluginSettingsSections(plugin).filter((section) => !['memory', 'voice'].includes(section.surface))
         .map((section) => [section.section_id, clonePlain(editablePluginSectionValues(section, pluginSectionValues(plugin.id, section.section_id)))])),
       voiceDraft: getVoiceController()?.pluginDraft(plugin.plugin_id),
+      asrDraft: getAsrController()?.hasPluginControls(plugin.plugin_id) ? getAsrController()?.pluginDraft() : null,
       async close(accept = false, restore = true) {
         if (editor.closing) return;
         editor.closing = true; closeSelects(dialog);
+        void getAsrController()?.cancelTest();
         dialog.inert = true;
         if (!accept && restore && runtimePluginController?.snapshot()?.coreGenerationId === editor.generation) {
           for (const [sectionId, values] of Object.entries(editor.initial)) {
@@ -2600,11 +2603,13 @@ export function createPluginSettingsFeature({
             if (current) Object.assign(current, values);
           }
           if (editor.voiceDraft) getVoiceController()?.restorePluginDraft(editor.voiceDraft);
+          if (editor.asrDraft) getAsrController()?.restorePluginDraft(editor.asrDraft);
         }
         dialog.classList.add('is-closing');
         await Promise.allSettled(dialog.getAnimations().map((animation) => animation.finished));
         if (pluginSettingsDialog !== editor) return;
         getVoiceController()?.unmountPluginSections();
+        getAsrController()?.unmountPluginControls();
         dialog.close(); dialog.remove(); pluginSettingsDialog = null;
         refreshDirty(); renderPluginPage();
         fields.pluginDetail.querySelector('.plugin-configure')?.focus({ preventScroll: true });
@@ -2613,6 +2618,7 @@ export function createPluginSettingsFeature({
     pluginSettingsDialog = editor;
     document.body.append(dialog);
     getVoiceController()?.mountPluginSections(plugin.plugin_id, voice);
+    getAsrController()?.mountPluginControls(plugin.plugin_id, asr);
     general.querySelectorAll('select').forEach(enhanceSelect);
     close.addEventListener('click', () => void editor.close()); cancel.addEventListener('click', () => void editor.close());
     dialog.addEventListener('cancel', (event) => { event.preventDefault(); void editor.close(); });
@@ -2689,6 +2695,7 @@ export function createPluginSettingsFeature({
         editor.closing = true;
         closeSelects(editor.dialog);
         getVoiceController()?.unmountPluginSections();
+        getAsrController()?.unmountPluginControls();
         editor.dialog.close();
         editor.dialog.remove();
       }

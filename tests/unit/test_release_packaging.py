@@ -446,10 +446,12 @@ def _minimal_stage(root: Path, target: str) -> Path:
         "sakura_mem0": "sakura.memory.mem0",
         "sakura_mobile": "sakura.mobile",
         "sakura_tts_hub": "sakura.tts",
+        "sakura_asr_hub": "sakura.asr",
+        "sakura_asr_sensevoice": "sakura.asr.sensevoice",
         "sakura_genie": "sakura.tts.genie",
         "sakura_gpt_sovits": "sakura.tts.gpt-sovits",
     }
-    dependency_plugins = {"sakura_mem0", "sakura_genie", "sakura_gpt_sovits"}
+    dependency_plugins = {"sakura_mem0", "sakura_genie", "sakura_gpt_sovits", "sakura_asr_sensevoice"}
     for plugin, plugin_id in plugin_ids.items():
         directory = stage / "plugins/builtin" / plugin
         directory.mkdir()
@@ -493,7 +495,7 @@ def _minimal_stage(root: Path, target: str) -> Path:
     return stage
 
 
-def test_distribution_validator_accepts_only_the_five_api4_builtins(tmp_path: Path) -> None:
+def test_distribution_validator_accepts_only_the_bundled_api4_plugins(tmp_path: Path) -> None:
     stage = _minimal_stage(tmp_path, "macos-arm64")
     validate_layout(stage, "macos-arm64", portable=False)
     extra = stage / "plugins/builtin/extra"

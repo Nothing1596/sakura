@@ -3,7 +3,10 @@ use std::{
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
-    sync::{mpsc, Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -303,6 +306,29 @@ impl Drop for AudioManager {
 pub struct AudioState {
     user_root: PathBuf,
     active: Mutex<Option<(String, Arc<AudioManager>)>>,
+    input_active: Arc<AtomicBool>,
+}
+
+/// The microphone worker owns this guard through device teardown. Failed opens,
+/// cancelled starts and unwinding cannot leave playback permanently disabled.
+pub(crate) struct InputPlaybackPause {
+    input_active: Arc<AtomicBool>,
+    held: bool,
+}
+
+impl InputPlaybackPause {
+    pub(crate) fn release(&mut self) {
+        if self.held {
+            self.held = false;
+            self.input_active.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Drop for InputPlaybackPause {
+    fn drop(&mut self) {
+        self.release();
+    }
 }
 
 impl AudioState {
@@ -310,6 +336,7 @@ impl AudioState {
         Self {
             user_root,
             active: Mutex::new(None),
+            input_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -323,6 +350,9 @@ impl AudioState {
             .active
             .lock()
             .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?;
+        if self.input_active.load(Ordering::SeqCst) {
+            return Err("TTS_PAUSED_FOR_VOICE_INPUT".into());
+        }
         if let Some((active_generation, manager)) = active.as_ref() {
             if active_generation == generation_id {
                 return Ok(manager.clone());
@@ -340,6 +370,7 @@ impl AudioState {
         Ok(manager)
     }
 
+    #[cfg(test)]
     pub fn current(&self, generation_id: &str) -> Result<Arc<AudioManager>, String> {
         self.active
             .lock()
@@ -357,6 +388,32 @@ impl AudioState {
                 manager.shutdown();
             }
         }
+    }
+
+    pub(crate) fn pause_for_input(&self) -> InputPlaybackPause {
+        self.input_active.store(true, Ordering::SeqCst);
+        self.shutdown();
+        InputPlaybackPause {
+            input_active: self.input_active.clone(),
+            held: true,
+        }
+    }
+
+    fn play_if_allowed(
+        &self,
+        generation: &str,
+        payload: PlayPreparedRequest,
+    ) -> Result<(), String> {
+        let active = self.active.lock().map_err(|_| "AUDIO_PLAYBACK_FAILED")?;
+        if self.input_active.load(Ordering::SeqCst) {
+            return Err("TTS_PAUSED_FOR_VOICE_INPUT".into());
+        }
+        active
+            .as_ref()
+            .filter(|(id, _)| id == generation)
+            .ok_or("STALE_GENERATION")?
+            .1
+            .play(payload)
     }
 }
 
@@ -637,7 +694,7 @@ pub(crate) fn tts_play_prepared(
         .available_generation_id()
         .map_err(str::to_string)?
         .ok_or_else(|| "STALE_GENERATION".to_string())?;
-    audio_state.current(&generation_id)?.play(payload)
+    audio_state.play_if_allowed(&generation_id, payload)
 }
 
 #[tauri::command]
@@ -999,6 +1056,65 @@ mod tests {
             manager.stop_and_clear().unwrap_err(),
             "AUDIO_PLAYBACK_FAILED"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn voice_input_drops_pending_playback_and_rejects_late_synthesis() {
+        let root = temp_root();
+        let state = AudioState::new(root.clone());
+        let manager = state.manager("generation-asr", Arc::new(|_| {})).unwrap();
+        let revision = manager.registration_revision().unwrap();
+        let mut pause = state.pause_for_input();
+        assert!(
+            matches!(state.manager("generation-asr", Arc::new(|_| {})), Err(error) if error == "TTS_PAUSED_FOR_VOICE_INPUT")
+        );
+        assert_eq!(
+            state
+                .play_if_allowed(
+                    "generation-asr",
+                    PlayPreparedRequest {
+                        opaque_id: "discarded".into(),
+                        playback_id: "skip".into()
+                    }
+                )
+                .unwrap_err(),
+            "TTS_PAUSED_FOR_VOICE_INPUT"
+        );
+        pause.release();
+        assert!(
+            matches!(state.current("generation-asr"), Err(error) if error == "STALE_GENERATION")
+        );
+        assert_ne!(manager.registration_revision().unwrap(), revision);
+        let fresh = state.manager("generation-asr", Arc::new(|_| {})).unwrap();
+        assert!(!Arc::ptr_eq(&fresh, &manager));
+        state.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_microphone_open_releases_playback_pause_without_allowing_an_early_stop() {
+        let root = temp_root();
+        let state = AudioState::new(root.clone());
+        {
+            let _device_open_guard = state.pause_for_input();
+            // A requested UI stop does not own this guard. Until the actual
+            // stream scope ends, the host still rejects TTS playback.
+            assert_eq!(
+                state
+                    .play_if_allowed(
+                        "generation",
+                        PlayPreparedRequest {
+                            opaque_id: "pending".into(),
+                            playback_id: "new".into()
+                        }
+                    )
+                    .unwrap_err(),
+                "TTS_PAUSED_FOR_VOICE_INPUT"
+            );
+        }
+        assert!(state.manager("generation", Arc::new(|_| {})).is_ok());
+        state.shutdown();
         let _ = fs::remove_dir_all(root);
     }
 }

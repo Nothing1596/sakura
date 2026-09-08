@@ -178,6 +178,7 @@ class _PluginProcess:
         self._roots = roots
         self._generation_id = generation_id
         self._spec = spec
+        self.scope_id = secrets.token_hex(16)
         self._dependency_root = dependency_root
         self._request_handler = request_handler
         self._on_exit = on_exit
@@ -332,6 +333,7 @@ class _PluginProcess:
         args: Sequence[Any],
         *,
         timeout: float | None = None,
+        caller_id: str = "sakura.core",
     ) -> object:
         peer = self._peer
         if peer is None:
@@ -343,6 +345,7 @@ class _PluginProcess:
                     "serviceKey": service_key,
                     "method": method,
                     "args": list(args),
+                    "callerId": caller_id,
                 },
                 timeout=self._call_timeout if timeout is None else timeout,
             )
@@ -632,6 +635,21 @@ class PluginRuntimeManager:
             detached_args,
             timeout=timeout,
         )
+
+    def service_identity(self, service_key: str, *, include_starting: bool = False) -> dict[str, str]:
+        """Host-only identity for an active Service's exact process lifetime."""
+        with self._lock:
+            binding = self._services.get(service_key)
+            if binding is not None and binding.process is not None:
+                return {"providerId": binding.provider_id, "scopeId": binding.process.scope_id}
+            if include_starting:
+                candidates = [record for record in self._records.values()
+                              if service_key in record.spec.provides and record.process is not None
+                              and record.reason_code == "PLUGIN_STARTING"]
+                if len(candidates) == 1:
+                    record = candidates[0]
+                    return {"providerId": record.spec.plugin_id, "scopeId": record.process.scope_id}
+        raise PluginRuntimeError("SERVICE_MISSING", service_key=service_key)
 
     def owns_callback(self, handle: str) -> bool:
         with self._lock:
@@ -1176,6 +1194,7 @@ class PluginRuntimeManager:
                 method,
                 detached_args,
                 timeout=timeout,
+                caller_id=caller_id,
             )
         callback = getattr(binding.host_service, method, None)
         if not callable(callback):
@@ -1274,15 +1293,14 @@ class PluginRuntimeManager:
                 if binding.provider_id != plugin_id
             }
             consumers = self._hard_dependents_locked(plugin_id)
-        # Revoke Host-owned resources before publishing the failed state. A
-        # snapshot that says ``failed`` must not still expose artifacts, tools,
-        # settings contributions, or other effects from the crashed process.
-        self._clear_plugin_scope(plugin_id)
+        # Service bindings are already unavailable. Finish the process tree
+        # before releasing Host files that a surviving native reader may hold.
         with self._lock:
             if record.process is process:
                 record.state = "failed"
                 record.reason_code = "PLUGIN_PROCESS_EXITING"
         process.terminate_after_transport_failure()
+        self._clear_plugin_scope(plugin_id)
         with self._lock:
             if record.process is process:
                 record.process = None

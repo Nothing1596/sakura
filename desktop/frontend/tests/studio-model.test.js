@@ -71,9 +71,8 @@ test("accepts package-safe character ids and rejects traversal aliases", () => {
 
 test("accepts schema v1 responses and rejects leaked host paths", () => {
   assert.equal(validateStudioResponse({ schemaVersion: 1, characters: [] }).schemaVersion, 1);
-  assert.throws(() => validateStudioResponse({ characters: [] }), /无效数据/);
+  assert.throws(() => validateStudioResponse({ characters: [] }));
   assert.throws(
     () => validateStudioResponse({ schemaVersion: 1, doc: { packageDir: "/private" } }),
-    /不允许公开/,
   );
 });

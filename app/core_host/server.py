@@ -806,6 +806,7 @@ class ControlDispatcher:
         self._chat_boundary = chat_boundary
         self._provider_settings_boundary: object | None = None
         self._tts_boundary: object | None = None
+        self._asr_boundary: object | None = None
         self._handshake = "pending"
         self._protocol_minor = PROTOCOL_MINOR
         self._negotiated_capabilities: tuple[str, ...] = ()
@@ -832,6 +833,9 @@ class ControlDispatcher:
         if callable(warmup):
             self._readiness.set_session_published_callback(warmup)
 
+    def attach_asr_boundary(self, boundary: object) -> None:
+        self._asr_boundary = boundary
+
     def invalidate_chat_generation(self) -> None:
         if self._chat_boundary is not None:
             cancel_all = getattr(self._chat_boundary, "cancel_all", None)
@@ -846,6 +850,8 @@ class ControlDispatcher:
         if callable(quiesce):
             quiesce()
         self.invalidate_chat_generation()
+        if self._asr_boundary is not None:
+            self._asr_boundary.cancel_all()
         if self._tts_boundary is not None:
             cancel_all = getattr(self._tts_boundary, "cancel_all", None)
             if callable(cancel_all):
@@ -855,6 +861,8 @@ class ControlDispatcher:
         """Stop generation-owned readers before replacing the active role package."""
 
         self.invalidate_generation_work()
+        if self._asr_boundary is not None:
+            self._asr_boundary.close()
         if self._chat_boundary is not None:
             close = getattr(self._chat_boundary, "close", None)
             if callable(close):
@@ -900,6 +908,8 @@ class ControlDispatcher:
                 return
             self._closed = True
         primary: BaseException | None = None
+        if self._asr_boundary is not None:
+            self._asr_boundary.close()
         if self._chat_boundary is not None:
             try:
                 getattr(self._chat_boundary, "close")()
@@ -1238,6 +1248,7 @@ def run_host(
     from .storage_settings import STORAGE_SETTINGS_REQUEST_NAMES, StorageSettingsBoundary
     from .tool_settings import TOOL_SETTINGS_REQUEST_NAMES, ToolSettingsBoundary
     from .tts_boundary import TTSBoundary, TTS_REQUEST_NAMES
+    from .asr_boundary import ASRBoundary, ASR_REQUEST_NAMES
     from .real_chat import RealChatBoundary
     from .router import ConcurrentHostRouter
 
@@ -1251,6 +1262,15 @@ def run_host(
         writer = ResponseWriter(output_stream)
         repair_character_packages(config.user_root)
         dispatcher = ControlDispatcher(config)
+        asr_boundary = ASRBoundary(
+            config.generation_id, config.generation_credential,
+            user_root=config.user_root,
+            plugin_application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
+            character_presentation_provider=getattr(dispatcher, "published_character_presentation", lambda: None),
+        )
+        attach_asr = getattr(dispatcher, "attach_asr_boundary", None)
+        if callable(attach_asr):
+            attach_asr(asr_boundary)
         tts_boundary = TTSBoundary(
             config.generation_id,
             config.generation_credential,
@@ -1369,6 +1389,8 @@ def run_host(
 
         class RequestBoundary:
             def handle(self, request: dict[str, Any]) -> object:
+                if request.get("name") in ASR_REQUEST_NAMES:
+                    return asr_boundary.handle(request)
                 if request.get("name") == "chat.send":
                     start_send = getattr(chat_boundary, "start_send", None)
                     if callable(start_send):
@@ -1489,6 +1511,7 @@ def run_host(
                     *PLUGIN_SETTINGS_REQUEST_NAMES,
                     *COMPOSER_TOOL_REQUEST_NAMES,
                     *TTS_REQUEST_NAMES,
+                    *ASR_REQUEST_NAMES,
                     *SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES,
                     *CHARACTER_SETTINGS_REQUEST_NAMES,
                     *CHARACTER_STUDIO_REQUEST_NAMES,

@@ -127,7 +127,7 @@ export function applyCapabilityManifest(document, input) {
     item.disabled = unavailable;
     item.classList.remove("is-active");
     item.removeAttribute("aria-current");
-    if (unavailable) item.title = manifest.unavailableReasons[section] || "该设置能力尚未迁移";
+    if (unavailable) item.title = manifest.unavailableReasons[section] || "暂不可用";
   }
   for (const page of document.querySelectorAll(".settings-page")) {
     page.classList.remove("is-active");
@@ -138,7 +138,8 @@ export function applyCapabilityManifest(document, input) {
   shell.hidden = enabled.size > 0;
   if (enabled.size === 0) {
     document.getElementById("pageTitle").textContent = "设置";
-    document.getElementById("pageSubtitle").textContent = "Runtime v2 设置窗口已就绪";
+    document.getElementById("pageSubtitle").textContent = "";
+    document.getElementById("pageSubtitle").hidden = true;
   }
 
   const firstSection = Array.from(document.querySelectorAll(".nav-item[data-page]"))
@@ -162,7 +163,7 @@ export function applyCapabilityManifest(document, input) {
     const status = featureStatus(manifest, control.dataset.settingsFeature);
     if (status !== "available") control.disabled = true;
     if (status === "unavailable") {
-      control.title = manifest.unavailableReasons[control.dataset.settingsFeature] || "该设置能力尚未迁移";
+      control.title = manifest.unavailableReasons[control.dataset.settingsFeature] || "暂不可用";
     }
   }
 

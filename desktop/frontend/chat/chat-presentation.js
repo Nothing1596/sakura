@@ -5,7 +5,7 @@ const LIFECYCLE_COPY = Object.freeze({
   initializing: ["正在准备", "正在准备聊天"],
   ready: ["在线", "可以开始对话"],
   setup_required: ["需要设置", "请先完成聊天供应商设置"],
-  degraded: ["受限", "聊天服务当前处于受限状态"],
+  degraded: ["受限", "部分聊天功能暂不可用"],
   failed: ["不可用", "会话启动失败"],
   rehydrating: ["正在恢复", "正在恢复桌宠状态"],
 });

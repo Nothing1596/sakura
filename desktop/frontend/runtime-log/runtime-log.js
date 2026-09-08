@@ -29,7 +29,6 @@ const scroll = document.querySelector("#log-scroll");
 const list = document.querySelector("#log-list");
 const empty = document.querySelector("#log-empty");
 const emptyTitle = document.querySelector("#log-empty-title");
-const emptyHint = document.querySelector("#log-empty-hint");
 const softwareCount = document.querySelector("#count-software");
 const pluginCount = document.querySelector("#count-plugins");
 const pluginFilter = document.querySelector("#plugin-filter");
@@ -256,10 +255,7 @@ function render(newAfterSequence = Number.MAX_SAFE_INTEGER) {
   }
   for (const card of existingCards.values()) card.remove();
   empty.hidden = visible.length !== 0;
-  emptyTitle.textContent = viewMode === "problems" ? "本次运行暂未发现问题" : "当前还没有可显示的记录";
-  emptyHint.textContent = viewMode === "problems"
-    ? "新的提醒或错误会出现在这里。"
-    : "新的运行事件、提醒或错误会出现在这里。";
+  emptyTitle.textContent = viewMode === "problems" ? "本次运行暂无问题" : "暂无记录";
   if (!selectedItem) {
     selectedItemKey = null;
     copy.disabled = true;
@@ -280,7 +276,7 @@ function scrollToLatest() {
 
 async function bootstrap() {
   if (!invoke || bootstrapActive) {
-    if (!invoke) status.textContent = "运行日志界面未连接到 Sakura，请关闭后重新打开。";
+    if (!invoke) status.textContent = "无法连接 Sakura，请重新打开运行日志。";
     return;
   }
   bootstrapActive = true;
@@ -299,8 +295,8 @@ async function bootstrap() {
     viewerState = null;
     applySnapshot(result.snapshot);
     status.textContent = result.snapshot.records.length
-      ? "已显示本次启动以来的运行记录。"
-      : "等待新的运行事件。";
+      ? "已显示本次运行日志。"
+      : "等待新记录。";
     scrollToLatest();
   } catch {
     status.textContent = "运行日志读取失败，请稍后刷新。";
@@ -323,12 +319,12 @@ async function poll() {
     if (generation !== requestGeneration) return;
     applySnapshot(snapshot, { animateAfter: previousLatest });
     if (viewerState.latestSequence > previousLatest) {
-      status.textContent = "已收到新的运行事件。";
+      status.textContent = "日志已更新。";
       scrollToLatest();
     }
   } catch {
     if (generation === requestGeneration) {
-      status.textContent = "日志更新暂时中断，Sakura 会继续尝试连接。";
+      status.textContent = "日志更新中断，正在重连。";
     }
   } finally {
     pollActive = false;
@@ -363,13 +359,13 @@ scroll.addEventListener("scroll", (event) => {
   const distanceFromBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight;
   if (distanceFromBottom > 72) {
     autoScroll.checked = false;
-    status.textContent = "已暂停自动滚动，勾选后可继续跟随最新记录。";
+    status.textContent = "已暂停自动滚动。";
   }
 });
 
 autoScroll.addEventListener("change", () => {
   if (autoScroll.checked) {
-    status.textContent = "已继续跟随最新记录。";
+    status.textContent = "已开启自动滚动。";
     scrollToLatest();
   }
 });
@@ -380,7 +376,7 @@ copy.addEventListener("click", async () => {
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
-    status.textContent = "已复制选中的日志详情。";
+    status.textContent = "已复制。";
   } catch {
     status.textContent = "复制失败，请重新选择后再试。";
   }

@@ -4024,6 +4024,7 @@ version = "1.0.5"
 dependencies = [
  "block2",
  "cairo-rs",
+ "cpal",
  "gdk",
  "gtk",
  "image",

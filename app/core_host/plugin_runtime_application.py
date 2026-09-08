@@ -7,6 +7,7 @@ from dataclasses import asdict
 from typing import Any, Mapping, Sequence
 
 from app.core_host.plugin_artifacts import PluginArtifactStore
+from app.core_host.audio_input import AudioInputResources, HOST_AUDIO_INPUT_SERVICE
 from app.core_host.plugin_character import PluginCharacterStore
 from app.core_host.plugin_host_services import PluginHostServices
 from app.core_host.mobile_host import MobileHostService
@@ -108,6 +109,11 @@ class PluginRuntimeApplication:
             specs,
             **manager_options,
         )
+        self.audio_input = AudioInputResources(roots.user_root, generation_id, self._manager.service_identity)
+        self._manager.install_host_service(
+            HOST_AUDIO_INPUT_SERVICE, self.audio_input,
+            exports=("verifyProvider", "authorize", "acquire", "release", "revoke"),
+        )
         self._host_services = PluginHostServices(
             tool_registry,
             artifact_store=PluginArtifactStore(roots.user_root, generation_id),
@@ -180,6 +186,9 @@ class PluginRuntimeApplication:
 
     def call_service(self, service_key: str, method: str, *args: object) -> object:
         return self._manager.call_service(service_key, method, *args)
+
+    def service_identity(self, service_key: str) -> dict[str, str]:
+        return self._manager.service_identity(service_key)
 
     def invoke_callback(self, handle: str, shape: str, *args: object) -> object:
         return self._manager.invoke_callback(handle, shape, *args)
@@ -329,6 +338,7 @@ class PluginRuntimeApplication:
         self._closed = True
         self.unbind_session()
         self._manager.close()
+        self.audio_input.close()
         self._host_services.clear()
         self._loaded.set()
 

@@ -519,12 +519,12 @@ class TTSBundleResource:
 
     @staticmethod
     def descriptor(section_id: str, title: str, label: str) -> dict[str, object]:
-        return {"sectionId": section_id, "title": title, "order": 100, "fields": [{"key": "bundleResource", "label": label, "type": "resource", "description": "由此插件安装和维护的本地运行组件。", "actionIds": ["installBundle", "retryBundle", "cancelBundle"], "default": {"applicability": "required", "subtitle": "", "ready": False, "taskState": "idle", "message": "", "detail": "", "progress": None, "availableActionIds": []}}], "actions": [{"actionId": "installBundle", "label": "安装", "description": "下载并安装推荐组件。"}, {"actionId": "retryBundle", "label": "重试", "description": "重新尝试安装推荐组件。"}, {"actionId": "cancelBundle", "label": "取消", "description": "取消安装。"}]}
+        return {"sectionId": section_id, "title": title, "order": 100, "fields": [{"key": "bundleResource", "label": label, "type": "resource", "actionIds": ["installBundle", "retryBundle", "cancelBundle"], "default": {"applicability": "required", "subtitle": "", "ready": False, "taskState": "idle", "message": "", "detail": "", "progress": None, "availableActionIds": []}}], "actions": [{"actionId": "installBundle", "label": "安装"}, {"actionId": "retryBundle", "label": "重试"}, {"actionId": "cancelBundle", "label": "取消"}]}
 
     def load(self) -> dict[str, object]:
         entry = self._entry()
         if self._custom_endpoint(dict(self._config_get())):
-            return {"bundleResource": self._value("not_required", "外部服务", True, "无需安装", "当前配置连接已有服务。", [])}
+            return {"bundleResource": self._value("not_required", "外部服务", True, "无需安装", "", [])}
         if entry is None:
             return {"bundleResource": self._value("unsupported", "当前平台", False, "不支持一键安装", "当前平台没有兼容安装包，可连接已有服务。", [])}
         with self._lock:
@@ -535,10 +535,10 @@ class TTSBundleResource:
                 if state == "failed"
                 else f"已下载 {self._downloaded:,} / {self._total:,} 字节"
                 if self._downloaded and self._total
-                else "下载只会在点击安装或重试后开始。"
+                else ""
             )
         if state in {"idle", "succeeded"} and _installed(entry, self._user_root):
-            return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", True, "已安装", "组件已就绪。", [], terminal="succeeded")}
+            return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", True, "已安装", "", [], terminal="succeeded")}
         actions = ["cancelBundle"] if state in {"queued", "running"} else ["retryBundle"] if state in {"failed", "cancelled"} else ["installBundle"]
         message = {"queued": "等待下载", "running": self._stage or "正在安装", "failed": "安装失败", "cancelled": "已取消"}.get(state, "尚未安装")
         return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", False, message, detail, actions, terminal=state)}

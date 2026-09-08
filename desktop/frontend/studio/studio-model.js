@@ -7,7 +7,7 @@ export function characterOptionLabel(character) {
 export function characterOptionGroup(character) {
   return character?.is_installed
     ? { id: "published", label: "已发布角色", sourceLabel: "已发布" }
-    : { id: "workspace", label: "工作区", sourceLabel: "工作区" };
+    : { id: "workspace", label: "草稿", sourceLabel: "草稿" };
 }
 
 export function selectBootstrapCharacter(characters, selectedCharacterId) {
@@ -56,11 +56,11 @@ export function isValidCharacterId(value) {
 
 export function validateStudioResponse(value) {
   if (!value || typeof value !== "object" || Array.isArray(value) || value.schemaVersion !== 1) {
-    throw new Error("角色工坊返回了无效数据。");
+    throw new Error("角色数据无效，请重新打开角色工坊。");
   }
   const serialized = JSON.stringify(value);
   if (serialized.includes('"packageDir"') || serialized.includes('"sourcePath"')) {
-    throw new Error("角色工坊返回了不允许公开的路径字段。");
+    throw new Error("角色数据校验失败，请重新打开角色工坊。");
   }
   return value;
 }

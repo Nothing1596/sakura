@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="light" />
     <title>Sakura Runtime v2</title>
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./audio/asr.css" />
     <script type="module" src="./app.js"></script>
   </head>
   <body data-shell-state="loading" data-chat-state="ready">
@@ -76,6 +77,16 @@
           aria-label="待发送的截图"
           hidden
         ></div>
+        <span id="voice-status" role="status" hidden></span>
+        <div id="voice-recording" class="voice-recording" hidden>
+          <span class="visually-hidden" role="status">正在录音，再次点击麦克风结束，按 Esc 取消</span>
+          <canvas id="voice-waveform" aria-hidden="true"></canvas>
+        </div>
+        <button type="button" id="voice-mic" aria-label="开始语音输入" title="开始语音输入" hidden>
+          <span class="sakura-icon icon-mic" aria-hidden="true"></span>
+          <span class="voice-stop" aria-hidden="true" hidden></span>
+          <span class="voice-spinner" aria-hidden="true" hidden></span>
+        </button>
         <button type="submit" id="composer-send" tabindex="-1" data-action="send" aria-label="发送消息">
           <span class="composer-action-icon composer-action-icon--send" aria-hidden="true">
             <span class="sakura-icon icon-send-horizontal" aria-hidden="true"></span>

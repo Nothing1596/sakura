@@ -96,6 +96,14 @@
         "runtime-v2-tts-frontend-journey"
       ]
     },
+    "journey-asr": {
+      "description": "验证语音输入草稿回填、ASR 插件路由、临时音频授权和宿主采集处理",
+      "cases": [
+        "runtime-v2-asr-python-journey",
+        "runtime-v2-asr-rust-journey",
+        "runtime-v2-asr-frontend-journey"
+      ]
+    },
     "journey-screen-capture": {
       "description": "验证手动截图与定时截图、generation 私有图像资源、内存批次和聊天单次消费",
       "cases": [
@@ -712,6 +720,39 @@
       "env": {
         "NO_COLOR": "1"
       }
+    },
+    {
+      "id": "runtime-v2-asr-python-journey",
+      "description": "验证独立 ASR Hub/Provider 进程、取消、至多一次结果、授权与资源清理",
+      "argv": [
+        "{python}", "-m", "pytest", "-q",
+        "tests/unit/test_asr_input.py",
+        "tests/unit/test_asr_plugins.py"
+      ],
+      "timeout_seconds": 180,
+      "env": {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8"}
+    },
+    {
+      "id": "runtime-v2-asr-rust-journey",
+      "description": "验证采集状态、有界 PCM、真实音量摘要、重采样与 WAV 格式；不自动打开麦克风",
+      "argv": [
+        "cargo", "test", "--manifest-path", "desktop/src-tauri/Cargo.toml", "--locked",
+        "asr::tests", "--", "--test-threads=1"
+      ],
+      "timeout_seconds": 240,
+      "env": {"NO_COLOR": "1", "CARGO_TERM_COLOR": "never"}
+    },
+    {
+      "id": "runtime-v2-asr-frontend-journey",
+      "description": "验证点击录音、取消、草稿和附件保留、手动发送及真实音量事件隔离",
+        "argv": [
+          "node", "--test", "desktop/frontend/tests/asr-runtime.test.js",
+          "desktop/frontend/tests/asr-settings.test.js",
+          "desktop/frontend/tests/asr-availability.test.js",
+          "desktop/frontend/tests/asr-input-test.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {"NO_COLOR": "1"}
     },
     {
       "id": "runtime-v2-screen-capture-python-journey",

@@ -121,7 +121,7 @@ class BackchannelSettings:
 
 @dataclass(frozen=True)
 class AppSettingsService:
-    """读取共享 YAML 配置，只写入当前角色选择和屏幕感知设置。"""
+    """读取和保存宿主共享 YAML 配置。"""
 
     base_dir: Path
 
@@ -313,6 +313,15 @@ class AppSettingsService:
                 BUBBLE_AUTO_HIDE_DEFAULT_DELAY_SECONDS,
             ),
         )
+
+    def load_audio_input_device(self) -> str:
+        value = self._system_section("audio_input").get("device_id", "")
+        return value if isinstance(value, str) else ""
+
+    def save_audio_input_device(self, device_id: str) -> None:
+        data = self._system_document()
+        data["audio_input"] = {**_mapping(data.get("audio_input")), "device_id": device_id}
+        save_yaml_mapping(self.system_config_path, data)
 
     def load_backchannel_settings(self) -> BackchannelSettings:
         section = self._system_section("backchannel")

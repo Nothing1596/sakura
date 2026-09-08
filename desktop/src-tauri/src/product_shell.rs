@@ -30,7 +30,7 @@ const MENU_OPEN_RUNTIME_LOG: &str = "sakura.runtime-log.open";
 const MENU_OPEN_SETTINGS: &str = "sakura.settings.open";
 const MENU_EXIT_APP: &str = "sakura.app.exit";
 const PRODUCT_TRAY_ICON: &[u8] = include_bytes!("../icons/icon.png");
-const PRODUCT_MENU_UNAVAILABLE_REASON: &str = "该功能尚未迁移到 Runtime v2";
+const PRODUCT_MENU_UNAVAILABLE_REASON: &str = "此功能暂不可用";
 const FIRST_RUN_GUIDE_NAMESPACE: &str = "FIRST_RUN_GUIDE";
 const FIRST_RUN_GUIDE_FIELD: &str = "first_run_guide_completed";
 
@@ -551,7 +551,7 @@ const SETTINGS_SECTIONS: [&str; 11] = [
 
 impl SettingsCapabilityManifest {
     fn shell_only(window_generation: u64) -> Self {
-        let reason = "该设置能力尚未迁移到 Runtime v2";
+        let reason = "此设置暂不可用";
         let unavailable_reasons = SETTINGS_SECTIONS
             .into_iter()
             .map(|section| (section.to_string(), reason.to_string()))
@@ -627,9 +627,9 @@ impl SettingsCapabilityManifest {
             manifest.unavailable_reasons.insert(
                 "appearance.input_visual_effect.gaussian_blur".to_string(),
                 if cfg!(windows) {
-                    "当前 Windows 环境不支持高斯模糊；请右键桌宠打开“运行日志”查看原因".to_string()
+                    "高斯模糊不可用，详情见运行日志".to_string()
                 } else {
-                    "实时桌面高斯仅支持 Windows 或 macOS".to_string()
+                    "仅支持 Windows 和 macOS".to_string()
                 },
             );
         }
@@ -639,7 +639,7 @@ impl SettingsCapabilityManifest {
                 if cfg!(target_os = "macos") {
                     "需要 macOS 26 或更高版本".to_string()
                 } else if cfg!(windows) {
-                    "Windows 端液态玻璃暂未实现".to_string()
+                    "Windows 暂不支持液态玻璃".to_string()
                 } else {
                     "当前平台不支持液态玻璃".to_string()
                 },
@@ -711,6 +711,7 @@ impl SettingsCapabilityManifest {
                 status: "available".to_string(),
                 features: BTreeMap::from([
                     ("voice.tts".to_string(), "available".to_string()),
+                    ("voice.asr".to_string(), "available".to_string()),
                     ("voice.bundle".to_string(), "unavailable".to_string()),
                 ]),
             },
@@ -718,7 +719,7 @@ impl SettingsCapabilityManifest {
         manifest.unavailable_reasons.remove("voice");
         manifest.unavailable_reasons.insert(
             "voice.bundle".to_string(),
-            "整合包安装将在 Provider 插件贡献迁移完成后重新开放".to_string(),
+            "请在语音插件设置中安装".to_string(),
         );
         let mut interaction_features = BTreeMap::from([
             (
@@ -773,7 +774,7 @@ impl SettingsCapabilityManifest {
         } else {
             manifest.unavailable_reasons.insert(
                 "chat.bubble_auto_hide".to_string(),
-                "当前版本先开放 Windows 桌宠控件自动显隐".to_string(),
+                "仅支持 Windows".to_string(),
             );
         }
         manifest
@@ -1401,7 +1402,7 @@ mod tests {
         let expected_reason = if cfg!(target_os = "macos") {
             "需要 macOS 26 或更高版本"
         } else if cfg!(windows) {
-            "Windows 端液态玻璃暂未实现"
+            "Windows 暂不支持液态玻璃"
         } else {
             "当前平台不支持液态玻璃"
         };

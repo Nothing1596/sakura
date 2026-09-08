@@ -75,14 +75,14 @@
       <section class="detail-card">
         <header class="page-head">
           <h1 id="pageTitle" class="page-title">角色与布局</h1>
-          <p id="pageSubtitle" class="page-subtitle">选择陪伴角色与桌宠布局</p>
+          <p id="pageSubtitle" class="page-subtitle" hidden></p>
         </header>
 
         <div class="page-scroll" data-submission-lock>
         <section id="capabilityShell" class="capability-shell" role="status" hidden>
           <span class="capability-shell-mark" aria-hidden="true">❀</span>
           <h2>设置窗口已连接</h2>
-          <p>新版设置正在分阶段迁移。尚未开放的页面会保持禁用，不会读取或改写你的配置。</p>
+          <p>暂无可用设置。</p>
         </section>
         <section id="page-character" class="settings-page is-active">
           <fieldset class="settings-group">
@@ -90,7 +90,6 @@
             <div class="setting-row">
               <label class="setting-row-text" for="characterSelect">
                 <span class="setting-title">当前角色</span>
-                <span class="setting-desc">切换桌宠使用的角色立绘与人设。</span>
               </label>
               <div class="character-select-controls">
                 <select id="characterSelect"></select>
@@ -100,7 +99,6 @@
             <div class="setting-row">
               <label class="setting-row-text" for="portraitScale">
                 <span class="setting-title">立绘大小</span>
-                <span class="setting-desc">桌面上立绘的整体缩放比例。</span>
               </label>
               <div class="slider-control">
                 <input id="portraitScale" class="layout-slider" type="range" step="1" />
@@ -109,8 +107,7 @@
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="controlPanelWidth">
-                <span class="setting-title">对话框宽度</span>
-                <span class="setting-desc">对话气泡与输入栏的整体宽度。</span>
+                <span class="setting-title">气泡与输入栏宽度</span>
               </label>
               <div class="slider-control">
                 <input id="controlPanelWidth" class="layout-slider" type="range" step="1" />
@@ -119,8 +116,8 @@
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="bubbleHeight">
-                <span class="setting-title">对话框高度</span>
-                <span class="setting-desc">固定模式使用此高度；自动扩展时作为气泡的最低高度。</span>
+                <span class="setting-title">气泡高度</span>
+                <span class="setting-desc">启用动态气泡时作为最低高度。</span>
               </label>
               <div class="slider-control">
                 <input id="bubbleHeight" class="layout-slider" type="range" step="1" />
@@ -130,7 +127,6 @@
             <div class="setting-row">
               <label class="setting-row-text" for="controlPanelOffset">
                 <span class="setting-title">气泡上下位置</span>
-                <span class="setting-desc">气泡相对立绘的纵向位置。</span>
               </label>
               <div class="slider-control">
                 <input id="controlPanelOffset" class="layout-slider" type="range" step="1" />
@@ -139,8 +135,7 @@
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="inputBarOffset">
-                <span class="setting-title">输入框下移</span>
-                <span class="setting-desc">输入栏相对气泡向下偏移的距离。</span>
+                <span class="setting-title">输入栏下移</span>
               </label>
               <div class="slider-control">
                 <input id="inputBarOffset" class="layout-slider" type="range" step="1" />
@@ -150,7 +145,7 @@
             <div class="setting-row">
               <label class="setting-row-text" for="bubbleAutoExpand">
                 <span class="setting-title">动态气泡</span>
-                <span class="setting-desc">回复逐字出现时，气泡会随文本向上平滑展开，并禁用内部滚动条。</span>
+                <span class="setting-desc">气泡随回复内容向上展开。</span>
               </label>
               <span class="setting-toggle"><input id="bubbleAutoExpand" type="checkbox" /></span>
             </div>
@@ -161,7 +156,6 @@
             <div class="setting-row">
               <label class="setting-row-text" for="speechFontSize">
                 <span class="setting-title">回复文字</span>
-                <span class="setting-desc">角色回复内容的字体大小。</span>
               </label>
               <div class="slider-control">
                 <input id="speechFontSize" class="layout-slider" type="range" step="1" />
@@ -171,7 +165,6 @@
             <div class="setting-row">
               <label class="setting-row-text" for="nameFontSize">
                 <span class="setting-title">角色名字</span>
-                <span class="setting-desc">回复中角色名字的字体大小。</span>
               </label>
               <div class="slider-control">
                 <input id="nameFontSize" class="layout-slider" type="range" step="1" />
@@ -181,7 +174,6 @@
             <div class="setting-row">
               <label class="setting-row-text" for="inputFontSize">
                 <span class="setting-title">输入框文字</span>
-                <span class="setting-desc">输入框内提示文字与已输入内容的字体大小。</span>
               </label>
               <div class="slider-control">
                 <input id="inputFontSize" class="layout-slider" type="range" step="1" />
@@ -194,7 +186,7 @@
             <div class="setting-row">
               <div class="setting-row-text">
                 <span class="setting-title">导入/导出</span>
-                <span id="characterArchiveHint" class="setting-desc">管理 Sakura .char 与 .voice 文件。</span>
+                <span id="characterArchiveHint" class="setting-desc"></span>
               </div>
               <div class="archive-controls">
                 <button id="characterImportButton" type="button" class="secondary-button">导入 .char</button>
@@ -210,22 +202,19 @@
             <legend>工具循环上限</legend>
             <div class="setting-row">
               <label class="setting-row-text" for="agentSteps">
-                <span class="setting-title">循环步数</span>
-                <span class="setting-desc">单轮对话最多执行的智能体步数。</span>
+                <span class="setting-title">每轮最多步数</span>
               </label>
               <span class="field-unit"><input id="agentSteps" type="number" step="1" data-settings-feature="tools.runtime_limits" /><span class="unit">步</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="toolCallsPerStep">
-                <span class="setting-title">每步工具数</span>
-                <span class="setting-desc">每个步骤内最多调用的工具次数。</span>
+                <span class="setting-title">每步最多工具数</span>
               </label>
               <span class="field-unit"><input id="toolCallsPerStep" type="number" step="1" data-settings-feature="tools.runtime_limits" /><span class="unit">次</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="toolCallsPerTurn">
-                <span class="setting-title">整轮工具数</span>
-                <span class="setting-desc">整轮对话累计的工具调用上限。</span>
+                <span class="setting-title">每轮最多工具数</span>
               </label>
               <span class="field-unit"><input id="toolCallsPerTurn" type="number" step="1" data-settings-feature="tools.runtime_limits" /><span class="unit">次</span></span>
             </div>
@@ -233,7 +222,7 @@
         </section>
 
         <section id="page-plugins" class="settings-page admin-page">
-          <div class="plugin-page-heading"><div><h2>插件 <span id="pluginTotal" class="plugin-count"></span></h2><p>为 Sakura 添加能力，在这里管理它们。</p></div>
+          <div class="plugin-page-heading"><div><h2>插件 <span id="pluginTotal" class="plugin-count"></span></h2></div>
             <div id="pluginInstallMenuRoot" class="plugin-install-menu">
               <button id="pluginInstallMenuButton" class="secondary-button plugin-install-menu__trigger" type="button" aria-haspopup="menu" aria-expanded="false">
                 <span>安装插件…</span>
@@ -277,29 +266,28 @@
             <summary>高级参数</summary>
             <div class="setting-row">
               <label class="setting-row-text" for="contextWindowTokens">
-                <span class="setting-title">上下文预算 (tokens)</span>
-                <span class="setting-desc">为当前对话模型预留的上下文预算。留空默认 32K；支持 4,096–2,000,000，例如 1,000,000。</span>
+                <span class="setting-title">上下文预算</span>
+                <span class="setting-desc">对话可使用的上下文长度；留空为 32K。</span>
               </label>
               <span class="field-unit"><input id="contextWindowTokens" type="number" min="4096" max="2000000" step="1" inputmode="numeric" placeholder="例如 1000000" /><span class="unit">tokens</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="apiTimeout">
                 <span class="setting-title">请求超时时间</span>
-                <span class="setting-desc">单次请求等待响应的最长时间。</span>
               </label>
               <span class="field-unit"><input id="apiTimeout" type="number" step="1" /><span class="unit">秒</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="apiTemperature">
                 <span class="setting-title">创造性 (temperature)</span>
-                <span class="setting-desc">越高回复越灵活，越低越稳定（0–2）。</span>
+                <span class="setting-desc">越高越多变，越低越稳定。</span>
               </label>
               <input id="apiTemperature" type="number" min="0" max="2" step="0.01" />
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="apiTopP">
                 <span class="setting-title">用词多样性 (top_p)</span>
-                <span class="setting-desc">通常保持关闭；需要更细地控制回复变化时再开启。</span>
+                <span class="setting-desc">值越低，用词范围越集中。</span>
               </label>
               <label class="inline-input">
                 <input id="apiTopPEnabled" type="checkbox" />
@@ -309,8 +297,7 @@
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="apiMaxTokens">
-                <span class="setting-title">回复长度 (max_tokens)</span>
-                <span class="setting-desc">通常保持关闭；需要限制单次回复长度时再开启。</span>
+                <span class="setting-title">回复长度上限 (max_tokens)</span>
               </label>
               <label class="inline-input">
                 <input id="apiMaxTokensEnabled" type="checkbox" />
@@ -322,21 +309,63 @@
         </section>
 
         <section id="page-voice" class="settings-page">
+          <fieldset id="asrSettings" class="settings-group">
+            <legend>语音输入</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="asrProvider">
+                <span class="setting-title">识别引擎</span>
+                <span class="setting-desc">用于所有角色。</span>
+              </label>
+              <select id="asrProvider"></select>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="asrLanguage">
+                <span class="setting-title">识别语言</span>
+              </label>
+              <select id="asrLanguage">
+                <option value="auto">自动检测</option><option value="zh">普通话</option>
+                <option value="yue">粤语</option><option value="en">英语</option>
+                <option value="ja">日语</option><option value="ko">韩语</option>
+              </select>
+            </div>
+            <p id="asrLocation" class="page-note"></p>
+            <p id="asrStatus" class="page-note" role="status">正在读取语音输入引擎……</p>
+            <div id="asrInputControlsHome">
+              <div id="asrInputControls" class="asr-input-controls">
+                <div class="setting-row">
+                  <label class="setting-row-text" for="asrInputDevice">
+                    <span class="setting-title">麦克风</span>
+                  </label>
+                  <select id="asrInputDevice"><option value="">系统默认</option></select>
+                </div>
+                <div class="plugin-setting-actions">
+                  <button id="asrRefreshDevices" type="button" class="secondary-button">刷新设备</button>
+                  <button id="asrTestStart" type="button" class="secondary-button">开始测试</button>
+                  <button id="asrTestCancel" type="button" class="secondary-button" hidden>取消测试</button>
+                </div>
+                <meter id="asrTestLevel" min="0" max="1" value="0" aria-label="实际麦克风音量" hidden></meter>
+                <output id="asrTestResult" class="asr-test-result" role="status" aria-live="polite"></output>
+              </div>
+            </div>
+            <div id="asrResources"></div>
+            <div class="plugin-setting-actions">
+              <button id="asrRefresh" type="button" class="secondary-button">重新检查</button>
+              <button id="asrOpenPlugins" type="button" class="secondary-button">插件与引擎设置</button>
+            </div>
+          </fieldset>
           <div id="voiceUnavailable" class="plugin-surface" hidden></div>
           <div id="voiceSettings" class="voice-settings">
           <fieldset class="settings-group" data-settings-feature="voice.tts">
-            <legend>当前角色语音</legend>
+            <legend>语音输出 · 当前角色</legend>
             <div class="setting-row">
               <label class="setting-row-text" for="ttsEnabled">
-                <span class="setting-title">启用角色语音</span>
-                <span class="setting-desc">让桌宠用合成语音朗读回复。</span>
+                <span class="setting-title">朗读角色回复</span>
               </label>
               <span class="setting-toggle"><input id="ttsEnabled" type="checkbox" /></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="ttsProvider">
                 <span class="setting-title">语音引擎</span>
-                <span class="setting-desc">选择当前角色使用的语音合成引擎。</span>
               </label>
               <select id="ttsProvider"></select>
             </div>
@@ -355,14 +384,13 @@
             <div class="setting-row">
               <label class="setting-row-text" for="visualEffectMode">
                 <span class="setting-title">外观效果</span>
-                <span class="setting-desc">输入栏的毛玻璃 / 透明等视觉风格。</span>
               </label>
               <select id="visualEffectMode" data-settings-feature="appearance.input_visual_effect"></select>
             </div>
             <div class="setting-row">
               <div class="setting-row-text">
                 <span class="setting-title">主题操作</span>
-                <span class="setting-desc">根据角色默认立绘生成配色，或恢复角色包默认主题。</span>
+                <span class="setting-desc">AI 配色参考角色默认立绘。</span>
               </div>
               <div class="inline-actions">
                 <button id="themeAiButton" class="secondary-button" type="button">AI 生成配色</button>
@@ -378,14 +406,12 @@
             <div class="setting-row">
               <label class="setting-row-text" for="subtitleTypingInterval">
                 <span class="setting-title">字幕逐字间隔</span>
-                <span class="setting-desc">字幕逐字显示的间隔时间。</span>
               </label>
               <span class="field-unit"><input id="subtitleTypingInterval" type="number" step="1" data-settings-feature="chat.presentation_timing" /><span class="unit">ms</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="replySegmentPause">
                 <span class="setting-title">回复分段停顿</span>
-                <span class="setting-desc">多段回复之间的停顿时间。</span>
               </label>
               <span class="field-unit"><input id="replySegmentPause" type="number" step="1" data-settings-feature="chat.presentation_timing" /><span class="unit">ms</span></span>
             </div>
@@ -396,14 +422,12 @@
             <div class="setting-row">
               <label class="setting-row-text" for="bubbleAutoHide">
                 <span class="setting-title">气泡自动隐藏</span>
-                <span class="setting-desc">无操作一段时间后自动隐藏气泡。</span>
               </label>
               <span class="setting-toggle"><input id="bubbleAutoHide" type="checkbox" data-settings-feature="chat.bubble_auto_hide" /></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="bubbleAutoHideDelay">
                 <span class="setting-title">无操作时长</span>
-                <span class="setting-desc">触发自动隐藏前的无操作时长。</span>
               </label>
               <span class="field-unit"><input id="bubbleAutoHideDelay" type="number" step="1" data-settings-feature="chat.bubble_auto_hide" /><span class="unit">秒</span></span>
             </div>
@@ -414,35 +438,33 @@
             <div class="setting-row">
               <label class="setting-row-text" for="enabled">
                 <span class="setting-title">启用主动屏幕感知</span>
-                <span class="setting-desc">桌宠定时截屏判断是否主动找你搭话。</span>
+                <span class="setting-desc">定时截屏，判断是否主动搭话。</span>
               </label>
               <span class="setting-toggle"><input id="enabled" type="checkbox" /></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="checkInterval">
-                <span class="setting-title">主动检查间隔</span>
-                <span class="setting-desc">每隔多久截屏检查一次屏幕内容。</span>
+                <span class="setting-title">截图检查间隔</span>
               </label>
               <span class="field-unit"><input id="checkInterval" type="number" step="1" /><span class="unit">分钟</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="cooldown">
                 <span class="setting-title">主动发言冷却</span>
-                <span class="setting-desc">两次主动搭话之间的最短间隔。</span>
+                <span class="setting-desc">两次主动搭话的最短间隔。</span>
               </label>
               <span class="field-unit"><input id="cooldown" type="number" step="1" /><span class="unit">分钟</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="batchLimit">
                 <span class="setting-title">单次最多发送截图</span>
-                <span class="setting-desc">一次主动感知最多附带的截图张数。</span>
               </label>
               <span class="field-unit"><input id="batchLimit" type="number" step="1" /><span class="unit">张</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="screenResolution">
                 <span class="setting-title">截图分辨率</span>
-                <span class="setting-desc">发送前等比缩小截图；固定档位不会放大小于目标尺寸的屏幕。</span>
+                <span class="setting-desc">发送前按比例缩小，不放大截图。</span>
               </label>
               <select id="screenResolution">
                 <option value="fullscreen">全屏分辨率</option>
@@ -463,14 +485,14 @@
                   发送匿名统计数据
                   <button id="telemetryHelpButton" type="button" class="setting-help-button" aria-label="了解匿名统计数据"><span class="sakura-icon icon-circle-question-mark" aria-hidden="true"></span></button>
                 </span>
-                <span class="setting-desc">默认开启，可随时关闭。不会发送聊天、Prompt、Memory、工具内容、完整日志或 Agent Trace。</span>
+                <span class="setting-desc">不包含聊天、提示词、记忆、工具内容、完整日志或执行轨迹。</span>
               </div>
               <input id="telemetryEnabled" type="checkbox" role="switch" />
             </div>
             <div class="setting-row">
               <div class="setting-row-text">
                 <span class="setting-title">诊断 ID</span>
-                <span class="setting-desc">随机生成，不来自账号或设备信息；重新生成只影响以后发送的数据。</span>
+                <span class="setting-desc">随机生成，与账号和设备无关；重置只影响后续数据。</span>
                 <code id="telemetryInstallationId" class="path-value">读取中…</code>
               </div>
               <div class="archive-controls">
@@ -484,7 +506,6 @@
             <div class="setting-row">
               <div class="setting-row-text">
                 <label class="setting-title" for="launchAtLogin">开机自动启动</label>
-                <span class="setting-desc">登录系统后自动启动 Sakura。</span>
               </div>
               <input id="launchAtLogin" type="checkbox" role="switch" data-settings-feature="system.launch_at_login" disabled />
             </div>
@@ -494,7 +515,7 @@
             <div class="setting-row">
               <div class="setting-row-text">
                 <label class="setting-title" for="updateAutoCheck">自动检测更新</label>
-                <span class="setting-desc">每次启动后台检查；同一版本每天最多主动提醒一次。</span>
+                <span class="setting-desc">启动时检查，同一版本每天最多提醒一次。</span>
               </div>
               <input id="updateAutoCheck" type="checkbox" role="switch" checked />
             </div>
@@ -504,7 +525,6 @@
             <div class="setting-row">
               <div class="setting-row-text">
                 <span class="setting-title">新手引导</span>
-                <span class="setting-desc">重新了解角色导入、供应商和模型设置；不会更改现有配置。</span>
               </div>
               <button id="systemFirstRunGuideButton" type="button" class="secondary-button">
                 <span class="about-action-icon sakura-icon icon-circle-question-mark" aria-hidden="true"></span>重新查看
@@ -516,7 +536,7 @@
             <div class="setting-row">
               <div class="setting-row-text">
                 <span class="setting-title">数据目录</span>
-                <span class="setting-desc">配置、聊天记录、角色和用户插件都保存在这里。</span>
+                <span class="setting-desc">保存配置、聊天记录、角色和插件。</span>
                 <code id="storageUserRoot" class="path-value"></code>
               </div>
               <button id="storageOpenUserRoot" type="button" class="secondary-button">打开数据目录</button>
@@ -524,7 +544,7 @@
             <div class="setting-row">
               <div class="setting-row-text">
                 <span class="setting-title">导入角色历史记录和记忆</span>
-                <span class="setting-desc">从 Sakura 0.9.x 目录增量导入多个角色；相同记录会跳过，冲突时再询问。</span>
+                <span class="setting-desc">重复记录会跳过，冲突时询问。</span>
                 <span id="legacyRoleDataImportStatus" class="setting-desc" role="status"></span>
               </div>
               <span class="disabled-button-hint" title="开发中">
@@ -537,7 +557,7 @@
             <div class="setting-row">
               <div class="setting-row-text">
                 <span class="setting-title">TTS 位置</span>
-                <span class="setting-desc">更改位置只切换目录，不会自动搬运已有模型和运行时。</span>
+                <span class="setting-desc">更改目录不会移动已有文件。</span>
                 <code id="storageTtsRoot" class="path-value"></code>
                 <span id="storageTtsStatus" class="setting-desc"></span>
               </div>

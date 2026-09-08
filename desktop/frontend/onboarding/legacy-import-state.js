@@ -4,7 +4,7 @@ export function beginLegacyInspection(snapshot) {
     state: "inspecting",
     stage: "inspecting",
     percent: 0,
-    message: "正在扫描旧版本数据，文件较多时可能需要几分钟。",
+    message: "正在扫描，文件较多时可能需要几分钟。",
   };
 }
 

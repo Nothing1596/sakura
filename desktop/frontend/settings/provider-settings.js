@@ -86,7 +86,7 @@ export function createProviderSettingsFeature({
   const inheritedSlotManualSelections = {};
   const PROVIDER_FIELD_PLACEHOLDERS = {
     base_url: "通常以 /v1 结尾",
-    api_key: "通常以 sk- 开头",
+    api_key: "填写 API Key",
   };
 
   // 内置预设：选中即预填 Base URL 与图标，其余走「自定义」。
@@ -210,7 +210,7 @@ export function createProviderSettingsFeature({
       } else {
         const text = document.createElement("p");
         text.className = "empty-state-text";
-        text.textContent = "还没有供应商，先添加一个开始配置 API。";
+        text.textContent = "尚未添加供应商";
         const cta = document.createElement("button");
         cta.type = "button";
         cta.className = "primary-button";
@@ -252,7 +252,7 @@ export function createProviderSettingsFeature({
     if (!profile) {
       const empty = document.createElement("p");
       empty.className = "empty-state";
-      empty.textContent = "选择左侧供应商查看与编辑配置。";
+      empty.textContent = "请选择供应商";
       detail.append(empty);
       return;
     }
@@ -357,7 +357,7 @@ export function createProviderSettingsFeature({
     if (!(profile.models || []).length) {
       const empty = document.createElement("p");
       empty.className = "hint";
-      empty.textContent = "还没有模型，点「自动检测」或在下方手动添加。";
+      empty.textContent = "尚未添加模型";
       list.append(empty);
     } else {
       profile.models.forEach((model) => {
