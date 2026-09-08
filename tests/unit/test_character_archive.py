@@ -589,6 +589,50 @@ def test_character_archive_rejects_resource_limit_violations(monkeypatch) -> Non
         import_character_archive(archive_path, root)
 
 
+@pytest.mark.parametrize("archive_root", ["character", "voice"])
+@pytest.mark.parametrize(
+    ("sizes", "free_bytes", "error"),
+    [
+        ([3 * 1024**3], 64 * 1024**3, None),
+        ([8 * 1024**3] * 4, 64 * 1024**3, None),
+        ([8 * 1024**3 + 1], 64 * 1024**3, "单个文件过大"),
+        ([8 * 1024**3] * 4 + [1], 64 * 1024**3, "总大小超过限制"),
+        ([3 * 1024**3], 3 * 1024**3, "磁盘空间不足"),
+    ],
+)
+def test_archive_large_resource_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    archive_root: str, sizes: list[int], free_bytes: int, error: str | None,
+) -> None:
+    import app.config.character_archive as archive_module
+    import app.storage.archive_security as security_module
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        security_module.shutil, "disk_usage",
+        lambda _path: SimpleNamespace(free=free_bytes),
+    )
+    archive_path = tmp_path / "large.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("manifest.json", b"")
+        for index in range(len(sizes)):
+            zf.writestr(f"{archive_root}/resource-{index}.bin", b"")
+    with zipfile.ZipFile(archive_path) as zf:
+        # Exercise the real pre-extraction checks without allocating GiB of fixtures.
+        for info, size in zip(zf.infolist()[1:], sizes):
+            info.file_size = size
+            info.compress_size = size
+        validate = (
+            archive_module._validate_zip_members if archive_root == "character"
+            else archive_module._validate_voice_zip_members
+        )
+        if error is None:
+            validate(zf, tmp_path)
+        else:
+            with pytest.raises(CharacterArchiveError, match=error):
+                validate(zf, tmp_path)
+
+
 def test_character_archive_rejects_extreme_compression_ratio(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import app.config.character_archive as archive_module
 
