@@ -1748,10 +1748,9 @@ async function startSettingsFrontend() {
     runtimeAsrController = createAsrSettingsController({
       document, invoke, enhanceSelect, refreshSelect,
       listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
-      onDirty: refreshDirty, onStatus: notify, openPlugins: () => showPage("plugins"),
+      onDirty: refreshDirty, onStatus: notify,
     });
     await runtimeAsrController.refresh();
-    await runtimeAsrController.refreshDevices();
   });
   if (featureStatus(manifest, "character.manage") === "available") {
     await runtimeCharacterFeature.initialize();

@@ -476,3 +476,43 @@ class Plugin:
     assert request_log["fields"]["provider_id"] == "fixture.asr.a"
     assert "text" not in json.dumps(hub_logs)
     assert str(allocation["path"]) not in json.dumps(hub_logs)
+
+
+@pytest.mark.parametrize("saved_language, expected", [(None, "ja"), ("ko", "ko")])
+def test_sensevoice_language_is_owned_by_plugin_and_survives_restart(tmp_path, saved_language, expected):
+    from app.storage.paths import StoragePaths
+
+    root = Path(__file__).parents[2]
+    distribution, user = tmp_path / "distribution", tmp_path / "user"
+    bundled = distribution / "plugins/builtin"
+    bundled.mkdir(parents=True)
+    for name in ("sakura_asr_hub", "sakura_asr_sensevoice"):
+        shutil.copytree(root / "plugins/builtin" / name, bundled / name, ignore=shutil.ignore_patterns("__pycache__"))
+    # This test exercises settings IPC only; inference dependencies are never imported.
+    (bundled / "sakura_asr_sensevoice/requirements.txt").unlink()
+    paths = StoragePaths(user)
+    hub_config = paths.plugin_data_for("sakura.asr") / "config.json"
+    hub_config.parent.mkdir(parents=True)
+    hub_config.write_text(json.dumps({"selectedProviderId": "sakura.asr.sensevoice", "language": "ja"}))
+    if saved_language:
+        own_config = paths.plugin_data_for("sakura.asr.sensevoice") / "config.json"
+        own_config.parent.mkdir(parents=True)
+        own_config.write_text(json.dumps({"language": saved_language}))
+    roots = RuntimeRoots(distribution, user)
+    application = PluginRuntimeApplication(roots, "asr-language-test", ToolRegistry(), PluginInventory(roots).scan().runtime_specs)
+    try:
+        application.start()
+        assert all(item["state"] == "active" for item in application.public_snapshot()["plugins"]), application.public_snapshot()
+        assert application.call_service("sakura.asr", "status")["language"] == expected
+        sections = application.settings_sections("voice-input")
+        recognition = next(item for item in sections if item["sectionId"] == "recognition")
+        assert recognition["pluginId"] == "sakura.asr.sensevoice"
+        assert {option["value"] for option in recognition["fields"][0]["options"]} == {"auto", "zh", "yue", "en", "ja", "ko"}
+        assert recognition["fields"][0]["value"] == expected
+        application.settings_save("sakura.asr.sensevoice", "recognition", {"language": "en"})
+        assert application.call_service("sakura.asr", "status")["language"] == "en"
+        assert json.loads(hub_config.read_text())["language"] == "ja"
+        application.reload_plugin("sakura.asr.sensevoice")
+        assert application.call_service("sakura.asr", "status")["language"] == "en"
+    finally:
+        application.close()

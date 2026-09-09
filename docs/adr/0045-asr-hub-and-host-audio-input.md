@@ -23,7 +23,7 @@ Core 使用，Host 录音向插件输入的资源授权仍需补齐。
 
 ASR 使用一个可替换的官方 Hub 插件，提供 `sakura.asr`。各识别引擎是独立插件，提供各自的 Service key，
 向 Hub 登记 descriptor。Hub 持有应用级当前引擎选择，通过 `status/warmup/begin/poll/cancel` 调用 Provider。
-引擎私有配置、模型资源、推理和 VAD 由引擎拥有。Hub 只做登记、选择、路由与任务状态，不成为模型运行平台。
+识别语言、支持的语言选项、模型资源、推理和 VAD 由引擎拥有。Hub 只做登记、选择、路由与任务状态，不成为模型运行平台。
 
 默认引擎另做官方 SenseVoice Provider，使用 sherpa-onnx、SenseVoiceSmall INT8 和 Silero VAD，优先 CPU
 本地识别。它与第三方遵循同一协议，可关闭和替换。新增 Provider 不要求修改 Core、UI 或 Hub 的模型名单。
@@ -32,7 +32,8 @@ ASR 使用一个可替换的官方 Hub 插件，提供 `sakura.asr`。各识别�
 的录音。普通插件 Service 只交换 JSON、资源 descriptor 与任务 ID，不跨插件传路径、音频数组或 callback。
 通用 Runtime 不理解 ASR Provider，也不参与模型选择。
 
-设备列表和麦克风选择由宿主管理，在语音输入页和 Provider 插件设置中提供同一套控制。插件设置中的输入测试
+语音输入的配置只在独立插件设置中展示。Hub 选择引擎，Provider 管理自己的语言和模型资源。
+设备列表和麦克风选择由宿主管理，在 Provider 插件设置中提供。插件设置中的输入测试
 复用正式采集与识别链路，绑定设置窗口；临时试用的引擎和设备不改变全局选择，文字只展示在测试结果中。
 
 输入栏麦克风位于发送按钮左侧。点击后进入录音，原麦克风变为停止按钮；再次点击停止并识别。录音区域显示

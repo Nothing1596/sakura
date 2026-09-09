@@ -87,7 +87,7 @@ class ASRBoundary:
                 result = self._settings()
             elif name == "asr.settings.save":
                 values = payload.get("values", payload)
-                if not isinstance(values, Mapping) or not set(values) <= {"inputDeviceId", "selectedProviderId", "language"}:
+                if not isinstance(values, Mapping) or not set(values) <= {"inputDeviceId", "selectedProviderId"}:
                     raise AudioInputError("ASR_SELECTION_INVALID")
                 values = dict(values)
                 device_id = self._device_id(values.pop("inputDeviceId")) if "inputDeviceId" in values else None
@@ -160,7 +160,7 @@ class ASRBoundary:
             code = getattr(error, "code", "ASR_SERVICE_UNAVAILABLE")
             if not isinstance(code, str) or not re.fullmatch(r"[A-Z0-9_]{1,80}", code):
                 code = "ASR_SERVICE_UNAVAILABLE"
-            return self._response(request, error=error_payload(code, "语音输入未能完成，请检查语音输入设置后重试。"))
+            return self._response(request, error=error_payload(code, "语音输入未能完成，请检查插件中的语音输入设置后重试。"))
 
     def _prepare(self, payload: Mapping) -> dict:
         purpose = payload.get("purpose", "draft")
@@ -368,7 +368,9 @@ class ASRBoundary:
 
     def _settings(self) -> dict:
         app = self._app()
+        hub_plugin_id = None
         try:
+            hub_plugin_id = app.service_identity("sakura.asr")["providerId"]
             status = app.call_service("sakura.asr", "status")
             providers = app.call_service("sakura.asr", "listProviders")
         except Exception:
@@ -376,7 +378,7 @@ class ASRBoundary:
             providers = []
         return {"schemaVersion": 1, **dict(status), "selectedProviderId": status.get("providerId"),
                 "inputDeviceId": self._settings_service.load_audio_input_device(),
-                "providers": providers,
+                "hubPluginId": hub_plugin_id, "providers": providers,
                 "sections": app.settings_sections("voice-input")}
 
     def _log_state(self, task: _Input, state: str) -> None:

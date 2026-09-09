@@ -1516,9 +1516,14 @@ textarea:disabled {
 }
 
 .custom-select__option.is-selected {
-  background: var(--tint-soft);
-  color: var(--sakura-primary);
   font-weight: var(--font-weight-semibold);
+}
+
+.custom-select__option.is-selected:not(.is-disabled)::after {
+  content: "✓";
+  float: right;
+  margin-left: 16px;
+  color: var(--sakura-primary);
 }
 
 @keyframes menu-in {

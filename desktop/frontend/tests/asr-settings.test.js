@@ -13,8 +13,8 @@ function element() {
   };
 }
 function fixture(snapshot, { devices = [], defaultDeviceId = null } = {}) {
-  const controls = Object.fromEntries(["asrProvider", "asrLanguage", "asrStatus", "asrLocation",
-    "asrResources", "asrRefresh", "asrOpenPlugins", "asrInputDevice", "asrRefreshDevices",
+  const controls = Object.fromEntries(["asrProvider", "asrStatus", "asrLocation",
+    "asrSettings", "asrSettingsHome", "asrInputDevice", "asrRefreshDevices",
     "asrInputControls", "asrInputControlsHome"].map((key) => [key, element()]));
   const calls = [];
   const controller = createAsrSettingsController({
@@ -51,8 +51,8 @@ test("ASR choices are Hub supplied, unavailable explicit choice survives refresh
 });
 
 test("microphone changes save independently while Hub is disabled and retain its saved choices", async () => {
-  const controls = Object.fromEntries(["asrProvider", "asrLanguage", "asrStatus", "asrLocation",
-    "asrResources", "asrRefresh", "asrOpenPlugins", "asrInputDevice"].map((key) => [key, element()]));
+  const controls = Object.fromEntries(["asrProvider", "asrStatus", "asrLocation",
+    "asrSettings", "asrSettingsHome", "asrInputDevice"].map((key) => [key, element()]));
   const saved = { selectedProviderId: "engine.saved", language: "ja", inputDeviceId: "old-mic" };
   let enabled = false;
   const controller = createAsrSettingsController({
@@ -77,40 +77,47 @@ test("microphone changes save independently while Hub is disabled and retain its
     await controller.refresh();
     assert.deepEqual(saved, { selectedProviderId: "engine.saved", language: "ja", inputDeviceId: "new-mic" });
     assert.equal(controls.asrProvider.value, "engine.saved");
-    assert.equal(controls.asrLanguage.value, "ja");
   } finally { controller.dispose(); }
 });
 
-test("model installation only invokes the selected provider's contributed resource action on click", async () => {
-  const f = fixture({ providers: [{ providerId: "thirdparty.asr", label: "Third party", processingLocation: "local", available: false }],
-    selectedProviderId: "thirdparty.asr", language: "auto", sections: [{
-      pluginId: "thirdparty.asr", sectionId: "weights",
-      fields: [{ type: "resource", label: "Weights", actionIds: ["installWeights"], value: {
-        taskState: "idle", message: "Missing", availableActionIds: ["installWeights"],
-      } }], actions: [{ actionId: "installWeights", label: "Install" }],
-    }] });
+test("Hub controls belong to its runtime plugin identity and cancelled edits restore the entire draft", async () => {
+  const f = fixture({ hubPluginId: "thirdparty.hub", providers: [
+    { providerId: "thirdparty.asr", label: "Local", processingLocation: "local", available: true },
+  ], selectedProviderId: "thirdparty.asr", language: "auto", inputDeviceId: "saved-mic" });
   await f.controller.refresh();
-  assert.equal(f.calls.length, 1);
-  const card = f.controls.asrResources.children[0];
-  const button = card.children.at(-1).children[0];
-  await button.fire("click");
-  assert.deepEqual(f.calls.find(([name]) => name === "settings_asr_action")[1].payload, {
-    pluginId: "thirdparty.asr", sectionId: "weights", actionId: "installWeights", values: {},
-  });
+  assert.equal(f.controller.hasPluginControls("thirdparty.hub"), true);
+  assert.equal(f.controller.hasPluginControls("unrelated.plugin"), false);
+  const initial = f.controller.pluginDraft();
+  const dialog = element();
+  f.controller.mountPluginControls("unrelated.plugin", dialog);
+  assert.equal(dialog.children.length, 0);
+  f.controller.mountPluginControls("thirdparty.hub", dialog);
+  assert.deepEqual(dialog.children, [f.controls.asrSettings]);
+  assert.equal(f.calls.some(([name]) => name === "settings_asr_devices"), false);
+  f.controls.asrProvider.value = "";
+  await f.controls.asrProvider.fire("change");
+  assert.equal(f.controller.isDirty(), true);
+  await f.controller.refresh({ preserveDraft: true });
+  assert.equal(f.controls.asrProvider.value, "");
+  f.controller.restorePluginDraft(initial);
+  assert.equal(f.controller.isDirty(), false);
+  assert.equal(f.controls.asrProvider.value, "thirdparty.asr");
+  assert.equal(Object.hasOwn(f.controller.pluginDraft(), "language"), false);
+  f.controller.unmountPluginControls();
+  assert.equal(f.controls.asrSettingsHome.children.at(-1), f.controls.asrSettings);
+  assert.equal(f.calls.some(([name]) => name === "settings_asr_save"), false);
   f.controller.dispose();
 });
 
-test("provider readiness codes remain readiness, not a generic failure message", async () => {
-  for (const [state, errorCode, expected] of [
-    ["ready", "READY", /已就绪/], ["loading", "ASR_PREPARING", /正在准备/],
-    ["unloaded", "ASR_PREPARING", /已安装/], ["missing_resources", "ASR_MODEL_MISSING", /尚未安装/],
-  ]) {
-    const f = fixture({ providers: [{ providerId: "test.asr", state, errorCode, ready: state === "ready" }],
-      selectedProviderId: "test.asr", language: "auto", sections: [] });
-    await f.controller.refresh();
-    assert.match(f.controls.asrStatus.textContent, expected);
-    f.controller.dispose();
-  }
+test("installed idle engines stay selectable without a failure label or a redundant empty choice", async () => {
+  const f = fixture({ selectedProviderId: "test.asr", providers: [
+    { providerId: "test.asr", label: "Engine", state: "unloaded", available: false, processingLocation: "local" },
+  ] });
+  await f.controller.refresh();
+  assert.deepEqual(f.controls.asrProvider.children.map((item) => [item.value, item.textContent]), [["test.asr", "Engine"]]);
+  assert.equal(f.controls.asrStatus.textContent, "");
+  assert.equal(f.controls.asrLocation.textContent, "");
+  f.controller.dispose();
 });
 
 test("microphone enumeration preserves missing selection, plugin dialog draft rolls back without saving", async () => {

@@ -22,18 +22,18 @@ export function asrErrorMessage(error) {
     ASR_AUDIO_FORMAT_UNSUPPORTED: "所选麦克风的音频格式暂不支持，请调整设备格式或更换输入设备。",
     ASR_CAPTURE_FAILED: "录音已中止，请检查麦克风连接和系统权限。",
     ASR_INPUT_DEVICE_UNAVAILABLE: "麦克风不可用，请检查所选输入设备和麦克风权限。",
-    ASR_INPUT_DEVICE_NOT_FOUND: "所选麦克风未连接，请重新连接或在语音输入设置中选择其他设备。",
-    ASR_PROVIDER_UNAVAILABLE: "所选语音输入引擎不可用，请在设置的语音输入中检查引擎。",
+    ASR_INPUT_DEVICE_NOT_FOUND: "所选麦克风未连接，请重新连接或在插件设置中选择其他设备。",
+    ASR_PROVIDER_UNAVAILABLE: "所选语音输入引擎不可用，请在插件设置中检查引擎。",
     ASR_HUB_UNAVAILABLE: "语音输入服务不可用，请在插件设置中启用 ASR Hub。",
     ASR_SERVICE_UNAVAILABLE: "语音输入服务不可用，请在插件设置中检查 ASR Hub。",
-    ASR_PROVIDER_NOT_SELECTED: "尚未选择语音输入引擎，请在设置的语音输入中选择。",
-    ASR_RESOURCES_MISSING: "语音输入模型尚未安装，请在设置的语音输入中安装资源。",
-    ASR_MODEL_MISSING: "语音输入模型尚未安装，请在设置的语音输入中安装资源。",
-    ASR_MODEL_INVALID: "语音输入模型无法加载，请在语音输入设置中重试安装。",
+    ASR_PROVIDER_NOT_SELECTED: "尚未选择语音输入引擎，请在插件设置中选择。",
+    ASR_RESOURCES_MISSING: "语音输入模型尚未安装，请在插件设置中安装资源。",
+    ASR_MODEL_MISSING: "语音输入模型尚未安装，请在插件设置中安装资源。",
+    ASR_MODEL_INVALID: "语音输入模型无法加载，请在插件设置中重试安装。",
     ASR_DEPENDENCY_UNAVAILABLE: "语音输入引擎的依赖无法加载，请在插件设置中检查安装状态。",
   };
   return Object.entries(messages).find(([key]) => code.includes(key))?.[1]
-    || "语音输入失败，请检查设置中的语音输入引擎与麦克风后重试。";
+    || "语音输入失败，请检查插件中的识别引擎与麦克风设置后重试。";
 }
 
 // The consumer never sends a message. It owns only one complete draft insertion.

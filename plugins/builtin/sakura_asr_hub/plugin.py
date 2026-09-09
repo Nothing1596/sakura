@@ -94,7 +94,7 @@ class SakuraASRHub:
                 raise ValueError("ASR_PROVIDER_RESULT_INVALID")
             # Only public readiness fields may cross back into the input UI.
             return {**{k: v for k, v in descriptor.items() if k != "scopeId"},
-                    **{k: value[k] for k in ("state", "available", "ready", "errorCode", "reasonCode", "configVersion") if k in value}}
+                    **{k: value[k] for k in ("state", "available", "ready", "errorCode", "reasonCode", "configVersion", "language") if k in value}}
         except Exception:
             return {**{k: v for k, v in descriptor.items() if k != "scopeId"}, "available": False, "state": "unavailable", "errorCode": "ASR_PROVIDER_UNAVAILABLE", "configVersion": None}
 
@@ -109,22 +109,21 @@ class SakuraASRHub:
         with self.lock:
             descriptor = self.providers.get(selected)
         value = self._status(descriptor) if descriptor else {"providerId": selected, "serviceKey": None, "configVersion": None, "available": False, "state": "unavailable", "errorCode": "ASR_PROVIDER_UNAVAILABLE" if selected else "ASR_PROVIDER_NOT_SELECTED"}
-        return {**value, "selectedProviderId": selected, "language": config.get("language", "auto")}
+        # A provider being initialized can import the old Hub choice once before registering.
+        language = value.get("language", "auto") if descriptor else config.get("language", "auto")
+        return {**value, "selectedProviderId": selected, "language": language}
 
     def configure(self, values):
-        if not isinstance(values, Mapping) or not set(values) <= {"selectedProviderId", "language"}:
+        if not isinstance(values, Mapping) or not set(values) <= {"selectedProviderId"}:
             raise ValueError("ASR_SELECTION_INVALID")
         selected = values.get("selectedProviderId")
         if selected is not None and (not isinstance(selected, str) or not _ID.fullmatch(selected)):
             raise ValueError("ASR_SELECTION_INVALID")
-        language = values.get("language", "auto")
-        if not isinstance(language, str) or not re.fullmatch(r"[a-zA-Z-]{2,20}", language):
-            raise ValueError("ASR_LANGUAGE_INVALID")
         previous = self.context.config.get()
         self.context.config.update(dict(values))
         result = self.status()
         if any(previous.get(key) != value for key, value in values.items()):
-            self._log("asr.selection.changed", "语音输入设置已更改", provider_id=result["providerId"], language=result["language"])
+            self._log("asr.selection.changed", "语音输入设置已更改", provider_id=result["providerId"])
         return result
 
     def warmup(self, provider_id=None):
