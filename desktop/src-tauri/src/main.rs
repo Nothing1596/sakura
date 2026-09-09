@@ -7470,6 +7470,23 @@ fn standard_user_root(development: bool) -> Result<std::path::PathBuf, String> {
 }
 
 fn ensure_user_layout(root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    // Earlier releases inherited manifest defaults without persisting every switch.
+    // Seed only a new config directory, so upgrades retain those implicit choices too.
+    let config = root.join("config");
+    if !config
+        .try_exists()
+        .map_err(|error| format!("USER_ROOT_UNAVAILABLE: {error}"))?
+    {
+        if let Err(error) = ui_config::atomic_write(
+            &config.join("plugins.yaml"),
+            include_bytes!("new_user_plugins.yaml"),
+            "USER_ROOT",
+        ) {
+            // Leave a failed first initialization retryable when no file was published.
+            let _ = std::fs::remove_dir(&config);
+            return Err(error);
+        }
+    }
     for relative in ["config", "data", "characters", "plugins/user", "tts"] {
         std::fs::create_dir_all(root.join(relative))
             .map_err(|error| format!("USER_ROOT_UNAVAILABLE: {error}"))?;
@@ -8252,6 +8269,33 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_user_plugin_defaults_are_written_once_and_preserve_later_choices() {
+        let root = std::env::temp_dir().join(format!("sakura-new-user-{}", uuid::Uuid::new_v4()));
+        ensure_user_layout(&root).unwrap();
+        let path = root.join("config/plugins.yaml");
+        let defaults: serde_yaml::Value =
+            serde_yaml::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(defaults, serde_yaml::from_str::<serde_yaml::Value>(
+            "- {id: sakura.tts.genie, enabled: false}\n- {id: sakura.tts.gpt-sovits, enabled: false}\n- {id: sakura_mobile, enabled: false}\n"
+        ).unwrap());
+        let saved = "# 用户选择\n- id: sakura.tts.genie\n  enabled: true\n- id: sakura_mobile\n  enabled: false\n";
+        std::fs::write(&path, saved).unwrap();
+        ensure_user_layout(&root).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), saved);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn new_user_plugin_defaults_do_not_reclassify_existing_implicit_defaults() {
+        let root =
+            std::env::temp_dir().join(format!("sakura-existing-user-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        ensure_user_layout(&root).unwrap();
+        assert!(!root.join("config/plugins.yaml").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn character_settings_snapshot_accepts_empty_state_and_requires_selected_membership() {
