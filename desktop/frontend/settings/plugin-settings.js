@@ -68,7 +68,6 @@ export function createPluginSettingsFeature({
   let aboutComponentsReadError = "";
 
   let pluginView = { items: [] };
-  const reduceMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)") || null;
   const timers = new Set();
   const listeners = [];
 
@@ -1503,7 +1502,7 @@ export function createPluginSettingsFeature({
 
   async function animateMemoryRecordRemoval(itemId) {
     const card = memoryRecordCardById(itemId);
-    if (!card || reduceMotionQuery?.matches) return;
+    if (!card) return;
     card.style.setProperty("--memory-record-height", `${card.getBoundingClientRect().height}px`);
     card.classList.add("is-removing");
     await new Promise((resolve) => {

@@ -273,13 +273,3 @@ body[data-background="dark"] {
 body[data-background="dark"] #demo-controls:not([open]) {
   color: #c6c6ce;
 }
-@media (prefers-reduced-motion: reduce) {
-  .voice-spinner {
-    animation: none;
-  }
-  #voice-mic,
-  #composer-attachment .sakura-icon,
-  #waveform i {
-    transition: none;
-  }
-}

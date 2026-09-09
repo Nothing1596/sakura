@@ -366,10 +366,6 @@ export function createAdaptiveControlSurface({
       delete bubble.dataset.sizeMotion;
       return;
     }
-    if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true) {
-      delete bubble.dataset.sizeMotion;
-      return;
-    }
     const generation = ++bubbleMotionGeneration;
     try {
       bubble.dataset.sizeMotion = "active";
@@ -446,12 +442,10 @@ export function createAdaptiveControlSurface({
       ? `${nativeTransition.targetHeight}px`
       : "";
     if (!before || typeof composer.animate !== "function") return;
-    const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
     composerAnimation?.cancel();
     for (const animation of childAnimations) animation.cancel();
     childAnimations = [];
     composerAnimation = null;
-    if (reducedMotion) return;
     try {
       const timing = composerMotionTiming(nativeTransition?.startAtUnixMs, now);
       const after = composer.getBoundingClientRect();
@@ -551,8 +545,7 @@ export function createAdaptiveControlSurface({
 
   function stageImmediateExpansion() {
     if (disposed || composer.dataset.composing === "true") return;
-    const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
-    if (reducedMotion || optimisticExpansion) return;
+    if (optimisticExpansion) return;
     const measuredControl = measuredControlHeights({
       bubble,
       bubbleHeader,
@@ -715,16 +708,13 @@ export function createAdaptiveControlSurface({
           const previousComposerHeight = Number(composer.offsetHeight)
             || visualBefore?.composer.height
             || 0;
-          const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
-          const stagingHeight = reducedMotion
-            ? null
-            : composerStagingHeight({
-              beforeHeight: Number(composer.offsetHeight) || visualBefore?.composer.height,
-              afterHeight: measuredControl.measurements.inputHeight,
-              baseHeight: contract.controlPanel.inputBaseHeight,
-              toolbarHeight: contract.controlPanel.inputToolbarHeight,
-              expandedGap: contract.controlPanel.inputExpandedGap,
-            });
+          const stagingHeight = composerStagingHeight({
+            beforeHeight: Number(composer.offsetHeight) || visualBefore?.composer.height,
+            afterHeight: measuredControl.measurements.inputHeight,
+            baseHeight: contract.controlPanel.inputBaseHeight,
+            toolbarHeight: contract.controlPanel.inputToolbarHeight,
+            expandedGap: contract.controlPanel.inputExpandedGap,
+          });
           if (stagingHeight !== null) {
             stageInputMotion({
               beforeHeight: previousComposerHeight,

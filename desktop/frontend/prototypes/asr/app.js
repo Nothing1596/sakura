@@ -9,7 +9,6 @@ let recordingStarted = 0;
 let levelHistory = [];
 let hasAttachment = false;
 let heldState = false;
-const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 
 function stopTimers() {
   clearTimeout(taskTimer);
@@ -130,7 +129,7 @@ function record() {
           `${3 + (levelHistory[i - count + levelHistory.length] || 0) * 27}px`;
       if (seconds === 60 && !heldState) recognize();
     },
-    reducedMotion.matches ? 600 : 150,
+    150,
   );
 }
 

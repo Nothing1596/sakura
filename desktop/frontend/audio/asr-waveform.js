@@ -1,7 +1,6 @@
 // Only host RMS summaries enter this bounded history. Rendering never clocks audio capture.
 export function createAsrWaveform({ canvas, window }) {
   const context = canvas.getContext("2d");
-  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
   let running = false;
   let frame = null;
   let bucketAt = null;
@@ -10,7 +9,7 @@ export function createAsrWaveform({ canvas, window }) {
   let history = [];
   function draw(now) {
     if (!running || !context) return;
-    const interval = reduced.matches ? 600 : 150;
+    const interval = 150;
     if (bucketAt === null) bucketAt = now;
     if (now - bucketAt >= interval) {
       smooth += (peak - smooth) * (peak > smooth ? 0.65 : 0.4);
@@ -31,7 +30,7 @@ export function createAsrWaveform({ canvas, window }) {
     context.strokeStyle = window.getComputedStyle(canvas).color;
     context.lineWidth = 3;
     context.lineCap = "round";
-    const shift = reduced.matches ? 0 : Math.min(1, (now - bucketAt) / interval) * 6;
+    const shift = Math.min(1, (now - bucketAt) / interval) * 6;
     const count = Math.ceil(width / 6) + 1;
     context.beginPath();
     for (let index = 0; index < count; index += 1) {

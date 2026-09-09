@@ -475,20 +475,3 @@ test("changing subtitle language restarts only the active segment without mixed 
   assert.equal(rendered.at(-1), "か");
   assert.equal(rendered.includes("中か"), false);
 });
-
-test("reduced motion completes one segment immediately but preserves the segment pause", () => {
-  const timers = [];
-  const rendered = [];
-  const typewriter = createTypewriter({
-    reducedMotion: true,
-    segmentPauseMs: 25,
-    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
-    clearTimer() {},
-    onText(text) { rendered.push(text); },
-  });
-  typewriter.start([{ text: "first" }, { text: "second" }]);
-  assert.equal(rendered.at(-1), "first");
-  assert.equal(timers.at(-1).delay, 25);
-  timers.shift().callback();
-  assert.equal(rendered.at(-1), "second");
-});

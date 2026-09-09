@@ -863,7 +863,7 @@
     },
     {
       "id": "runtime-v2-log-viewer-frontend-journey",
-      "description": "验证日志查看器 DTO、增量合并、分组、复制和 reduced motion",
+      "description": "验证日志查看器 DTO、增量合并、分组和复制",
       "argv": [
         "node",
         "--test",

@@ -14,9 +14,9 @@
   color: var(--text);
   background: transparent;
   cursor: pointer;
-  transition: background-color 140ms ease, transform 120ms ease;
+  transition: background-color 180ms ease, color 180ms ease, opacity 160ms ease, transform 120ms ease;
 }
-#voice-mic[hidden], #voice-mic [hidden], #voice-status[hidden], #voice-recording[hidden] { display: none; }
+#voice-mic[hidden] { display: none; }
 #voice-mic .sakura-icon { width: 22px; height: 22px; }
 #voice-mic:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 7%, transparent); }
 #voice-mic:active:not(:disabled) { transform: scale(.92); }
@@ -25,15 +25,18 @@
 .composer[data-input-motion="staging"] #voice-mic { grid-row: 1; align-self: center; }
 .composer[data-input-motion="row-growth"] #voice-mic { transform: translateY(var(--input-toolbar-staging-shift)); }
 .composer[data-voice-state="recording"] #voice-mic {
-  color: var(--primary);
-  background: radial-gradient(circle, #e4e4e7 0 15px, transparent 16px);
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
 }
-.voice-stop { width: 10px; height: 10px; border-radius: 2px; background: currentColor; }
+#voice-mic .sakura-morph-icon[data-icon="check"] { color: var(--primary); }
 #voice-status {
   position: absolute;
   left: 50%;
   top: 50%;
-  transform: translate(-50%, -50%);
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, calc(-50% + 4px));
+  transition: opacity 180ms ease, transform 240ms cubic-bezier(.22, 1, .36, 1), visibility 180ms;
   max-width: calc(100% - 180px);
   color: var(--secondary-text);
   font-size: var(--input-font-size);
@@ -41,17 +44,41 @@
   white-space: nowrap;
   pointer-events: none;
 }
-.voice-recording { grid-column: 2; grid-row: 1; height: 40px; min-width: 0; display: flex; align-items: center; }
-#voice-waveform { width: 100%; height: 32px; color: var(--primary); }
-.voice-spinner {
-  width: 18px;
-  height: 18px;
-  border: 2px solid color-mix(in srgb, var(--text) 20%, transparent);
-  border-top-color: var(--secondary-text);
-  border-radius: 50%;
-  animation: voice-spin .8s linear infinite;
+.voice-recording {
+  position: absolute;
+  left: 56px;
+  right: 100px;
+  top: 50%;
+  height: 40px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(calc(-50% + 4px)) scale(.98);
+  transition: opacity 180ms ease, transform 240ms cubic-bezier(.22, 1, .36, 1), visibility 180ms;
 }
-.composer[data-voice-active="true"] textarea,
+#voice-waveform { width: 100%; height: 32px; color: var(--primary); }
+.composer:is([data-voice-state="preparing"], [data-voice-state="recognizing"]) #voice-status {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, -50%);
+}
+.composer[data-voice-state="recording"] .voice-recording {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(-50%) scale(1);
+}
+.composer[data-voice-active="true"] textarea {
+  grid-column: 2;
+  grid-row: 1;
+  height: 40px;
+  min-height: 0;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
 .composer[data-voice-active="true"] .composer-attachment-strip { display: none; }
 .composer[data-voice-active="true"] { grid-template-rows: 40px; row-gap: 0; }
 .composer[data-voice-active="true"] #composer-attachment,
@@ -69,9 +96,4 @@
   font: inherit;
   text-decoration: underline;
   cursor: pointer;
-}
-@keyframes voice-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) {
-  .voice-spinner { animation: none; }
-  #voice-mic, #composer-attachment .sakura-icon { transition: none; }
 }

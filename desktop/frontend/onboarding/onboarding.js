@@ -33,7 +33,6 @@ const migrationPercent = document.getElementById("migrationPercent");
 const migrationProgressBar = document.getElementById("migrationProgressBar");
 const migrationMessage = document.getElementById("migrationMessage");
 const migrationError = document.getElementById("migrationError");
-const reduceMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)") || null;
 
 const activeMigrationStates = new Set([
   "inspecting",
@@ -121,10 +120,6 @@ function replayAnimation(element, className) {
     element.classList.remove(previousHandle.className);
   }
   element.classList.remove(className);
-  if (reduceMotionQuery?.matches) {
-    animationReplayHandles.delete(element);
-    return;
-  }
   const handle = { className, frameId: 0, timeoutId: 0 };
   handle.frameId = window.requestAnimationFrame(() => {
     element.classList.add(className);
@@ -145,7 +140,6 @@ function setAnimatedText(element, value, className = "is-updating") {
 }
 
 function waitForViewAnimation(element, fallbackMs) {
-  if (reduceMotionQuery?.matches) return Promise.resolve();
   return new Promise((resolve) => {
     let settled = false;
     const finish = () => {
@@ -171,10 +165,8 @@ async function transitionViews(fromView, toView, direction, focusTarget) {
   fromView.inert = true;
   toView.inert = true;
   try {
-    if (!reduceMotionQuery?.matches) {
-      fromView.classList.add(leavingClass);
-      await waitForViewAnimation(fromView, 240);
-    }
+    fromView.classList.add(leavingClass);
+    await waitForViewAnimation(fromView, 240);
     fromView.hidden = true;
     fromView.classList.remove(leavingClass);
     toView.classList.add(enteringClass);

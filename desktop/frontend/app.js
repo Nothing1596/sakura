@@ -2,6 +2,7 @@ import { composerPlaceholder, createChatPresentationReducer } from "./chat/chat-
 import { createTtsController } from "./audio/tts-controller.js";
 import { createAsrController } from "./audio/asr-controller.js";
 import { createAsrWaveform } from "./audio/asr-waveform.js";
+import { createAsrPresentation } from "./audio/asr-presentation.js";
 import { createAsrAvailability } from "./audio/asr-availability.js";
 import { createComposerActionIndicator } from "./chat/composer-action-indicator.js";
 import { createComposerToolRegistry } from "./chat/composer-tool-dock.js";
@@ -149,7 +150,6 @@ const attachmentList = document.querySelector("#composer-attachments");
 const attachmentMenu = document.querySelector("#composer-tool-dock");
 const composerToolList = document.querySelector("#composer-tool-list");
 const captureScreen = document.querySelector("#capture-screen");
-const cancelIcon = send.querySelector(".composer-action-icon--cancel .sakura-icon");
 const portrait = document.querySelector("#portrait");
 const portraitCurrent = document.querySelector("#portrait-current");
 const portraitNext = document.querySelector("#portrait-next");
@@ -197,14 +197,7 @@ async function initialSessionBlocker() {
 }
 
 const sessionBlockedAtStartup = await initialSessionBlocker();
-const composerMotionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
-const composerActionIndicator = createComposerActionIndicator({
-  icon: cancelIcon,
-  sendLayer: send.querySelector(".composer-action-icon--send"),
-  prefersReducedMotion: () => composerMotionPreference.matches,
-});
-const syncComposerMotionPreference = () => composerActionIndicator.setBusy(send.dataset.action === "cancel");
-composerMotionPreference.addEventListener("change", syncComposerMotionPreference);
+const composerActionIndicator = createComposerActionIndicator({ button: send });
 
 let lastInputVisualEffectFallback = "";
 let inputVisualEffectFallbackActive = false;
@@ -335,18 +328,14 @@ const layoutController = createLayoutController({
         && productLayout?.inputRect?.[2] === layout.inputRect[2]
         && productLayout?.inputRect?.[3] !== layout.inputRect[3]
         ? {
-          durationMs: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-            ? 0
-            : COMPOSER_MOTION_DURATION_MS,
-          stagingHeight: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-            ? null
-            : composerStagingHeight({
-              beforeHeight: productLayout.inputRect[3],
-              afterHeight: layout.inputRect[3],
-              baseHeight: contract.controlPanel.inputBaseHeight,
-              toolbarHeight: contract.controlPanel.inputToolbarHeight,
-              expandedGap: contract.controlPanel.inputExpandedGap,
-            }),
+          durationMs: COMPOSER_MOTION_DURATION_MS,
+          stagingHeight: composerStagingHeight({
+            beforeHeight: productLayout.inputRect[3],
+            afterHeight: layout.inputRect[3],
+            baseHeight: contract.controlPanel.inputBaseHeight,
+            toolbarHeight: contract.controlPanel.inputToolbarHeight,
+            expandedGap: contract.controlPanel.inputExpandedGap,
+          }),
         }
         : null,
       bubbleAutoExpand: activeAppearance?.bubbleAutoExpand === true,
@@ -358,9 +347,7 @@ const layoutController = createLayoutController({
           === layout.bubbleRect[1] + layout.bubbleRect[3]
         && productLayout?.bubbleRect?.[3] !== layout.bubbleRect[3]
         ? {
-          durationMs: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-            ? 0
-            : BUBBLE_MOTION_DURATION_MS,
+          durationMs: BUBBLE_MOTION_DURATION_MS,
           stagingHeight: null,
         }
         : null,
@@ -996,7 +983,6 @@ function surfaceVisibilityElement(kind) {
 
 function waitForSurfaceFade(element) {
   return waitForSurfaceFadeCompletion(element, {
-    reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     setTimer: (callback, delay) => window.setTimeout(callback, delay),
     clearTimer: (handle) => window.clearTimeout(handle),
     requestFrame: (callback) => window.requestAnimationFrame(callback),
@@ -1004,9 +990,7 @@ function waitForSurfaceFade(element) {
 }
 
 function surfaceFadeDuration() {
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ? 0
-    : SURFACE_VISIBILITY_FADE_MS;
+  return SURFACE_VISIBILITY_FADE_MS;
 }
 
 const nativeInputPresentationQueue = createInputPresentationQueue({
@@ -1238,6 +1222,9 @@ await ttsController.start();
 const voiceMic = document.querySelector("#voice-mic");
 const voiceStatus = document.querySelector("#voice-status");
 const voiceRecording = document.querySelector("#voice-recording");
+const asrPresentation = createAsrPresentation({
+  composer, input, button: voiceMic, status: voiceStatus, recording: voiceRecording,
+});
 const waveform = createAsrWaveform({ canvas: document.querySelector("#voice-waveform"), window });
 asrController = createAsrController({
   invoke,
@@ -1253,6 +1240,7 @@ asrController = createAsrController({
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.focus({ preventScroll: true });
     input.setSelectionRange(caret, caret);
+    asrPresentation.complete();
   },
   restoreSelection: (saved) => {
     input.focus({ preventScroll: true });
@@ -1262,23 +1250,11 @@ asrController = createAsrController({
     if (state === "preparing" && presentationError.dataset.asrError === "true") clearRecoverableError();
     const busy = state !== "idle";
     const waiting = state === "preparing" || state === "recognizing";
-    composer.dataset.voiceState = state;
-    composer.dataset.voiceActive = String(busy);
-    input.readOnly = busy;
-    input.hidden = busy;
+    asrPresentation.setState(state);
     attachmentToggle.dataset.action = busy ? "cancel" : "tools";
     attachmentToggle.setAttribute("aria-haspopup", busy ? "false" : "menu");
     if (busy) void screenAttachment.close();
     screenAttachment.refreshControls();
-    voiceStatus.hidden = !waiting;
-    voiceStatus.textContent = state === "preparing" ? "正在准备" : state === "recognizing" ? "正在识别" : "";
-    voiceRecording.hidden = state !== "recording";
-    voiceMic.querySelector(".sakura-icon").hidden = busy;
-    voiceMic.querySelector(".voice-stop").hidden = state !== "recording";
-    voiceMic.querySelector(".voice-spinner").hidden = !waiting;
-    const label = state === "recording" ? "结束录音并识别" : waiting ? voiceStatus.textContent : "开始语音输入";
-    voiceMic.setAttribute("aria-label", label);
-    voiceMic.title = label;
     voiceMic.disabled = waiting || presentationUnavailable;
     ttsController.setInputCaptureActive(state === "preparing" || state === "recording");
     if (state === "recording") waveform.start();
@@ -1293,6 +1269,13 @@ asrController = createAsrController({
     presentationError.dataset.asrError = "true";
     const copy = document.createElement("span");
     copy.textContent = message;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "重试";
+    retry.dataset.interactive = "true";
+    retry.addEventListener("click", () => {
+      if (asrAvailability.enabled() && !presentationUnavailable) void asrController.start();
+    });
     const settings = document.createElement("button");
     settings.type = "button";
     settings.textContent = "语音设置";
@@ -1301,14 +1284,17 @@ asrController = createAsrController({
       void invoke("activate_pet_context_menu_action", { actionId: "sakura.settings.open" })
         .catch(() => showRecoverableError("设置暂时无法打开，请重试。"));
     });
-    presentationError.replaceChildren(copy, settings);
+    presentationError.replaceChildren(copy, retry, settings);
   },
 });
 await asrController.connect();
 const asrAvailability = createAsrAvailability({
   invoke,
   onChange: (enabled) => {
-    if (!enabled) void asrController.cancel();
+    if (!enabled) {
+      void asrController.cancel();
+      asrPresentation.reset();
+    }
     voiceMic.hidden = !enabled;
     composer.dataset.asrEnabled = String(enabled);
     adaptiveSurface.invalidate();
@@ -1334,7 +1320,6 @@ const typewriter = createTypewriter({
   intervalMs: chatTiming.subtitleTypingIntervalMs,
   segmentPauseMs: chatTiming.replySegmentPauseMs,
   language: subtitleLanguage,
-  reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   onStart: () => bubbleScroll.beginReply(),
   onText: (text, bubbleUpdate) => {
     const result = presentation.setTypingText(text);
@@ -1376,7 +1361,6 @@ const typewriter = createTypewriter({
 });
 
 const waitingIndicator = createWaitingIndicator({
-  reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   onFrame: (frame) => {
     const result = presentation.setWaitingText(frame);
     if (result.applied) render(result.state);
@@ -1441,6 +1425,8 @@ function handleCoreEvent(event) {
   const before = presentation.current();
   if (event.type === "lifecycle" && event.generationId !== before.generationId) {
     void asrController?.cancel({ restore: false });
+    asrPresentation.reset();
+    composerActionIndicator.reset();
     void asrAvailability.refresh();
     ttsController.cancel();
     screenAttachment.invalidate();
@@ -1460,6 +1446,7 @@ function handleCoreEvent(event) {
     typewriter.cancel(result.state.bubbleText);
   }
   render(result.state);
+  if (event.type === "chat.completed" && before.canCancel) composerActionIndicator.complete();
   if (
     event.type === "lifecycle"
     && pendingCharacterGreeting
@@ -2378,7 +2365,7 @@ function dispose() {
   asrAvailability.dispose();
   waveform.stop();
   composerActionIndicator.dispose();
-  composerMotionPreference.removeEventListener("change", syncComposerMotionPreference);
+  asrPresentation.dispose();
   coreRebindRevision += 1;
   coreRebindTarget = "";
   layoutPreviewRevision += 1;

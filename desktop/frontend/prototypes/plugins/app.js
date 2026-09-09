@@ -205,7 +205,7 @@
     const row = [...document.querySelectorAll("[data-select]")].find((node) => node.dataset.select === id);
     row?.focus({ preventScroll: true });
     if (jump) row?.scrollIntoView({ block: "nearest" });
-    if (window.innerWidth <= 620 && !jump) $("plugin-detail").scrollIntoView({ block: "start", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    if (window.innerWidth <= 620 && !jump) $("plugin-detail").scrollIntoView({ block: "start", behavior: "smooth" });
   }
   function toast(message) {
     window.clearTimeout(toastTimer);

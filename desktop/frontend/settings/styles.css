@@ -3825,10 +3825,6 @@ button:active:not(:disabled) {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .memory-state-orbit { animation: none; }
-}
-
 button:focus-visible,
 .nav-item:focus-visible {
   outline: none;
@@ -4170,16 +4166,6 @@ input.is-invalid:hover,
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.001ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
-  }
-}
-
 /* ---------- 窄窗口自适应 ---------- */
 /* 窗口 minWidth=900，接近最小尺寸时只压缩间距与控件宽度，保持表单行横向布局。 */
 
@@ -4362,7 +4348,6 @@ body:has(#page-plugins.is-active) .page-head { display: none; }
 @keyframes plugin-backdrop-out { from { opacity: 1; } to { opacity: 0; } }
 @media (max-width: 1000px) { #page-plugins .plugin-workbench { grid-template-columns: minmax(255px, 1fr) minmax(0, 1.2fr); } #pluginDetail { padding: 17px; } .plugin-detail-identity { gap: 9px; } .plugin-detail-identity .plugin-avatar { width: 37px; height: 37px; } .plugin-detail-title h2 { font-size: 17px; } .plugin-role-tab { padding: 7px 8px; } }
 @media (max-width: 700px) { #page-plugins .plugin-workbench { grid-template-columns: minmax(0, 1fr); overflow: auto; } .plugin-list-shell { min-height: 240px; } .plugin-dialog-footer { flex-wrap: wrap; } .plugin-dialog-footer > div { margin-left: auto; } }
-@media (prefers-reduced-motion: reduce) { .plugin-detail-enter, .plugin-settings-dialog, .plugin-settings-dialog::backdrop, .plugin-settings-dialog.is-closing, .plugin-settings-dialog.is-closing::backdrop { animation: none; } }
 
 /* Shared Lucide sizing; labels retain the accessible name of each action. */
 .nav-item-icon .sakura-icon { width: 16px; height: 16px; }
