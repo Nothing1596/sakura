@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 test("SQL filters, pagination and export states preserve the selected scope", async ({
   page,
-}) => {
+}, testInfo) => {
   const requests: string[] = [];
   let posted: any;
   await page.route("**/admin/api/**", async (route) => {
@@ -62,7 +62,7 @@ test("SQL filters, pagination and export states preserve the selected scope", as
   await expect(page.getByRole("link", { name: "下载 ZIP" })).toBeVisible();
   expect(posted.build).toBe("release-one");
   await page.screenshot({
-    path: "/private/tmp/sakura-diagnostics-v2.png",
+    path: testInfo.outputPath("diagnostics.png"),
     fullPage: true,
   });
 });
