@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-05
+updated: 2026-09-09
 ---
 
 # Sakura Plugin Runtime v4
@@ -156,6 +156,7 @@ Rust 依据可信来源分流：插件主动记录写入 `sakura-plugins.log`，
 它同样附加可信插件身份，进入统一服务及插件文件；已登记 TTS 事件仅显示在 TTS 页，不在插件页重复显示。
 宿主日志适配层按 manifest 的 `sakura.tts` / `sakura.tts.provider.*` 声明将语音插件自定义记录归入 TTS，
 插件名称用于筛选项和日志行展示，插件 ID 保留在详情和复制文本中。
+ASR Hub 和语音输入 Provider 的记录归入“插件”页，按各自插件名称筛选，同样写入 `sakura-plugins.log`。
 Mem0 的旧初始化 JSONL 停止追加，原文件保留，新诊断主动接入宿主日志。
 不自动捕获插件标准 `logging`、`print`、stderr 或外部程序输出。Agent Trace 的实现保持独立。
 
@@ -170,6 +171,8 @@ Mem0 的旧初始化 JSONL 停止追加，原文件保留，新诊断主动接�
 | 插件 | 默认保留 | 默认不显示 |
 | --- | --- | --- |
 | TTS Hub | 提供方注册/移除、请求未受理、合成失败及请求编号 | 状态查询、运行中任务轮询、重复查询已消费终态 |
+| ASR Hub | 引擎登记/移除、选择变化、识别路由及终态 | 可用性查询、状态查询、重复轮询 |
+| SenseVoice | 模型安装/加载、识别开始及终态、取消、退出 | 音量帧、下载进度、状态查询和重复轮询 |
 | Genie | 服务启动/就绪、模型就绪、转换开始/完成/失败、预热失败、配置变化 | 模型检查、缓存命中/复用、转换进度 |
 | GPT-SoVITS | 服务及权重生命周期、预热失败、配置变化 | 状态查询和任务轮询 |
 | Mem0 | 初始化开始/就绪/失败、有实际变更的整理结果、整理失败、停止自动重试、资源清理异常 | 初始化阶段进度、整理开始、无变更的整理结果 |
@@ -183,6 +186,11 @@ Core 接收后的丢弃由 Core 汇总，SDK 不重复累计下游丢弃。
 
 
 ## 5. ServiceProxy 与跨进程数据
+
+收到跨进程 Service 调用时，`context.caller_id` 是 Core 根据调用进程注入的插件 ID，Core 消费者为
+`sakura.core`；调用结束恢复为空。它是当前调用的上下文，不从业务参数读取，也不自动传播到新线程。领域
+登记接口可以据此拒绝冒用其他插件身份，例如 ASR Hub 同时核对登记者和目标 Service 所有者。Runtime 只传递
+通用调用身份，不维护 ASR Provider 名单。
 
 `context.get("example.service")` 返回可调用已声明方法的对象。提供者在本进程时可以使用本地代理优化；提供者
 在其他插件进程或 Core 时返回 `ServiceProxy`。调用方仍使用：

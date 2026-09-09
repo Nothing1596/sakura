@@ -230,7 +230,8 @@ function measuredControlHeights({
   getStyle,
 }) {
   const visibleInputOverflow = input.dataset.overflow;
-  const currentExpanded = composer.dataset.inputExpanded === "true";
+  const voiceActive = composer.dataset.voiceActive === "true";
+  const currentExpanded = !voiceActive && composer.dataset.inputExpanded === "true";
   let naturalTextMeasurement = naturalTextareaMeasurement({
     composer,
     input,
@@ -242,13 +243,13 @@ function measuredControlHeights({
 
   const composerStyle = getStyle(composer);
   const metrics = (measurement, expanded) => composerInputMetrics({
-    value: input.value,
+    value: voiceActive ? "" : input.value,
     ...measurement,
     frameHeight: frameHeight(composerStyle),
     expanded,
     expandedRows: Number.parseInt(composer.dataset.inputState?.split("-").at(-1), 10),
     composing: composer.dataset.composing === "true",
-    attachmentCount: Number.parseInt(composer.dataset.attachmentCount || "0", 10),
+    attachmentCount: voiceActive ? 0 : Number.parseInt(composer.dataset.attachmentCount || "0", 10),
     minExpandedRows: contract.controlPanel.inputExpandedMinRows,
     maxRows: contract.controlPanel.inputMaxRows,
     toolbarHeight: contract.controlPanel.inputToolbarHeight,
@@ -421,7 +422,7 @@ export function createAdaptiveControlSurface({
   function captureVisualRects() {
     if (typeof composer.getBoundingClientRect !== "function") return null;
     const controls = typeof composer.querySelectorAll === "function"
-      ? [...composer.querySelectorAll("#composer-attachment, #composer-send")]
+      ? [...composer.querySelectorAll("#composer-attachment, #voice-mic, #composer-send")]
       : [];
     const elements = [input, ...controls];
     return Object.freeze({

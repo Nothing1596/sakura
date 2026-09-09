@@ -1314,7 +1314,57 @@ impl ConcurrentRequestHandle {
             deadline,
         );
         let elapsed_ms = started.elapsed().as_millis();
+        self.log_request_result(request_id, name, &result, elapsed_ms, deadline);
+        result
+    }
+
+    fn log_request_result(
+        &self,
+        request_id: &str,
+        name: &str,
+        result: &Result<Value, String>,
+        elapsed_ms: u128,
+        deadline: Duration,
+    ) {
         match result.as_ref() {
+            Ok(response) if response.get("ok") == Some(&Value::Bool(false)) => {
+                let code = response
+                    .pointer("/error/code")
+                    .and_then(Value::as_str)
+                    .filter(|code| {
+                        !code.is_empty()
+                            && code.len() <= 64
+                            && code.bytes().all(|byte| {
+                                byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                            })
+                    })
+                    .unwrap_or("REQUEST_REJECTED");
+                let cancelled = code == "CANCELLED" || code.ends_with("_CANCELLED");
+                self.log_request(
+                    if cancelled {
+                        Severity::Info
+                    } else {
+                        Severity::Warning
+                    },
+                    if cancelled {
+                        "ipc.request.cancelled"
+                    } else {
+                        "ipc.request.failed"
+                    },
+                    if cancelled {
+                        "Core IPC request was cancelled"
+                    } else {
+                        "Core IPC request was rejected"
+                    },
+                    request_id,
+                    name,
+                    if cancelled { "cancelled" } else { "failed" },
+                    Some(code),
+                    elapsed_ms,
+                    None,
+                    Some(deadline.as_millis()),
+                );
+            }
             Ok(_) => self.log_request(
                 Severity::Info,
                 "ipc.request.completed",
@@ -1356,7 +1406,6 @@ impl ConcurrentRequestHandle {
                 Some(deadline.as_millis()),
             ),
         }
-        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1368,13 +1417,24 @@ impl ConcurrentRequestHandle {
         request_id: &str,
         name: &str,
         outcome: &'static str,
-        code: Option<&'static str>,
+        code: Option<&str>,
         elapsed_ms: u128,
         diagnostic: Option<&'static str>,
         deadline_ms: Option<u128>,
     ) {
         let Some(runtime_log) = self.runtime_log.as_ref() else {
             return;
+        };
+        // Routine observations are diagnostic traffic, not user-visible activity.
+        // Failed responses and transport errors retain their original severity.
+        let severity = if event == "ipc.request.completed"
+            && matches!(
+                name,
+                "asr.input.availability" | "asr.input.poll" | "asr.input.capture_status"
+            ) {
+            Severity::Debug
+        } else {
+            severity
         };
         let mut attributes = json!({
             "command": name,
@@ -4354,6 +4414,102 @@ mod tests {
             "router-health-b"
         );
         host.shutdown().expect("router host shutdown");
+    }
+
+    #[test]
+    fn asr_polling_logs_are_debug_while_rejections_and_deadlines_remain_visible() {
+        use crate::runtime_log::{RuntimeLogConfig, Severity, Verbosity};
+        let _test_lock = lifecycle_test_lock();
+        let root =
+            std::env::temp_dir().join(format!("sakura-asr-ipc-log-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        for level in [Verbosity::Info, Verbosity::Debug] {
+            let path = root.join(format!("{level:?}.log"));
+            let mut config = RuntimeLogConfig::production(path.clone());
+            config.level = level;
+            let log = RuntimeLogService::start_with_config(config);
+            let mut layout = development_layout();
+            layout.user_root = root.canonicalize().unwrap();
+            let mut host =
+                CoreHostRuntime::launch_observed(&layout, GENERATION_ID, 1, log.clone()).unwrap();
+            request_predecessor_hello(&mut host, "asr-log-hello", Duration::from_secs(3)).unwrap();
+            let handle = host.concurrent_request_handle().unwrap();
+            let availability = handle
+                .request(
+                    "asr-log-availability",
+                    "asr.input.availability",
+                    json!({}),
+                    Duration::from_secs(3),
+                )
+                .unwrap();
+            assert_eq!(availability["ok"], true);
+            // Exercise the same producer and real writer without opening a microphone.
+            for command in ["asr.input.poll", "asr.input.capture_status"] {
+                handle.log_request(
+                    Severity::Info,
+                    "ipc.request.completed",
+                    "Core IPC request completed",
+                    "asr-log-normal-query",
+                    command,
+                    "completed",
+                    None,
+                    1,
+                    None,
+                    Some(500),
+                );
+            }
+            let rejected = handle
+                .request(
+                    "asr-log-rejected",
+                    "asr.input.poll",
+                    json!({"recordingId": "missing-test-recording"}),
+                    Duration::from_secs(3),
+                )
+                .unwrap();
+            assert_eq!(rejected["ok"], false);
+            handle.log_request_result(
+                "asr-log-deadline",
+                "asr.input.capture_status",
+                &Err("REQUEST_DEADLINE_EXCEEDED".into()),
+                500,
+                Duration::from_millis(500),
+            );
+            for code in ["ASR_CANCELLED", "CANCELLED"] {
+                handle.log_request_result(
+                    "asr-log-cancelled",
+                    "asr.input.capture_ready",
+                    &Ok(json!({"ok": false, "error": {"code": code}})),
+                    1,
+                    Duration::from_millis(500),
+                );
+            }
+            let records = log.viewer_snapshot(None).unwrap().records;
+            let ipc: Vec<_> = records
+                .iter()
+                .filter(|record| record.event_code.starts_with("ipc.request."))
+                .collect();
+            assert_eq!(
+                ipc.len(),
+                4,
+                "successful polling must not consume viewer history"
+            );
+            assert!(ipc[..2]
+                .iter()
+                .all(|record| record.event_code == "ipc.request.failed"
+                    && record.severity == "warning"));
+            assert!(ipc[2..]
+                .iter()
+                .all(|record| record.event_code == "ipc.request.cancelled"
+                    && record.severity == "info"));
+            host.shutdown().unwrap();
+            assert!(log.shutdown(Duration::from_millis(500)));
+            let text = fs::read_to_string(&path).unwrap();
+            assert_eq!(text.lines().filter(|line| line.contains("outcome=completed") && line.contains("asr.input.")).count(),
+                if level == Verbosity::Debug { 3 } else { 0 });
+            assert!(text.contains("REQUEST_DEADLINE_EXCEEDED"));
+            assert!(text.contains("ASR_RECORDING_NOT_FOUND"));
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

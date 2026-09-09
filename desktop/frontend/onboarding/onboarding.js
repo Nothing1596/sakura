@@ -60,7 +60,7 @@ const domainLabels = {
   characters: "角色",
   history: "对话",
   memory: "记忆",
-  tts: "TTS 运行资源",
+  tts: "语音合成资源",
   ttsBundles: "角色语音模型",
   notes: "笔记",
   reminders: "提醒",
@@ -77,17 +77,17 @@ const errorMessages = {
   LEGACY_SOURCE_NOT_DIRECTORY: "选择的目录不可用。",
   LEGACY_LAYOUT_UNRECOGNIZED: "这里不是受支持的 Sakura 0.9.x 目录。",
   LEGACY_VERSION_UNSUPPORTED: "只能迁移 Sakura 0.9.x。",
-  LEGACY_PLATFORM_UNSUPPORTED: "无法识别旧版本所属平台，请选择完整的 Windows 或 macOS 安装目录。",
+  LEGACY_PLATFORM_UNSUPPORTED: "请选取完整的 Windows 或 macOS 旧版安装目录。",
   LEGACY_TARGET_PLATFORM_UNSUPPORTED: "当前系统暂不支持旧版本迁移。",
-  LEGACY_CROSS_PLATFORM_UNSUPPORTED: "旧版本与当前 Sakura 不在同一平台，无法安全迁移运行资源。",
-  LEGACY_SOURCE_ACTIVE: "检测到 Sakura 0.9.x 仍在运行，请先完全退出旧版本后再导入。",
+  LEGACY_CROSS_PLATFORM_UNSUPPORTED: "旧版与当前系统不同，无法迁移语音等运行资源。",
+  LEGACY_SOURCE_ACTIVE: "请先退出正在运行的 Sakura 0.9.x。",
   LEGACY_TARGET_SPACE_INSUFFICIENT: "可用磁盘空间不足。",
   LEGACY_TTS_LINK_BROKEN: "旧版 TTS 外置目录已经断开。",
   LEGACY_TTS_LAYOUT_UNRECOGNIZED: "无法识别旧版 TTS 目录结构。",
-  LEGACY_TTS_TARGET_OVERLAP: "旧版 TTS 目录与 v2 数据目录重叠，无法安全迁移。",
-  LEGACY_NESTED_LINK_UNSUPPORTED: "旧数据中存在嵌套链接，无法确认复制边界。",
-  LEGACY_TTS_ABSOLUTE_LINKS_SKIPPED: "旧版 TTS 中指向原安装位置的绝对链接已跳过；角色模型原文件仍会迁移。",
-  LEGACY_COPY_CONFLICT: "两个旧数据文件映射到了同一位置，但内容不同。",
+  LEGACY_TTS_TARGET_OVERLAP: "旧版语音目录与当前数据目录重叠，无法迁移。",
+  LEGACY_NESTED_LINK_UNSUPPORTED: "旧数据含嵌套链接，暂不支持迁移。",
+  LEGACY_TTS_ABSOLUTE_LINKS_SKIPPED: "已跳过旧版语音资源的绝对链接，模型原文件仍会迁移。",
+  LEGACY_COPY_CONFLICT: "旧文件的目标位置冲突，内容不同。",
   LEGACY_TTS_CONFIG_VALIDATION_FAILED: "旧版 TTS 配置无法转换为当前格式。",
   LEGACY_SETTINGS_VALIDATION_FAILED: "旧版配置无法转换为当前设置格式。",
   LEGACY_HISTORY_JSON_INVALID: "聊天历史中存在损坏的记录。",
@@ -95,7 +95,7 @@ const errorMessages = {
   LEGACY_HISTORY_TIMESTAMP_INVALID: "聊天历史中存在无效时间。",
   LEGACY_MEMORY_DATABASE_INVALID: "旧版长期记忆数据库损坏。",
   LEGACY_MEMORY_SCHEMA_INVALID: "旧版长期记忆数据库结构不兼容。",
-  LEGACY_MEMORY_DIMENSION_UNSUPPORTED: "旧版记忆向量维度不是当前支持的 384 维。",
+  LEGACY_MEMORY_DIMENSION_UNSUPPORTED: "旧版记忆的向量格式不兼容。",
   LEGACY_MEMORY_OPEN_FAILED: "当前记忆插件无法打开迁移后的旧记忆库。",
   LEGACY_MCP_VALIDATION_FAILED: "旧版 MCP 配置无法转换为当前格式。",
   LEGACY_REMINDERS_VALIDATION_FAILED: "旧版提醒数据无法转换为当前格式。",
@@ -103,13 +103,13 @@ const errorMessages = {
   LEGACY_NOTE_VALIDATION_FAILED: "旧版笔记包含当前版本无法读取的文件。",
   LEGACY_CHARACTER_STUDIO_VALIDATION_FAILED: "旧版角色工坊草稿无法转换为当前格式。",
   LEGACY_SCREEN_STATE_VALIDATION_FAILED: "旧版视觉摘要状态无法转换为当前格式。",
-  LEGACY_IMPORT_FIRST_RUN_ONLY: "只有尚未完成首次设置时才能迁移旧版本。",
-  LEGACY_IMPORT_CORE_RUNNING: "Sakura Core 已启动，请重启应用后先执行旧版本迁移。",
-  LEGACY_IMPORT_CONFIRMATION_STALE: "目标数据在确认后发生了变化，请重新检查并确认覆盖范围。",
+  LEGACY_IMPORT_FIRST_RUN_ONLY: "完成首次设置后无法迁移旧版。",
+  LEGACY_IMPORT_CORE_RUNNING: "程序已启动，请重启后先迁移旧版本。",
+  LEGACY_IMPORT_CONFIRMATION_STALE: "当前数据已变化，请重新确认覆盖范围。",
   LEGACY_IMPORT_CANCELLED: "迁移已取消，现有数据没有改变。",
-  LEGACY_IMPORT_OPERATION_TIMEOUT: "旧版本迁移等待超时，已安全停止并恢复现有数据。",
-  LEGACY_IMPORT_PROCESS_TERMINATION_FAILED: "无法确认旧版本迁移进程已停止。Sakura Core 将保持关闭，请保留迁移记录并重启系统后重试。",
-  LEGACY_CORE_VALIDATION_FAILED: "迁移数据未通过 Core 校验，已恢复到迁移前状态。",
+  LEGACY_IMPORT_OPERATION_TIMEOUT: "迁移超时，已停止并恢复原数据。",
+  LEGACY_IMPORT_PROCESS_TERMINATION_FAILED: "无法确认迁移进程已停止。请保留迁移记录，重启系统后再启动 Sakura。",
+  LEGACY_CORE_VALIDATION_FAILED: "迁移数据校验失败，已恢复原数据。",
   LEGACY_ROLLBACK_FAILED: "自动恢复失败，请保留旧目录并查看诊断信息。",
 };
 
@@ -291,12 +291,12 @@ function renderInspection(snapshot) {
     item.className = (inspection.blockers || []).includes(issue) ? "blocking" : "warning";
     item.style.setProperty("--issue-order", Math.min(index, 4));
     item.textContent = issue.code === "LEGACY_TTS_EXTERNAL_COPY"
-      ? "检测到外置 TTS 目录；迁移时会复制到 v2，旧版删除后仍可使用。"
+      ? "外置语音资源将复制到当前版本，删除旧版后仍可使用。"
       : publicError(issue);
     migrationIssues.append(item);
   }
   migrationStartButton.disabled = !inspection.compatible || !selectionId;
-  setAnimatedText(migrationError, inspection.compatible ? "" : "请先解决上面的阻断问题。");
+  setAnimatedText(migrationError, inspection.compatible ? "" : "请先处理上述问题。");
   if (inspectionWasHidden) replayAnimation(migrationInspection, "is-revealing");
 }
 
@@ -387,7 +387,7 @@ function renderProgress(snapshot) {
 
   if (state === "failed") setAnimatedText(migrationError, publicError(snapshot.error));
   if (state === "cancelled") {
-    setAnimatedText(migrationError, "迁移已取消，旧目录和当前 v2 数据均未改变。");
+    setAnimatedText(migrationError, "迁移已取消，旧版和当前数据均未改变。");
   }
   if (state === "completed") setAnimatedText(migrationError, "");
 
@@ -462,7 +462,7 @@ async function startMigration() {
   let confirmedOverwriteDomains = [];
   if (overwriteDomains.length) {
     const confirmed = window.confirm(
-      `旧版本数据与当前数据存在以下冲突：\n\n${overwriteDomains.map((item) => `• ${item}`).join("\n")}\n\n继续后只覆盖同路径文件或同一稳定身份的记录；目标独有内容会保留，跨角色冲突不会覆盖。是否继续？`,
+      `以下数据存在冲突：\n\n${overwriteDomains.map((item) => `• ${item}`).join("\n")}\n\n继续将覆盖同路径文件或同一条记录。仅当前版本有的数据会保留，不覆盖跨角色冲突。是否继续？`,
     );
     if (!confirmed) return;
     confirmedOverwriteDomains = [...overwriteDomains];

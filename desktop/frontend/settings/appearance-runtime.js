@@ -263,7 +263,7 @@ export function createRuntimeAppearanceController({
     } catch (error) {
       if (!rebinding) {
         onError(transientCharacterPresentationError(error)
-          ? "Core 正在切换，请稍后再调整外观；当前改动已保留。"
+          ? "正在切换角色，请稍后调整外观。"
           : String(error));
       }
     } finally {
@@ -644,7 +644,7 @@ export function createRuntimeAppearanceController({
       }
       throw new Error(`APPEARANCE_CORE_REBIND_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`);
     })().catch((error) => {
-      onError("Core 正在恢复外观设置，请稍后再试。已有改动仍会保留。");
+      onError("正在恢复外观设置，请稍后重试。");
       throw error;
     }).finally(() => {
       rebinding = false;

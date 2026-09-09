@@ -128,6 +128,7 @@ let runtimePluginController = null;
 let latestUpdateSnapshot = null;
 let updateActionBusy = false;
 let runtimeVoiceController = null;
+let runtimeAsrController = null;
 let runtimeScreenAwarenessController = null;
 let runtimeAutostartController = null;
 let firstRunGuideController = null;
@@ -147,7 +148,7 @@ const reduceMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)"
 
 let activeThemeField = "";
 let themeEditor = {};
-const RUNTIME_UNAVAILABLE_REASON = "该设置能力尚未迁移到 Runtime v2";
+const RUNTIME_UNAVAILABLE_REASON = "此设置暂不可用";
 const RUNTIME_LAYOUT_DEFAULTS = Object.freeze({
   controlPanelWidth: [[420, 860], 640],
   bubbleHeight: [[96, 400], 128],
@@ -249,6 +250,7 @@ function computeDirty() {
     || runtimeToolsController?.isDirty()
     || runtimePluginController?.isDirty()
     || runtimeVoiceController?.isDirty()
+    || runtimeAsrController?.isDirty()
     || runtimeScreenAwarenessController?.isDirty()
     || runtimeAutostartController?.isDirty()
     || runtimeCharacterFeature?.isDirty()
@@ -696,17 +698,17 @@ function hsvToRgb({ h, s, v }) {
 }
 
 const pageMeta = {
-  character: { title: "角色与布局", subtitle: "选择陪伴角色与桌宠布局" },
-  appearance: { title: "外观", subtitle: "配色与输入栏视觉效果" },
-  providers: { title: "供应商", subtitle: "管理 API 供应商、密钥与模型" },
-  model: { title: "模型", subtitle: "功能模型分配与高级参数" },
-  voice: { title: "语音", subtitle: "选择语音引擎和服务来源" },
-  interaction: { title: "交互", subtitle: "字幕、气泡与主动屏幕感知" },
-  tools: { title: "工具", subtitle: "工具调用与循环上限" },
-  plugins: { title: "插件", subtitle: "安装、启用和设置插件" },
-  system: { title: "系统", subtitle: "管理启动、更新与本地数据" },
-  about: { title: "关于", subtitle: "查看版本、更新与本地组件" },
-  memory: { title: "记忆", subtitle: "查看、编辑、删除长期记忆与常驻档案" },
+  character: { title: "角色与布局" },
+  appearance: { title: "外观" },
+  providers: { title: "供应商" },
+  model: { title: "模型" },
+  voice: { title: "语音" },
+  interaction: { title: "交互" },
+  tools: { title: "工具" },
+  plugins: { title: "插件" },
+  system: { title: "系统" },
+  about: { title: "关于" },
+  memory: { title: "记忆" },
 };
 
 function showPage(page) {
@@ -730,11 +732,13 @@ function showPage(page) {
   const meta = pageMeta[page];
   if (meta) {
     fields.pageTitle.textContent = meta.title;
-    fields.pageSubtitle.textContent = meta.subtitle;
+    fields.pageSubtitle.textContent = "";
+    fields.pageSubtitle.hidden = true;
     replayMotion(fields.pageHead, "is-switching");
   }
   runtimeProviderFeature?.onPageChanged(page);
   runtimePluginController?.onPageChanged(page);
+  runtimeAsrController?.onPageChanged(page);
 }
 
 function syncEnabledState() {
@@ -803,7 +807,7 @@ async function resetTtsStorageRoot() {
 
 async function importLegacyRoleData() {
   fields.legacyRoleDataImportButton.disabled = true;
-  fields.legacyRoleDataImportStatus.textContent = "正在检查旧目录，Sakura Core 会短暂重启…";
+  fields.legacyRoleDataImportStatus.textContent = "正在检查旧数据…";
   try {
     const plan = await rootSettingsClient.legacyRoleDataImportChoose();
     if (!plan) {
@@ -811,7 +815,7 @@ async function importLegacyRoleData() {
       return;
     }
     if (plan.blocked) {
-      throw new Error("检测到跨角色身份冲突；为避免记忆串角色，本次导入已阻止。");
+      throw new Error("角色身份冲突，无法导入。");
     }
     const totals = plan.totals;
     const additions = totals.historyNew + totals.memoryNew;
@@ -838,7 +842,7 @@ async function importLegacyRoleData() {
         },
       );
       if (!overwriteConflicts) {
-        fields.legacyRoleDataImportStatus.textContent = "已取消，当前数据没有改变。";
+        fields.legacyRoleDataImportStatus.textContent = "已取消导入。";
         return;
       }
     }
@@ -998,7 +1002,7 @@ async function runUpdateAction() {
   try {
     if (snapshot.mode === "portable") {
       await rootSettingsClient.updateOpenPortableDownload(snapshot.downloadUrl);
-      fields.updateStatus.textContent = "已打开新版 Portable ZIP 下载地址。";
+      fields.updateStatus.textContent = "已打开新版便携版压缩包的下载链接。";
       updateActionBusy = false;
       fields.updateActionButton.disabled = false;
       fields.updateCheckButton.disabled = false;
@@ -1432,6 +1436,7 @@ function updateSliderOutput(fieldKey) {
 }
 
 async function refreshRuntimeVoiceCurrent() {
+  await runtimeAsrController?.refresh({ preserveDraft: true });
   if (!runtimeVoiceController) return;
   await runtimeVoiceController.refreshCurrent({ preserveDraft: true });
 }
@@ -1440,6 +1445,7 @@ async function saveRuntimeSettings() {
   if (runtimePluginController?.hasCollectionDrafts()) {
     throw new Error("请先保存或还原正在编辑的集合记录，再保存设置。");
   }
+  if (runtimeAsrController?.isDirty()) await runtimeAsrController.save();
   if (runtimeAppearanceController?.isDirty()) await runtimeAppearanceController.save();
   let result = null;
   if (runtimeScreenAwarenessController?.isDirty()) {
@@ -1697,6 +1703,7 @@ window.addEventListener("beforeunload", () => {
   runtimeToolsController?.dispose();
   runtimePluginController?.dispose();
   runtimeVoiceController?.dispose();
+  runtimeAsrController?.dispose();
   runtimeScreenAwarenessController?.dispose();
   runtimeAutostartController?.dispose();
   firstRunGuideController?.dispose();
@@ -1743,6 +1750,16 @@ async function startSettingsFrontend() {
   manifest = applyCapabilityManifest(document, manifest);
   runtimeCapabilityManifest = manifest;
   runtimeVisualEffectModes = inputVisualEffectModes(manifest);
+  await initializeRuntimeSettingsSection(async () => {
+    const { createAsrSettingsController } = await import("./asr-runtime.js");
+    runtimeAsrController = createAsrSettingsController({
+      document, invoke, enhanceSelect, refreshSelect,
+      listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
+      onDirty: refreshDirty, onStatus: notify, openPlugins: () => showPage("plugins"),
+    });
+    await runtimeAsrController.refresh();
+    await runtimeAsrController.refreshDevices();
+  });
   if (featureStatus(manifest, "character.manage") === "available") {
     await runtimeCharacterFeature.initialize();
   }
@@ -1859,6 +1876,7 @@ async function startSettingsFrontend() {
         focusSelect,
         replayMotion,
         getVoiceController: () => runtimeVoiceController,
+        getAsrController: () => runtimeAsrController,
         removeOverlayAfterExit,
         showPage,
         isMemoryTransitioning: () => runtimeCharacterFeature?.isTransitioning(),

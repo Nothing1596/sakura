@@ -7,6 +7,7 @@
 
 @import url("../assets/fonts/fonts.css");
 @import url("../core/icons.css");
+@import url("../core/selection.css");
 
 :root {
   --sakura-primary: #4b9ac4;
@@ -3087,6 +3088,40 @@ button:active:not(:disabled) {
   width: 100%;
 }
 
+.asr-input-controls { margin-block: 12px; }
+.asr-test-result { display: block; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 10px; }
+.asr-test-result:empty, .page-note:empty, .page-subtitle:empty, .setting-desc:empty { display: none; }
+#asrTestLevel {
+  display: block;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 8px;
+  margin-top: 12px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--sakura-primary) 15%, var(--sakura-panel-bg));
+  color: var(--sakura-primary);
+  accent-color: var(--sakura-primary);
+}
+#asrTestLevel[hidden] { display: none; }
+#asrTestLevel::-webkit-meter-bar {
+  height: 8px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--sakura-primary) 15%, var(--sakura-panel-bg));
+  box-shadow: none;
+}
+#asrTestLevel::-webkit-meter-optimum-value,
+#asrTestLevel::-webkit-meter-suboptimum-value,
+#asrTestLevel::-webkit-meter-even-less-good-value {
+  border-radius: 999px;
+  background: var(--sakura-primary);
+}
+#asrTestLevel::-moz-meter-bar {
+  border-radius: 999px;
+  background: var(--sakura-primary);
+}
 .plugin-setting-actions {
   display: flex;
   flex-wrap: wrap;

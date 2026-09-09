@@ -435,10 +435,8 @@ def test_plugin_registers_only_generic_host_services_and_effect_cleanup(tmp_path
     assert collection_call[0][0] == "memory_management"
     assert collection_call[0][1]["collectionId"] == MEMORY_COLLECTION_ID
     slot_call = context.services["sakura.host.model_slots"].calls[0]
-    assert slot_call[0][0] == {
+    assert {key: value for key, value in slot_call[0][0].items() if key not in {"label", "description"}} == {
         "slotId": "curation",
-        "label": "记忆整理模型",
-        "description": "用于把已完成的对话整理成长期记忆；继承时跟随对话模型。",
         "modelKind": "chat_completion",
         "required": False,
         "order": 30,
@@ -697,12 +695,12 @@ def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) ->
         "label": "运行正常",
         "message": "",
     }
-    assert runtime.load_component_settings()["embeddingResource"] == {
+    resource = runtime.load_component_settings()["embeddingResource"]
+    assert {key: value for key, value in resource.items() if key != "message"} == {
         "applicability": "required",
         "subtitle": "sentence-transformers/all-MiniLM-L6-v2",
         "ready": True,
         "taskState": "idle",
-        "message": "模型已安装，可用于长期记忆检索。",
         "detail": "",
         "progress": None,
         "availableActionIds": [],
@@ -721,8 +719,7 @@ def test_runtime_cancels_and_joins_model_download_before_closing_store(
 ) -> None:
     runtime, boundary = _runtime(tmp_path)
 
-    started = runtime.start_model_download({})
-    assert started["message"] == "模型下载已在后台启动。"
+    runtime.start_model_download({})
     assert boundary.download_started.wait(1)
     resource = runtime.load_component_settings()["embeddingResource"]
     assert resource["taskState"] == "running"
@@ -756,17 +753,13 @@ def test_memory_model_resource_exposes_contextual_actions_without_partial_instal
     runtime._model_task_state = "failed"
     runtime._model_task_error_code = "DOWNLOAD_NETWORK_FAILED"
     failed = runtime.load_component_settings()["embeddingResource"]
-    assert failed["message"] == "下载失败，未安装不完整文件；普通聊天不受影响。"
-    assert failed["detail"] == (
-        "无法连接模型下载服务，请检查网络或代理后重试。"
-        "（DOWNLOAD_NETWORK_FAILED）"
-    )
+    assert failed["ready"] is False
+    assert "DOWNLOAD_NETWORK_FAILED" in failed["detail"]
     assert failed["availableActionIds"] == ["retryEmbedding"]
 
     boundary.installed = True
     retained = runtime.load_component_settings()["embeddingResource"]
     assert retained["ready"] is True
-    assert retained["message"] == "下载失败，原有完整模型仍可使用。"
     assert "DOWNLOAD_NETWORK_FAILED" in retained["detail"]
     assert retained["availableActionIds"] == ["retryEmbedding"]
 

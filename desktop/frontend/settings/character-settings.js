@@ -155,12 +155,13 @@ export function createCharacterSettingsFeature({
       characterArchiveBusy || characterSwitching || !hasCharacter,
     );
     fields.characterArchiveHint.textContent = pendingCharacterId
-      ? `已选择 ${character?.display_name || pendingCharacterId}；角色级设置已锁定，点击“应用”或“保存并关闭”后正式切换。`
+      ? `应用后切换到 ${character?.display_name || pendingCharacterId}。`
       : currentCharacterHasDrafts()
-        ? "当前角色有未保存的改动。保存或放弃后可以导入语音；导出仍使用已保存的角色包。"
+        ? "请先保存改动再导入语音；导出使用已保存的版本。"
         : hasCharacter
-        ? "可以导入或导出角色包，也可以在角色工坊中编辑当前角色。"
-      : "当前没有角色。请导入一个 Sakura .char 角色包。";
+        ? ""
+      : "请导入 .char 角色包。";
+    fields.characterArchiveHint.hidden = !fields.characterArchiveHint.textContent;
     refreshSelect(fields.characterSelect);
   }
 
@@ -429,7 +430,7 @@ export function createCharacterSettingsFeature({
     syncCharacterArchiveState();
     refreshDirty();
     if (pendingRuntimeCharacterId()) {
-      notify("角色选择已暂存，点击“应用”或“保存并关闭”后生效。", "info");
+      notify("已选好角色，点击“应用”或“保存并关闭”即可切换。", "info");
     }
     try {
       await previewRuntimeCharacterVisual(characterId);

@@ -20,10 +20,13 @@ BUILTIN_PLUGINS = {
     "sakura_mem0",
     "sakura_mobile",
     "sakura_tts_hub",
+    "sakura_asr_hub",
+    "sakura_asr_sensevoice",
     "sakura_genie",
     "sakura_gpt_sovits",
 }
 BUNDLED_DEPENDENCY_DIRECTORIES = {
+    "sakura_asr_sensevoice",
     "sakura_mem0",
     "sakura_genie",
     "sakura_gpt_sovits",
@@ -34,6 +37,8 @@ CORE_IMPORTS = (
     "mcp",
 )
 PLUGIN_ONLY_IMPORTS = (
+    "sherpa_onnx",
+    "sherpa_onnx_core",
     "playwright",
     "openai",
     "qdrant_client",

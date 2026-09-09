@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod asr;
 mod audio;
 mod autostart_settings;
 mod capture;
@@ -4654,7 +4655,7 @@ fn observe_studio_character_restart(
                 "sakura://studio-runtime-reload",
                 json!({
                     "state": "failed",
-                    "message": "角色已经保存，但运行态未能重新加载。请重启 Sakura 后使用新数据。"
+                    "message": "角色已保存，但修改暂时未能生效。请重启 Sakura。"
                 }),
             );
         });
@@ -6783,8 +6784,7 @@ async fn studio_request(
                 payload["runtimeReload"] = json!("requested");
             } else {
                 payload["runtimeReload"] = json!("failed");
-                payload["reloadError"] =
-                    json!("保存成功，运行态重载失败。请重启 Sakura 后使用新角色数据。");
+                payload["reloadError"] = json!("角色已保存，但修改暂时未能生效。请重启 Sakura。");
                 let _ = app_handle.emit_to(
                     product_shell::SETTINGS_WINDOW_LABEL,
                     character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
@@ -7166,6 +7166,7 @@ fn toggle_pet_visibility(app: &tauri::AppHandle) -> Result<(), String> {
         .ok_or_else(|| "PET_WINDOW_UNAVAILABLE".to_string())?;
     let visible = window.is_visible().map_err(|error| error.to_string())?;
     if visible {
+        app.state::<asr::AsrState>().cancel_window("main");
         window.hide().map_err(|error| error.to_string())?;
         product_shell::sync_product_tray_visibility(app, false)
     } else {
@@ -7283,6 +7284,7 @@ fn finish_app_exit(
         emit_appearance(app_handle, publication)?;
     }
     if let Some(handle) = &lifecycle.handle {
+        app_handle.state::<asr::AsrState>().shutdown();
         handle.request_shutdown().map_err(str::to_string)?;
     }
     app_handle.exit(0);
@@ -7400,6 +7402,7 @@ fn resolve_settings_exit(
         return Err(error.to_string());
     }
     if let Some(handle) = &lifecycle.handle {
+        app_handle.state::<asr::AsrState>().shutdown();
         handle.request_shutdown().map_err(str::to_string)?;
     }
     shell.authorize_app_exit()?;
@@ -7797,6 +7800,7 @@ fn main() {
         ))
         .manage(update_coordinator)
         .manage(audio::AudioState::new(character_resource_root.clone()))
+        .manage(asr::AsrState::default())
         .manage(Arc::new(capture::CaptureManager::new()))
         .manage(input_visual_effect::InputVisualEffectState::from_environment(runtime_log.clone()))
         .register_uri_scheme_protocol(
@@ -7933,6 +7937,9 @@ fn main() {
             let lifecycle = window.state::<ShellLifecycleState>();
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
+                    window
+                        .state::<asr::AsrState>()
+                        .cancel_window(product_shell::SETTINGS_WINDOW_LABEL);
                     let authorized = state.consume_close_authorization().unwrap_or(false);
                     append_runtime_diagnostic_event(
                         &lifecycle.runtime_log,
@@ -7949,6 +7956,9 @@ fn main() {
                     }
                 }
                 tauri::WindowEvent::Destroyed => {
+                    window
+                        .state::<asr::AsrState>()
+                        .cancel_window(product_shell::SETTINGS_WINDOW_LABEL);
                     let geometry = window.state::<Mutex<WindowGeometrySession>>();
                     if let Ok(mut geometry) = geometry.lock() {
                         if geometry.portrait_scale_gesture_active {
@@ -8027,6 +8037,16 @@ fn main() {
             composer_tools_get,
             composer_tool_invoke,
             audio::tts_prepare_segment,
+            asr::asr_prepare,
+            asr::asr_availability,
+            asr::asr_poll,
+            asr::asr_capture_start,
+            asr::asr_capture_stop,
+            asr::asr_cancel,
+            asr::settings_asr_get,
+            asr::settings_asr_devices,
+            asr::settings_asr_save,
+            asr::settings_asr_action,
             audio::tts_cancel_synthesis,
             audio::tts_play_prepared,
             audio::tts_stop_playback,
@@ -8164,6 +8184,7 @@ fn main() {
 
     let exit_code = app.run_return(move |app_handle, event| match event {
         tauri::RunEvent::Exit => {
+            app_handle.state::<asr::AsrState>().shutdown();
             app_handle
                 .state::<character_studio_window::CharacterStudioWindowState>()
                 .mark_exiting();
@@ -8191,6 +8212,7 @@ fn main() {
                         product_shell::emit_product_menu_error(app_handle, error);
                     }
                 } else if let Some(handle) = &shell_lifecycle_handle {
+                    app_handle.state::<asr::AsrState>().shutdown();
                     let _ = handle.request_shutdown();
                 }
             }

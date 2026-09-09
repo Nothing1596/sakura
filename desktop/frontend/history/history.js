@@ -22,7 +22,6 @@ const status = document.querySelector("#history-status");
 const scroll = document.querySelector("#history-scroll");
 const list = document.querySelector("#history-list");
 const empty = document.querySelector("#history-empty");
-const emptyAssistantName = document.querySelector("#empty-assistant-name");
 const loadMore = document.querySelector("#load-more");
 const refresh = document.querySelector("#refresh");
 const close = document.querySelector("#close");
@@ -118,7 +117,7 @@ function errorMessage(error) {
   const raw = String(error || "HISTORY_READ_FAILED");
   const code = raw.split("|")[0].split(":")[0];
   if (["HISTORY_IDENTITY_MISMATCH", "HISTORY_CHARACTER_MISMATCH", "TIMELINE_CURSOR_INVALID"].includes(code)) {
-    return "当前角色或记录已经变化，请刷新后再查看。";
+    return "角色或记录已变化，请刷新。";
   }
   if (["HISTORY_NOT_READY", "SETTINGS_CORE_UNAVAILABLE"].includes(code)) {
     return "聊天记录仍在准备，请稍后刷新。";
@@ -150,7 +149,7 @@ async function loadInitial() {
   }
   if (!invoke) {
     count.textContent = "读取失败";
-    status.textContent = "历史记录界面未连接到 Sakura，请关闭后重新打开。";
+    status.textContent = "无法连接 Sakura，请重新打开历史记录。";
     return;
   }
   const revision = loadGuard.begin();
@@ -163,7 +162,6 @@ async function loadInitial() {
     assistantName = typeof bootstrap?.assistantName === "string" && bootstrap.assistantName
       ? bootstrap.assistantName
       : "Sakura";
-    emptyAssistantName.textContent = assistantName;
     subtitleLanguage = bootstrap?.subtitleLanguage === "ja" ? "ja" : "zh";
     identity = Object.freeze({
       coreGenerationId: bootstrap?.coreGenerationId,
@@ -182,7 +180,7 @@ async function loadInitial() {
     entries = page.entries.slice();
     applyPage(page);
     render({ animateRecent: firstPaint });
-    status.textContent = entries.length ? `已显示 ${entries.length} 条最近记录` : "这里还没有对话记录。";
+    status.textContent = entries.length ? `已显示最近 ${entries.length} 条记录` : "这里还没有对话记录。";
     requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
   } catch (error) {
     status.textContent = errorMessage(error);

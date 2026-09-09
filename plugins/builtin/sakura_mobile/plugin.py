@@ -245,7 +245,6 @@ def _settings_descriptor() -> dict[str, Any]:
             {
                 "actionId": "refresh_status",
                 "label": "刷新状态",
-                "description": "刷新手机网页服务的运行状态和访问地址。",
                 "danger": False,
             }
         ],

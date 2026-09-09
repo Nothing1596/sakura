@@ -64,6 +64,21 @@ test("observations and system facts become centered plain-text records", () => {
   assert.equal("visualId" in projected[0], false);
 });
 
+test("legacy manual screenshot notices are projected without changing stored text or other entries", () => {
+  const legacyText = "用户手动选择的 2 张屏幕截图已提交给对话模型。";
+  const manual = entry("observation", { text: legacyText }, { origin: "manual_screen" });
+  const projected = projectHistoryEntries([
+    manual,
+    entry("human", { text: legacyText }),
+    entry("observation", { text: `${legacyText}\n画面摘要` }, { origin: "manual_screen" }),
+  ]);
+  assert.match(projected[0].content, /2 张屏幕截图/);
+  assert.notEqual(projected[0].content, legacyText);
+  assert.equal(manual.payload.text, legacyText);
+  assert.equal(projected[1].content, legacyText);
+  assert.equal(projected[2].content, `${legacyText}\n画面摘要`);
+});
+
 test("scheduled screen summaries fold into one humanized observation record", () => {
   const projected = projectHistoryEntries([
     entry("observation", {

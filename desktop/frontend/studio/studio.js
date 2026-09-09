@@ -53,7 +53,6 @@ document.addEventListener("contextmenu", (event) => event.preventDefault());
 
 const fields = {
   pageTitle: document.getElementById("pageTitle"),
-  pageSubtitle: document.getElementById("pageSubtitle"),
   navItems: Array.from(document.querySelectorAll(".nav-item[data-page]")),
   pages: {
     basic: document.getElementById("page-basic"),
@@ -108,12 +107,12 @@ const fields = {
 };
 
 const pageMeta = {
-  basic: { title: "基础信息", subtitle: "名称与开场白" },
-  card: { title: "人设卡", subtitle: "系统人设" },
-  portrait: { title: "立绘", subtitle: "默认立绘与表情映射" },
-  "voice-model": { title: "语音模型", subtitle: "包内模型文件与 GPT-SoVITS 配置" },
-  "reference-audio": { title: "参考语音", subtitle: "音频、参考文本与回复语气描述词" },
-  theme: { title: "配色", subtitle: "角色包自带主题色" },
+  basic: { title: "基础信息" },
+  card: { title: "人设卡" },
+  portrait: { title: "立绘" },
+  "voice-model": { title: "语音模型" },
+  "reference-audio": { title: "参考语音" },
+  theme: { title: "配色" },
 };
 
 let request = null;
@@ -141,7 +140,7 @@ const cancellableOperationLabels = Object.freeze({
   "studio.import_voice_model": "正在复制语音模型…",
   "studio.import_reference_audio": "正在导入参考语音…",
   "studio.import_reference_audio_folder": "正在导入参考语音文件夹…",
-  "studio.save_character": "正在校验并保存角色…",
+  "studio.save_character": "正在保存角色…",
   "studio.export_archive": "正在导出角色包…",
 });
 
@@ -230,7 +229,7 @@ async function cancelActiveOperation() {
       return;
     }
     fields.operationText.textContent = state === "cancelling"
-      ? "正在取消并清理临时文件…"
+      ? "正在取消…"
       : "操作已经结束。";
   } catch (error) {
     setError(`取消操作失败：${String(error)}`);
@@ -516,7 +515,6 @@ function switchPage(page) {
   fields.pages[page].classList.add("is-active");
   const meta = pageMeta[page];
   fields.pageTitle.textContent = meta.title;
-  fields.pageSubtitle.textContent = meta.subtitle;
   fields.pageHead.classList.remove("is-switching");
   void fields.pageHead.offsetWidth;
   fields.pageHead.classList.add("is-switching");
@@ -527,7 +525,7 @@ function isDirty() {
 }
 
 function confirmDiscardChanges() {
-  return !isDirty() || window.confirm("当前修改尚未保存，继续操作将丢失这些修改。是否继续？");
+  return !isDirty() || window.confirm("继续将丢失未保存的修改，是否继续？");
 }
 
 function currentCharacterEntry() {
@@ -768,7 +766,7 @@ function renderModelFiles(modelFiles = []) {
   if (!modelFiles.length) {
     const empty = document.createElement("p");
     empty.className = "setting-desc";
-    empty.textContent = "角色包内没有 .ckpt、.pth 或 .onnx 模型文件。";
+    empty.textContent = "暂无语音模型。";
     fields.modelFileList.append(empty);
     return;
   }
@@ -869,7 +867,7 @@ function syncExpressionEmptyState() {
   }
   const empty = document.createElement("div");
   empty.className = "resource-empty";
-  empty.innerHTML = "<strong>还没有立绘</strong><span>选择图片或导入一个立绘文件夹。</span>";
+  empty.innerHTML = "<strong>还没有立绘</strong>";
   fields.expressionList.append(empty);
 }
 
@@ -902,7 +900,7 @@ function syncReferenceAudioEmptyState() {
   }
   const empty = document.createElement("div");
   empty.className = "reference-audio-empty";
-  empty.innerHTML = "<strong>还没有参考语音</strong><span>添加音频后填写参考文本和描述词。</span>";
+  empty.innerHTML = "<strong>还没有参考语音</strong>";
   fields.referenceAudioList.append(empty);
 }
 
@@ -1486,7 +1484,7 @@ async function createCharacter() {
     if (!existing.is_installed) {
       await selectCharacter(characterId);
     } else {
-      setError(`角色 ID 已存在：${characterId}。请从下拉菜单直接打开该角色。`);
+      setError(`角色 ID 已存在：${characterId}，请从角色列表打开。`);
     }
     return;
   }
@@ -1513,9 +1511,9 @@ async function discardCurrentDraft() {
   if (published && !entry?.has_draft && !entry?.is_dirty && !isDirty()) {
     return;
   }
-  const action = published ? "放弃修改" : "删除工作区角色";
+  const action = published ? "放弃修改" : "删除草稿角色";
   const detail = published
-    ? "主程序中的已发布版本不会受到影响。"
+    ? "已发布版本不受影响。"
     : "该角色尚未发布，删除后无法恢复。";
   if (!window.confirm(`${action}「${currentDoc.display_name || currentDoc.id}」？\n${detail}`)) {
     return;
@@ -1690,7 +1688,7 @@ async function importReferenceAudioFolder() {
 async function previewReferenceAudio(row) {
   const relativePath = row.querySelector("[data-reference-audio-path]").value.trim();
   if (!relativePath) {
-    setError("当前参考语音没有可试听的音频文件。");
+    setError("没有可试听的音频文件。");
     return;
   }
   await runBusy(async () => {
@@ -1750,7 +1748,7 @@ function validateExpressionInputs() {
       message = "请填写表情标签。";
       labelInput.classList.add("is-invalid");
     } else if (!path) {
-      message = `请填写表情「${label}」的图片路径。`;
+      message = `请为表情「${label}」选择图片。`;
       pathInput.classList.add("is-invalid");
       focusTarget = pathInput;
     } else if (labels.has(label)) {
@@ -1845,7 +1843,7 @@ async function saveWorkspaceDraft() {
   }
   await runBusy(async () => {
     await flushDraftAutosave();
-    notify(`角色「${currentDoc.display_name || currentDoc.id}」的草稿已保存。`, "success");
+    notify(`「${currentDoc.display_name || currentDoc.id}」草稿已保存。`, "success");
   });
 }
 
@@ -1860,7 +1858,7 @@ async function commitCharacter({ publish = false } = {}) {
     return;
   }
   if (!publish && !published) {
-    setError("工作区角色请使用“发布角色”。");
+    setError("请点击“发布角色”。");
     return;
   }
   if (!validateThemeInputs() || !validateExpressionInputs() || !validateVoiceInputs()) {
@@ -1885,9 +1883,9 @@ async function commitCharacter({ publish = false } = {}) {
     markBaseline();
     notify(payload.message || (publish ? "角色已发布。" : "角色已保存。"), "success");
     if (payload.runtime_reload === "failed") {
-      setError(payload.reload_error || "保存成功，运行态重载失败。请重启 Sakura 后使用新角色数据。");
+      setError(payload.reload_error || "修改已保存但未生效，请重启 Sakura。");
     } else if (payload.runtime_reload === "requested") {
-      notify("角色已保存，正在重新加载运行态。", "info");
+      notify("角色已保存，正在应用修改。", "info");
     }
   });
 }
@@ -2072,7 +2070,7 @@ fields.createCharacterForm.addEventListener("submit", (event) => {
   } else if (!isValidCharacterId(characterId)) {
     message = "角色 ID 只能包含字母、数字、下划线、点和连字符。";
   } else if ((request?.characters || []).some((character) => character.id === characterId)) {
-    message = `角色 ID 已存在：${characterId}。请从上方角色列表中打开。`;
+    message = `角色 ID 已存在：${characterId}，请从角色列表打开。`;
   }
   if (message) {
     fields.createCharacterError.textContent = message;
@@ -2104,7 +2102,7 @@ fields.voiceEnabled.addEventListener("change", () => {
       || fields.sovitsModelPath.value
       || fields.referenceAudioList.querySelector(".reference-audio-row")
     );
-    if (hasVoiceAssets && !window.confirm("关闭语音后，保存时会移除语音配置和参考语音映射。是否继续？")) {
+    if (hasVoiceAssets && !window.confirm("关闭语音并保存后，将移除语音配置和参考语音关联。是否继续？")) {
       fields.voiceEnabled.checked = true;
     }
   }
@@ -2136,9 +2134,9 @@ window.__TAURI__?.event?.listen?.("sakura://studio-exit-requested", () => {
 window.__TAURI__?.event?.listen?.("sakura://studio-runtime-reload", ({ payload }) => {
   const state = runtimeReloadState(payload?.state);
   if (state === "ready") {
-    notify("当前角色已在运行态生效。", "success");
+    notify("角色修改已生效。", "success");
   } else if (state === "failed") {
-    setError(payload.message || "角色已保存，但运行态重载失败。");
+    setError(payload.message || "修改已保存但未生效，请重启 Sakura。");
   }
 });
 enhanceSelect(fields.studioCharacterSelect);

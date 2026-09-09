@@ -1750,7 +1750,7 @@ fn viewer_http_status(record: &RuntimeLogRecord) -> Option<u16> {
 }
 
 fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
-    const PRIORITY: [&str; 62] = [
+    const PRIORITY: [&str; 63] = [
         "diagnostic",
         "context_window_tokens",
         "context_window_source",
@@ -1765,6 +1765,7 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
         "code",
         "provider_error_code",
         "reason_code",
+        "recording_id",
         "stage",
         "detail_stage",
         "copy_method",
@@ -1930,6 +1931,7 @@ fn viewer_detail_label(key: &str) -> &'static str {
         "safety_margin" => "安全余量",
         "code" | "provider_error_code" => "错误码",
         "reason_code" => "原因码",
+        "recording_id" => "录音编号",
         "stage" => "阶段",
         "detail_stage" => "阶段",
         "error_type" | "provider_error_type" => "类型",
@@ -1990,6 +1992,10 @@ fn viewer_detail_label(key: &str) -> &'static str {
 
 fn business_message(event: &str) -> Option<&'static str> {
     Some(match event {
+        "asr.capture.started" => "开始录音",
+        "asr.capture.finished" => "录音结束",
+        "asr.capture.cancelled" => "录音已取消",
+        "asr.capture.failed" => "录音失败",
         "shell.started" => "Sakura 已启动",
         "shell.ready" => "Sakura 已就绪",
         "shell.stopping" => "Sakura 正在退出",
@@ -2631,6 +2637,13 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         value if value.starts_with("reply.") => &REPLY_PRIORITY,
         value if value.starts_with("screen.capture.") => &SCREEN_PRIORITY,
         value if value.starts_with("tts.") => &TTS_PRIORITY,
+        value if value.starts_with("asr.") => &[
+            "recording_id",
+            "duration_ms",
+            "reason_code",
+            "provider",
+            "status",
+        ],
         value if value.starts_with("legacy_import.tts_copy_") => &LEGACY_COPY_PRIORITY,
         _ => &DEFAULT_PRIORITY,
     };
@@ -3057,6 +3070,7 @@ fn normalize_key(value: &str) -> String {
         .replace("receivedepochms", "received_epoch_ms")
         .replace("receivedprocessms", "received_process_ms")
         .replace("elapsedms", "elapsed_ms")
+        .replace("durationms", "duration_ms")
         .replace("epochms", "epoch_ms")
         .replace("eventdelayms", "event_delay_ms")
         .replace("eventperfms", "event_perf_ms")
@@ -3106,6 +3120,7 @@ fn normalize_key(value: &str) -> String {
         .replace("pthfiles", "pth_files")
         .replace("quickcheck", "quick_check")
         .replace("recordbytes", "record_bytes")
+        .replace("recordingid", "recording_id")
         .replace("recordtruncated", "record_truncated")
         .replace("replychars", "reply_chars")
         .replace("requestestimatedtokens", "request_estimated_tokens")

@@ -130,7 +130,7 @@ test("plugin activity keeps warning and failure stable", () => {
   }), {
     state: "working",
     label: "正在启动",
-    message: "插件 Worker 正在初始化，请稍候。",
+    message: "插件正在启动，请稍等。",
     hasRunningResource: false,
     isTransient: true,
   });

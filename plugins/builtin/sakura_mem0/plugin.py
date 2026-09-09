@@ -124,23 +124,20 @@ class SakuraMem0Runtime:
                         "label": "状态未知",
                         "message": "",
                     },
-                    "description": "记忆故障不会阻断普通聊天。",
                 },
                 {
                     "key": "triggerTurns",
-                    "label": "自动整理间隔",
+                    "label": "自动整理间隔（轮）",
                     "type": "integer",
                     "default": 8,
                     "minimum": 1,
                     "maximum": 50,
                     "step": 1,
-                    "description": "完成多少轮对话后尝试整理一次长期记忆。",
                 },
                 {
                     "key": "embeddingResource",
                     "label": "本地向量模型",
                     "type": "resource",
-                    "description": "用于长期记忆语义检索的固定本地模型。",
                     "actionIds": [
                         "downloadEmbedding",
                         "retryEmbedding",
@@ -162,24 +159,21 @@ class SakuraMem0Runtime:
                 {
                     "actionId": "downloadEmbedding",
                     "label": "下载本地模型",
-                    "description": "在插件后台下载固定版本的 ONNX 模型，不阻塞设置 Bridge。",
                 },
                 {
                     "actionId": "retryEmbedding",
                     "label": "重试",
-                    "description": "重新下载固定版本的本地向量模型。",
                 },
                 {
                     "actionId": "cancelEmbedding",
                     "label": "取消下载",
-                    "description": "取消当前插件 generation 启动的模型下载任务。",
                 },
             ],
             "collections": [
                 {
                     "collectionId": MEMORY_COLLECTION_ID,
                     "title": "记忆条目",
-                    "description": "管理当前角色在现有 Qdrant、SQLite 与核心档案中的长期记忆。",
+                    "description": "当前角色的长期记忆。",
                     "columns": [
                         {
                             "key": "content",
@@ -382,7 +376,7 @@ class SakuraMem0Runtime:
             )
             self._model_task_thread = thread
             thread.start()
-        return {"values": self.load_component_settings(), "message": "模型下载已在后台启动。"}
+        return {"values": self.load_component_settings(), "message": "已开始下载模型。"}
 
     def cancel_model_download(self, _values: Mapping[str, object]) -> dict[str, object]:
         with self._task_lock:
@@ -538,27 +532,27 @@ class SakuraMem0Runtime:
             error_code = self._model_task_error_code
         if state in {"queued", "running"}:
             actions: list[str] = ["cancelEmbedding"]
-            message = "正在下载并校验固定版本模型文件。"
+            message = "正在下载模型"
         elif state in {"failed", "cancelled"}:
             actions = ["retryEmbedding"]
             if state == "cancelled":
                 message = (
-                    "下载已取消，原有完整模型仍可使用。"
+                    "已取消，原模型仍可用。"
                     if installed
-                    else "下载已取消，未安装不完整文件。"
+                    else "已取消"
                 )
             else:
                 message = (
-                    "下载失败，原有完整模型仍可使用。"
+                    "下载失败，原模型仍可用。"
                     if installed
-                    else "下载失败，未安装不完整文件；普通聊天不受影响。"
+                    else "下载失败"
                 )
         elif installed:
             actions = []
-            message = "模型已安装，可用于长期记忆检索。"
+            message = "已安装"
         else:
             actions = ["downloadEmbedding"]
-            message = "长期记忆检索需要先安装这个本地模型。"
+            message = "尚未安装"
         return {
             "applicability": "required",
             "subtitle": str(embedding.get("model", ""))[:512],
@@ -656,7 +650,7 @@ class SakuraMem0Plugin:
             {
                 "slotId": "curation",
                 "label": "记忆整理模型",
-                "description": "用于把已完成的对话整理成长期记忆；继承时跟随对话模型。",
+                "description": "继承时使用对话模型。",
                 "modelKind": "chat_completion",
                 "required": False,
                 "order": 30,

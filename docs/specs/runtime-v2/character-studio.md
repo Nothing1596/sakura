@@ -149,6 +149,11 @@ Rust 随后只发起一次现有 Core restart，并关闭旧音频状态。停�
 事件必须等新 generation 就绪后发送，并携带新 generation ID；设置页先重绑定运行态控制器，再刷新角色列表。
 旧 generation 的迟到事件不能覆盖新状态或显示 `Router closed`。工坊关闭本身不触发目录刷新。
 
+`.char` 角色包和 `.voice` 独立语音包导入允许单个文件最大 8 GiB、解压后总量最大 32 GiB，
+大小按 ZIP 中的未压缩字节数计算，上限值本身允许导入。仍限制 ZIP 成员不超过 4096 个，
+大于 1 MiB 的文件压缩比不超过 200，并检查目标磁盘空间、路径穿越和符号链接。
+这些大小限制仅适用于角色与语音归档，不改变其他归档的默认限制。
+
 `.char` 导出以原角色 manifest 为基线，只改写已知字段和资源路径。完整包必须携带 legacy `voice` 以及内建
 GPT-SoVITS、Genie extension 引用的模型、参考表和参考音频；导入后继续保留 `renderer`、`backchannel`、
 `extensions` 和未知字段。

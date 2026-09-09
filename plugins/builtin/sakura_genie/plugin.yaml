@@ -2,7 +2,7 @@ api: 4
 id: sakura.tts.genie
 name: Genie TTS Provider
 author: Sakura
-description: 让角色使用 Genie 说话，可连接 Sakura 管理的服务或自定义地址。
+description: 使用 Genie 合成角色语音，支持外部服务。
 version: 0.1.0
 entry: plugin:GeniePlugin
 enabled: true

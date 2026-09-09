@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Mapping, Sequence
 
@@ -1190,6 +1191,7 @@ class PluginContext:
         remote_request: Callable[[str, Mapping[str, Any]], object],
     ) -> None:
         self.plugin_id = plugin_id
+        self._caller_id: ContextVar[str | None] = ContextVar("sakura_service_caller", default=None)
         self._plugin_root = plugin_root
         self._data_dir = data_dir
         self._remote_call = remote_call
@@ -1367,7 +1369,12 @@ class PluginContext:
             for key, (_service, exports) in self._services.items()
         }
 
-    def call_local(self, service_key: str, method: str, args: Sequence[Any]) -> object:
+    @property
+    def caller_id(self) -> str | None:
+        """Core-authenticated caller during an incoming Service invocation."""
+        return self._caller_id.get()
+
+    def call_local(self, service_key: str, method: str, args: Sequence[Any], *, caller_id: str | None = None) -> object:
         binding = self._services.get(service_key)
         if binding is None:
             raise PluginApiError("SERVICE_MISSING", service_key=service_key)
@@ -1378,7 +1385,11 @@ class PluginContext:
                 plugin_id=self.plugin_id,
                 service_key=service_key,
             )
-        return getattr(service, method)(*args)
+        token = self._caller_id.set(caller_id)
+        try:
+            return getattr(service, method)(*args)
+        finally:
+            self._caller_id.reset(token)
 
     def emit(self, name: str, payload: object) -> None:
         for handler in list(self._events.get(name, ())):

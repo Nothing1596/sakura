@@ -1,5 +1,8 @@
 import { composerPlaceholder, createChatPresentationReducer } from "./chat/chat-presentation.js";
 import { createTtsController } from "./audio/tts-controller.js";
+import { createAsrController } from "./audio/asr-controller.js";
+import { createAsrWaveform } from "./audio/asr-waveform.js";
+import { createAsrAvailability } from "./audio/asr-availability.js";
 import { createComposerActionIndicator } from "./chat/composer-action-indicator.js";
 import { createComposerToolRegistry } from "./chat/composer-tool-dock.js";
 import { createRealChatClient } from "./chat/real-chat-client.js";
@@ -81,7 +84,7 @@ import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
 import { isChatReadyLifecycle } from "./lifecycle.js";
 
 const MANUAL_SCREENSHOT_DEFAULT_TEXT = "请根据我框选的截图继续对话。";
-const LAYOUT_DEGRADED_NOTICE = "窗口布局已恢复到安全模式；后续布局成功后会自动恢复。";
+const LAYOUT_DEGRADED_NOTICE = "窗口布局异常，已临时重置。";
 
 installDevtoolsShortcutGuard();
 
@@ -163,6 +166,8 @@ let currentHitRegions = null;
 let currentPortraitSourceSize = null;
 let renderedPortrait = null;
 let disposed = false;
+let asrController = null;
+let draftVersion = 0;
 let presentationUnavailable = false;
 let layoutDegraded = false;
 let activeAppearance = null;
@@ -253,11 +258,13 @@ async function listenAppEvent(eventName, handler) {
 }
 
 function showRecoverableError(message) {
+  delete presentationError.dataset.asrError;
   presentationError.textContent = String(message || "角色表现暂时不可用");
   presentationError.hidden = false;
 }
 
 function clearRecoverableError() {
+  delete presentationError.dataset.asrError;
   presentationError.hidden = true;
   presentationError.textContent = "";
 }
@@ -444,7 +451,7 @@ try {
   });
 } catch {
   presentationUnavailable = true;
-  showRecoverableError("当前角色表现加载失败；关闭并重新启动后可重试。");
+  showRecoverableError("角色加载失败，请重启 Sakura 后再试。");
   characterPresentation = Object.freeze({
     generationId: "unavailable",
     characterId: "unavailable",
@@ -960,7 +967,7 @@ function buildPortraitController(boundPresentation, {
     },
     reportError: ({ code }) => {
       if (!presentationUnavailable) {
-        showRecoverableError(code === "PORTRAIT_KEY_UNKNOWN" ? "表情映射无效，已恢复默认立绘。" : "立绘解码失败，仍可继续输入。");
+        showRecoverableError(code === "PORTRAIT_KEY_UNKNOWN" ? "没有找到对应的表情，已换回默认立绘。" : "立绘图片加载失败，你仍可以继续聊天。");
       }
     },
   });
@@ -1045,6 +1052,7 @@ async function commitSurfaceVisibility(kind, key, visible, revision) {
 }
 
 async function applySurfaceVisibility(kind, visible) {
+  if (kind === "input" && !visible) void asrController?.cancel({ restore: false });
   const key = surfaceVisibilityKey(kind);
   const next = Boolean(visible);
   const revision = ++surfaceVisibilityRevision[kind];
@@ -1114,7 +1122,8 @@ const composerToolRegistry = createComposerToolRegistry({
 });
 
 function inputIsPinned() {
-  return inputFocus.snapshot().inputFocused
+  return asrController?.active() === true
+    || inputFocus.snapshot().inputFocused
     || input.value.length > 0
     || screenAttachment?.busy() === true;
 }
@@ -1191,7 +1200,7 @@ if (surfaceVisibilityCapabilities.bubbleAutoHide && surfaceVisibilityCapabilitie
   surfaceVisibilityController = createSurfaceVisibilityController({
     settings: bubbleAutoHideSettings,
     onVisibilityChange: applySurfaceVisibility,
-    onError: () => showRecoverableError("桌宠控件显隐更新失败；下次交互会重试。", { autoHide: true }),
+    onError: () => showRecoverableError("桌宠控件暂时无法更新。", { autoHide: true }),
   });
   surfaceHoverTracker = createSurfaceHoverTracker({
     onHoverChange: (active) => surfaceVisibilityController.setHoverActive(active),
@@ -1225,6 +1234,101 @@ const ttsController = createTtsController({
   }),
 });
 await ttsController.start();
+
+const voiceMic = document.querySelector("#voice-mic");
+const voiceStatus = document.querySelector("#voice-status");
+const voiceRecording = document.querySelector("#voice-recording");
+const waveform = createAsrWaveform({ canvas: document.querySelector("#voice-waveform"), window });
+asrController = createAsrController({
+  invoke,
+  listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
+  readContext: () => `${characterPresentation.generationId}:${characterPresentation.characterId}`,
+  readDraft: () => ({
+    value: input.value, version: draftVersion,
+    selectionStart: input.selectionStart, selectionEnd: input.selectionEnd,
+    selectionDirection: input.selectionDirection,
+  }),
+  writeDraft: ({ value, caret }) => {
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(caret, caret);
+  },
+  restoreSelection: (saved) => {
+    input.focus({ preventScroll: true });
+    if (saved) input.setSelectionRange(saved.selectionStart, saved.selectionEnd, saved.selectionDirection);
+  },
+  onState: ({ state }) => {
+    if (state === "preparing" && presentationError.dataset.asrError === "true") clearRecoverableError();
+    const busy = state !== "idle";
+    const waiting = state === "preparing" || state === "recognizing";
+    composer.dataset.voiceState = state;
+    composer.dataset.voiceActive = String(busy);
+    input.readOnly = busy;
+    input.hidden = busy;
+    attachmentToggle.dataset.action = busy ? "cancel" : "tools";
+    attachmentToggle.setAttribute("aria-haspopup", busy ? "false" : "menu");
+    if (busy) void screenAttachment.close();
+    screenAttachment.refreshControls();
+    voiceStatus.hidden = !waiting;
+    voiceStatus.textContent = state === "preparing" ? "正在准备" : state === "recognizing" ? "正在识别" : "";
+    voiceRecording.hidden = state !== "recording";
+    voiceMic.querySelector(".sakura-icon").hidden = busy;
+    voiceMic.querySelector(".voice-stop").hidden = state !== "recording";
+    voiceMic.querySelector(".voice-spinner").hidden = !waiting;
+    const label = state === "recording" ? "结束录音并识别" : waiting ? voiceStatus.textContent : "开始语音输入";
+    voiceMic.setAttribute("aria-label", label);
+    voiceMic.title = label;
+    voiceMic.disabled = waiting || presentationUnavailable;
+    ttsController.setInputCaptureActive(state === "preparing" || state === "recording");
+    if (state === "recording") waveform.start();
+    else waveform.stop();
+    render(presentation.current());
+    adaptiveSurface.invalidate();
+    surfaceVisibilityController?.setInputPinned(inputIsPinned());
+  },
+  onLevel: (level) => waveform.push(level),
+  onError: (message) => {
+    showRecoverableError(message);
+    presentationError.dataset.asrError = "true";
+    const copy = document.createElement("span");
+    copy.textContent = message;
+    const settings = document.createElement("button");
+    settings.type = "button";
+    settings.textContent = "语音设置";
+    settings.dataset.interactive = "true";
+    settings.addEventListener("click", () => {
+      void invoke("activate_pet_context_menu_action", { actionId: "sakura.settings.open" })
+        .catch(() => showRecoverableError("设置暂时无法打开，请重试。"));
+    });
+    presentationError.replaceChildren(copy, settings);
+  },
+});
+await asrController.connect();
+const asrAvailability = createAsrAvailability({
+  invoke,
+  onChange: (enabled) => {
+    if (!enabled) void asrController.cancel();
+    voiceMic.hidden = !enabled;
+    composer.dataset.asrEnabled = String(enabled);
+    adaptiveSurface.invalidate();
+  },
+});
+await asrAvailability.start();
+voiceMic.addEventListener("click", () => {
+  if (!asrAvailability.enabled()) return;
+  if (asrController.state() === "recording") void asrController.stop();
+  else if (!asrController.active()) void asrController.start();
+});
+attachmentToggle.addEventListener("click", () => {
+  if (asrController.active()) void asrController.cancel();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !asrController.active()) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  void asrController.cancel();
+}, true);
 
 const typewriter = createTypewriter({
   intervalMs: chatTiming.subtitleTypingIntervalMs,
@@ -1300,7 +1404,7 @@ function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {
   send.title = actionLabel;
   composerActionIndicator.setBusy(state.canCancel);
   input.disabled = presentationUnavailable;
-  send.disabled = presentationUnavailable || state.silentInteraction || (
+  send.disabled = asrController?.active() === true || presentationUnavailable || state.silentInteraction || (
     !state.canRetry
     && !isChatReadyLifecycle(state.lifecycle)
   );
@@ -1336,6 +1440,8 @@ function handleCoreEvent(event) {
   }
   const before = presentation.current();
   if (event.type === "lifecycle" && event.generationId !== before.generationId) {
+    void asrController?.cancel({ restore: false });
+    void asrAvailability.refresh();
     ttsController.cancel();
     screenAttachment.invalidate();
     screenAwareness.generationChanged(event.generationId);
@@ -1395,7 +1501,8 @@ const updateAnnouncement = createUpdateAnnouncementController({
       && !typewriter.isActive()
       && input.value === ""
       && stage.dataset.composing !== "true"
-      && !screenAttachment.busy();
+      && !screenAttachment.busy()
+      && !asrController?.active();
   },
   onDiagnostic: (event, details) => runtimeDiagnostics.record({
     level: event.endsWith("failed") ? "warn" : "info",
@@ -1420,6 +1527,7 @@ const screenAwareness = createScreenAwarenessController({
       && input.value === ""
       && stage.dataset.composing !== "true"
       && !screenAttachment.busy()
+      && !asrController?.active()
       && !updateAnnouncement.isPending();
   },
   onDiagnostic: (event, details) => runtimeDiagnostics.record({
@@ -1431,6 +1539,7 @@ const screenAwareness = createScreenAwarenessController({
 });
 
 async function submitMessage({ text }) {
+  if (asrController?.active()) return;
   const state = presentation.current();
   if (presentationUnavailable || chatClient.isBusy() || state.canCancel || !isChatReadyLifecycle(state.lifecycle)) return;
   updateAnnouncement.noteActivity();
@@ -1632,6 +1741,7 @@ let coreRebindTarget = "";
 
 async function rebindCoreGeneration(generationId) {
   if (generationId === characterPresentation.generationId) return true;
+  void asrController?.cancel({ restore: false });
   if (
     disposed
     || !generationId
@@ -1725,7 +1835,7 @@ async function rebindCoreGeneration(generationId) {
   } catch {
     candidateController?.dispose();
     if (!disposed && revision === coreRebindRevision) {
-      showRecoverableError("桌宠资源加载失败；当前画面将继续保留。请稍后重试。");
+      showRecoverableError("角色资源加载失败，请稍后重试。");
     }
     return false;
   } finally {
@@ -1816,7 +1926,7 @@ await listenAppEvent("sakura://character-visual-preview", async (event) => {
       if (!characterVisualPreviewSessions.isCurrent(previewToken)) return;
     }
   } catch {
-    showRecoverableError("角色视觉预览失败；已保留当前角色画面。");
+    showRecoverableError("角色预览失败。");
   }
 });
 
@@ -2190,6 +2300,7 @@ input.addEventListener("compositionend", (event) => {
   adaptiveSurface.setComposing(false);
 });
 input.addEventListener("input", () => {
+  draftVersion += 1;
   updateAnnouncement.noteActivity();
   screenAwareness.noteActivity();
   input.lang = inferTextLanguage(input.value);
@@ -2224,10 +2335,11 @@ input.addEventListener("keydown", (event) => {
 });
 composer.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (asrController?.active()) return;
   const state = presentation.current();
   if (state.canCancel) void chatClient.cancel(state.operationId);
   else if (state.canRetry) {
-    invoke("retry_core").catch(() => showRecoverableError("Core 重试请求失败，请稍后再试。"));
+    invoke("retry_core").catch(() => showRecoverableError("重连失败，请稍后重试。"));
   }
   else inputFocus.submit("button");
 });
@@ -2253,11 +2365,18 @@ window.addEventListener("blur", () => {
   input.blur();
   surfaceVisibilityController?.setInputPinned(inputIsPinned());
 });
-document.addEventListener("visibilitychange", () => inputFocus.handleVisibility(document.visibilityState === "visible"));
+document.addEventListener("visibilitychange", () => {
+  const visible = document.visibilityState === "visible";
+  if (!visible) void asrController?.cancel({ restore: false });
+  inputFocus.handleVisibility(visible);
+});
 
 function dispose() {
   if (disposed) return;
   disposed = true;
+  asrController?.dispose();
+  asrAvailability.dispose();
+  waveform.stop();
   composerActionIndicator.dispose();
   composerMotionPreference.removeEventListener("change", syncComposerMotionPreference);
   coreRebindRevision += 1;

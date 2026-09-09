@@ -200,8 +200,8 @@ test("voice shell keeps Provider settings editable without a current character",
   assert.equal(controls.ttsEnabled.disabled, true);
   assert.equal(controls.ttsProvider.disabled, false);
   assert.equal(controls.ttsProvider.value, "com.example.neural-voice");
-  assert.equal(created.some((item) => item.textContent.includes("尚未选择角色")
-    && item.hidden === false), true);
+  assert.equal(created.some((item) => item.className === "page-note"
+    && item.textContent && item.hidden === false), true);
 
   const timeout = created.find((item) => item.tagName === "input" && item.value === "60");
   timeout.value = "90";
