@@ -64,3 +64,19 @@ export function createIcon(document, name) {
   element.setAttribute("aria-hidden", "true");
   return element;
 }
+
+// Delegate so plugin-contributed buttons use the same click feedback.
+export function installClickIconMotion(document) {
+  document.addEventListener("click", (event) => {
+    const control = event.target.closest?.("button, a");
+    if (!control || control.matches(":disabled, [aria-disabled='true']") || !control.querySelector(".sakura-icon")) return;
+    control.classList.remove("is-icon-animating");
+    void control.offsetWidth;
+    control.classList.add("is-icon-animating");
+  }, true);
+  document.addEventListener("animationend", (event) => {
+    if (event.animationName.startsWith("lucide-")) {
+      event.target.closest?.(".is-icon-animating")?.classList.remove("is-icon-animating");
+    }
+  });
+}

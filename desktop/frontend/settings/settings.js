@@ -1,3 +1,4 @@
+import { installClickIconMotion } from "../core/icons.js";
 import { enhanceSelect, refreshSelect, closeSelects, focusSelect } from "./select-control.js";
 import {
   createRootSettingsClient,
@@ -19,6 +20,7 @@ import {
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 
 installDevtoolsShortcutGuard();
+installClickIconMotion(document);
 
 const nativeInvoke = window.__TAURI__.core.invoke;
 let runtimeDiagnostics = null;

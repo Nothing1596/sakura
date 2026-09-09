@@ -281,7 +281,7 @@ html.is-theme-view-transition::view-transition-new(root) {
 .nav-item:hover:not(:disabled) {
   background: var(--tint-faint);
   color: var(--sakura-primary);
-  transform: translateX(2px);
+  transform: none;
 }
 
 .nav-item.is-active {
