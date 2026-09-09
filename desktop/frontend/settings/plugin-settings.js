@@ -2116,8 +2116,8 @@ export function createPluginSettingsFeature({
       configure.type = 'button'; configure.setAttribute('aria-haspopup', 'dialog');
       configure.addEventListener('click', () => openPluginSettingsDialog(plugin)); aside.append(configure);
     }
-    const live = renderSemanticStatus(status); live.setAttribute('aria-label', `运行状态：${status.label}`); aside.append(live);
-    heading.append(identity, aside);
+    heading.append(identity);
+    if (aside.childElementCount) heading.append(aside);
     fields.pluginDetail.append(heading);
     if (plugin.description) fields.pluginDetail.append(pluginNode('p', 'detail-desc', plugin.description));
     if (status.message || status.diagnostic) {
