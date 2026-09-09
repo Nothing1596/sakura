@@ -47,12 +47,13 @@ class SenseVoiceProvider:
         self.closed = False
         self.engine = None
         self.engine_language = "auto"
+        config = getattr(context, "config", None)
+        self.language = config.get().get("language", "auto") if config else "auto"
         self.np = None
         self.sherpa = None
         self.state = "unloaded"
         self.error = ""
-        # This immutable instance has no mutable engine settings. A new process
-        # gets a new version even if its model version is identical.
+        # Language is captured per input; model identity changes with each process.
         self.config_version = VERSION + "-" + uuid.uuid4().hex
 
     def status(self):
@@ -68,7 +69,19 @@ class SenseVoiceProvider:
             else:
                 state, error = self.state, self.error
             ready = state == "ready"
-            return {"state": state, "available": ready, "ready": ready, "configVersion": self.config_version, "errorCode": error or ("READY" if ready else "ASR_PREPARING"), "reasonCode": error or ("READY" if ready else "ASR_PREPARING")}
+            return {"state": state, "available": ready, "ready": ready, "configVersion": self.config_version, "language": self.language, "errorCode": error or ("READY" if ready else "ASR_PREPARING"), "reasonCode": error or ("READY" if ready else "ASR_PREPARING")}
+
+    def load_settings(self):
+        with self.lock:
+            return {"language": self.language}
+
+    def save_settings(self, values):
+        if not isinstance(values, Mapping) or set(values) != {"language"} or values["language"] not in LANGUAGES:
+            raise ValueError("ASR_LANGUAGE_UNSUPPORTED")
+        with self.lock:
+            self.context.config.update({"language": values["language"]})
+            self.language = values["language"]
+            return "applied"
 
     def warmup(self):
         with self.lock:
@@ -294,15 +307,27 @@ class SenseVoiceProvider:
 
 class SenseVoicePlugin:
     def setup(self, context):
+        hub = context.get("sakura.asr")
+        if "language" not in context.config.get():
+            previous = hub.status()
+            language = previous.get("language", "auto") if previous.get("selectedProviderId") == PROVIDER_ID else "auto"
+            context.config.update({"language": language if language in LANGUAGES else "auto"})
         resources = ModelResources(Path(context.data_path("models")))
         provider = SenseVoiceProvider(context, resources)
         context.effect(resources.close)
         context.effect(provider.close)
         context.provide(SERVICE_KEY, provider, exports=("status", "warmup", "begin", "poll", "cancel"))
-        hub = context.get("sakura.asr")
         hub.registerProvider({"providerId": PROVIDER_ID, "serviceKey": SERVICE_KEY, "label": "SenseVoice", "processingLocation": "local"})
         context.effect(lambda: hub.unregisterProvider(PROVIDER_ID, SERVICE_KEY))
         settings = context.get("sakura.host.settings")
+        settings.register({
+            "sectionId": "recognition", "title": "识别", "order": 90,
+            "fields": [{"key": "language", "label": "识别语言", "type": "select", "default": "auto",
+                        "options": [{"value": value, "label": label} for value, label in (
+                            ("auto", "自动检测"), ("zh", "普通话"), ("yue", "粤语"),
+                            ("en", "英语"), ("ja", "日语"), ("ko", "韩语"))]}],
+        }, load=provider.load_settings, save=provider.save_settings)
+        context.get("sakura.host.settings.surface-v0").register("recognition", "voice-input")
         settings.register(resources.descriptor(), load=resources.load, actions={"installModels": provider.install_models, "retryModels": provider.install_models, "cancelModels": resources.cancel})
         context.get("sakura.host.settings.surface-v0").register("models", "voice-input")
         log_event(provider.logger, "info", "asr.provider.started", "语音识别插件已启用")

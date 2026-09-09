@@ -247,3 +247,27 @@ def test_inventory_rejects_linked_plugin_directories(tmp_path: Path) -> None:
     assert records["linked"].plugin_id is None
     assert records["linked"].reason_code == "PLUGIN_MANIFEST_INVALID"
     assert records["linked"].can_uninstall is True
+
+
+def test_new_user_plugin_defaults_disable_only_requested_plugins_and_keep_existing_choices(tmp_path: Path) -> None:
+    from app.storage.runtime_roots import RuntimeRoots
+
+    repository = Path(__file__).parents[2]
+    roots = RuntimeRoots(repository, tmp_path)
+    desired = PluginDesiredStateStore(tmp_path)
+    inventory = PluginInventory(roots, desired)
+    affected = {"sakura.tts.genie", "sakura.tts.gpt-sovits", "sakura_mobile"}
+    before = {item.plugin_id: item.enabled for item in inventory.scan().runtime_specs}
+    assert all(before[plugin_id] for plugin_id in affected)
+
+    # Use exactly the document embedded by the Shell's first user-root initialization.
+    desired.path.parent.mkdir(parents=True)
+    desired.path.write_bytes((repository / "desktop/src-tauri/src/new_user_plugins.yaml").read_bytes())
+    after = {item.plugin_id: item.enabled for item in inventory.scan().runtime_specs}
+    assert {plugin_id for plugin_id in before if before[plugin_id] != after[plugin_id]} == affected
+    assert all(not after[plugin_id] for plugin_id in affected)
+
+    desired.write({"sakura.tts.genie": True, "sakura.tts.gpt-sovits": True, "sakura_mobile": False})
+    existing = {item.plugin_id: item.enabled for item in inventory.scan().runtime_specs}
+    assert existing["sakura.tts.genie"] and existing["sakura.tts.gpt-sovits"]
+    assert not existing["sakura_mobile"]

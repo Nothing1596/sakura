@@ -5,6 +5,7 @@ author: pa1n9
 description: 在局域网或 Tailscale 中，用手机网页和 Sakura 聊天。
 version: 1.0.0
 entry: plugin:SakuraMobilePlugin
+# 保留老用户未显式保存的启用状态；新用户由 Shell 的 new_user_plugins.yaml 初始化为关闭。
 enabled: true
 priority: 70
 provides: []

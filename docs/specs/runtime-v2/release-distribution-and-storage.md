@@ -73,8 +73,13 @@ TTS 返回 `TTS_STORAGE_UNAVAILABLE`，设置快照通过 `TTS_ROOT_MISSING`、`
 ## 发行内容
 
 随主安装包预装的五个官方默认插件为 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、
-`sakura_genie` 和 `sakura_gpt_sovits`。它们默认启用、允许禁用、不可卸载；不可卸载只表示文件由安装器
-拥有，不赋予私有 API 或实现优先级。`playwright_browser` 是用户按需安装的可选插件，不进入主安装包。
+`sakura_genie` 和 `sakura_gpt_sovits`。它们允许禁用、不可卸载；不可卸载只表示文件由安装器拥有，不赋予私有 API 或实现优先级。
+新用户默认关闭 Genie、GPT-SoVITS 和 Sakura Mobile，其余插件沿用各自默认状态。
+Shell 首次创建用户配置目录时，将这三个关闭状态写入 `config/plugins.yaml`。已有配置目录不补写或覆盖，
+包括尚未生成 `plugins.yaml`、一直沿用清单默认启用状态的老用户。清单保留原启用默认值用于升级兼容，
+用户之后手动启用或关闭的状态优先。初始化默认清单位于 `desktop/src-tauri/src/new_user_plugins.yaml`。
+
+`playwright_browser` 是用户按需安装的可选插件，不进入主安装包。
 发行流程把它另行生成一个可由普通本地插件安装入口处理的 `.sakplugin.zip`，安装和启用仍使用与第三方插件
 相同的 user plugin 与 dependency root 路径。
 

@@ -1278,7 +1278,7 @@ asrController = createAsrController({
     });
     const settings = document.createElement("button");
     settings.type = "button";
-    settings.textContent = "语音设置";
+    settings.textContent = "打开设置";
     settings.dataset.interactive = "true";
     settings.addEventListener("click", () => {
       void invoke("activate_pet_context_menu_action", { actionId: "sakura.settings.open" })

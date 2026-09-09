@@ -62,13 +62,14 @@ from pathlib import Path
 
 class Provider:
     def __init__(self, context):
+        self.language = "ja" if context.plugin_id.endswith("one") else "en"
         self.audio = context.get("sakura.host.audio_input")
         self.hub = context.get("sakura.asr")
         self.jobs = {}
         self.reading = False
         self.version = uuid.uuid4().hex
     def status(self):
-        return {"state":"ready", "available":True, "configVersion":self.version}
+        return {"state":"ready", "available":True, "configVersion":self.version, "language":self.language}
     def warmup(self): return self.status()
     def begin(self, request):
         job_id = uuid.uuid4().hex
@@ -79,7 +80,7 @@ class Provider:
             try:
                 time.sleep(0.45)
                 assert Path(lease["path"]).is_file()
-                self.jobs[job_id] = {"state":"succeeded", "text":"测试完整文字", "language":"zh"}
+                self.jobs[job_id] = {"state":"succeeded", "text":"测试完整文字", "language":request["language"]}
             finally:
                 self.reading = False
                 self.audio.release(lease["leaseId"])
@@ -103,7 +104,7 @@ class Plugin:
     application.start()
     assert len(application.public_snapshot()["plugins"]) == 3
     assert all(item["state"] == "active" for item in application.public_snapshot()["plugins"]), application.public_snapshot()
-    application.call_service("sakura.asr", "configure", {"selectedProviderId": "test.asr.one", "language": "auto"})
+    application.call_service("sakura.asr", "configure", {"selectedProviderId": "test.asr.one"})
     character = {"characterId": "alpha"}
     boundary = ASRBoundary("asr-test", "secret", user_root=roots.user_root, plugin_application_provider=lambda: application,
                            character_presentation_provider=lambda: character)
@@ -132,8 +133,10 @@ def ready(request, recording_id="record-1", purpose="draft"):
 def test_real_process_route_selection_and_exactly_one_draft_result(runtime):
     app, boundary, request, _ = runtime
     path = ready(request)
+    assert boundary._tasks["record-1"].language == "ja"
+    assert request("asr.settings.save", language="zh")["error"]["code"] == "ASR_SELECTION_INVALID"
     # Switching the selected engine affects the next recording, not this audio.
-    assert request("asr.settings.save", selectedProviderId="test.asr.two", language="en")["ok"]
+    assert request("asr.settings.save", selectedProviderId="test.asr.two")["ok"]
     wav(path)
     assert request("asr.input.submit", recordingId="record-1")["payload"]["state"] == "recognizing"
     assert request("asr.input.submit", recordingId="record-1")["error"]["code"] == "ASR_STATE_INVALID"
@@ -175,7 +178,9 @@ def test_cancel_native_reader_retains_file_then_cleans_without_ui_poll(runtime, 
 def test_settings_test_routes_explicit_provider_and_device_without_saving_or_draft_delivery(runtime):
     app, boundary, request, _ = runtime
     assert request("asr.settings.save", inputDeviceId="device-saved")["ok"]
-    assert request("asr.settings.get")["payload"]["inputDeviceId"] == "device-saved"
+    settings = request("asr.settings.get")["payload"]
+    assert settings["inputDeviceId"] == "device-saved"
+    assert settings["hubPluginId"] == app.service_identity("sakura.asr")["providerId"]
     assert request("asr.input.prepare", recordingId="test-input", contextId="settings-test",
                    purpose="test", providerId="test.asr.two", inputDeviceId="device-preview")["ok"]
     until(lambda: request("asr.input.poll", recordingId="test-input"),
@@ -194,6 +199,7 @@ def test_settings_test_routes_explicit_provider_and_device_without_saving_or_dra
     assert request("asr.input.poll", recordingId="test-input")["payload"]["state"] == "consumed"
     settings = request("asr.settings.get")["payload"]
     assert settings["selectedProviderId"] == "test.asr.one" and settings["inputDeviceId"] == "device-saved"
+    assert boundary._tasks["test-input"].language == "en"
     assert app.call_service("test.asr.one.service", "probe")["jobs"] == 0
     until(lambda: path.exists(), lambda exists: not exists)
     ready(request, "draft-after-test")
