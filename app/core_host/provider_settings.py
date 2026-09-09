@@ -110,7 +110,7 @@ class ProviderSettingsBoundary:
                 request,
                 error={
                     "code": "CREDENTIAL_REQUIRED",
-                    "message": "该供应商尚未配置凭据。",
+                    "message": "请填写 API Key。",
                     "feature": "providers.credentials",
                     "field": "credential",
                 },
@@ -129,9 +129,9 @@ class ProviderSettingsBoundary:
             if status is not None:
                 message = public_provider_http_message(error, status)
             elif code == "PROVIDER_TIMEOUT":
-                message = "供应商请求超时。"
+                message = "请求超时。"
             else:
-                message = "供应商请求失败。"
+                message = "模型服务请求失败。"
             feature = (
                 "providers.test_connection"
                 if name.endswith("test_connection")
@@ -146,7 +146,7 @@ class ProviderSettingsBoundary:
                 request,
                 error={
                     "code": "PROVIDER_REQUEST_FAILED",
-                    "message": "供应商请求失败。",
+                    "message": "模型服务请求失败。",
                     "feature": "providers.test_connection",
                     "field": "",
                 },

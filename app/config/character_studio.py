@@ -568,7 +568,7 @@ class CharacterStudioService:
                 if not changed else
                 f"已保存角色「{profile.display_name}」。"
                 if was_installed else
-                f"已发布角色「{profile.display_name}」。"
+                f"角色「{profile.display_name}」已添加到列表。"
             ),
         }
 

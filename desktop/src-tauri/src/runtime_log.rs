@@ -1589,10 +1589,10 @@ fn viewer_problem_description(
     }
 
     if viewer_has_code(record, &["WINDOWS_ADVANCED_EFFECTS_DISABLED"]) {
-        return Some("Windows 已关闭高级视觉效果，输入栏会改用普通背景。这不影响聊天和输入。");
+        return Some("Windows 已关闭高级视觉效果，输入栏改用普通背景。");
     }
     if viewer_has_code(record, &["WINDOWS_ENERGY_SAVER_ACTIVE"]) {
-        return Some("Windows 正在使用节能模式，输入栏会暂时改用普通背景。这不影响聊天和输入。");
+        return Some("Windows 正在使用节能模式，输入栏暂时改用普通背景。");
     }
     if viewer_has_code(record, &["WINDOWS_HOST_BACKDROP_REQUIRES_BUILD_22000"]) {
         return Some("当前 Windows 版本不支持这项视觉效果，输入栏会使用普通背景。");
@@ -1673,7 +1673,7 @@ fn viewer_problem_description(
         value if value.starts_with("legacy_import.") => "旧版本数据没有全部迁移完成。",
         value if value.starts_with("tts.") => "语音功能没有正常完成，文字回复仍可使用。",
         value if value.starts_with("appearance.") || value.starts_with("ui.") => {
-            "界面效果已改用兼容模式，不影响聊天和输入。"
+            "界面效果已改用兼容模式。"
         }
         value
             if value.starts_with("tool.")
@@ -4384,7 +4384,7 @@ mod tests {
         assert_eq!(records[1].message, "输入栏视觉效果已降级");
         assert_eq!(
             records[1].description.as_deref(),
-            Some("Windows 已关闭高级视觉效果，输入栏会改用普通背景。这不影响聊天和输入。")
+            Some("Windows 已关闭高级视觉效果，输入栏改用普通背景。")
         );
         assert!(!records[1]
             .description

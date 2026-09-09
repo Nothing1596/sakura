@@ -527,7 +527,7 @@ pub fn legacy_import_start(
         inner.snapshot.state = "staging".to_string();
         inner.snapshot.stage = "staging".to_string();
         inner.snapshot.percent = 1;
-        inner.snapshot.message = "迁移已开始，正在准备数据".to_string();
+        inner.snapshot.message = "正在准备导入数据".to_string();
         inner.snapshot.cancellable = true;
         inner.snapshot.warnings.clear();
         inner.snapshot.error = None;
@@ -903,7 +903,7 @@ fn run_import_worker(
                 snapshot.state = "core_validating".to_string();
                 snapshot.stage = "core_validating".to_string();
                 snapshot.percent = 98;
-                snapshot.message = "正在启动 Sakura Core 并校验数据".to_string();
+                snapshot.message = "正在校验导入数据".to_string();
                 snapshot.cancellable = false;
             });
             validate_with_core(&app, &state, &request, &import_id);
@@ -1113,7 +1113,7 @@ fn validate_with_core(
                     snapshot.message = if completed_with_warnings {
                         "核心聊天和记忆已迁移，部分角色或语音资源可稍后补充".to_string()
                     } else {
-                        "迁移完成".to_string()
+                        "导入完成".to_string()
                     };
                     snapshot.requires_setup = false;
                     snapshot.cancellable = false;
@@ -1167,9 +1167,9 @@ fn validate_with_core(
                     snapshot.stage = "completed".to_string();
                     snapshot.percent = 100;
                     snapshot.message = if completed_with_warnings {
-                        "核心聊天和记忆已迁移，部分资源已跳过，请补充首次设置".to_string()
+                        "聊天记录和记忆已导入，部分资源已跳过，请完成首次设置".to_string()
                     } else {
-                        "数据迁移完成，请补充首次设置".to_string()
+                        "数据已导入，请完成首次设置".to_string()
                     };
                     snapshot.requires_setup = true;
                     snapshot.cancellable = false;

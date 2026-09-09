@@ -80,8 +80,8 @@ export function createProviderSettingsFeature({
     return `profile-${Date.now()}`;
   }
 
-  // 供应商页改为状态驱动的主从结构：providerState.profiles 是唯一数据源，
-  // 「供应商」页与「模型」页的槽位都从它派生。
+  // 模型服务页改为状态驱动的主从结构：providerState.profiles 是唯一数据源，
+  // 「模型服务」页与「模型」页的槽位都从它派生。
   const providerState = { profiles: [], selectedId: "", search: "" };
   const inheritedSlotManualSelections = {};
   const PROVIDER_FIELD_PLACEHOLDERS = {
@@ -89,7 +89,7 @@ export function createProviderSettingsFeature({
     api_key: "填写 API Key",
   };
 
-  // 内置预设：选中即预填 Base URL 与图标，其余走「自定义」。
+  // 内置预设：选中即预填 API 地址 与图标，其余走「自定义」。
   const PROVIDER_PRESETS = [
     {
       key: "deepseek",
@@ -104,7 +104,7 @@ export function createProviderSettingsFeature({
     invalidateModelDiscoveries();
     providerState.profiles = (apiView.profiles || []).map((profile) => ({
       id: profile.id || makeProfileId(),
-      alias: profile.alias || profile.id || "供应商",
+      alias: profile.alias || profile.id || "模型服务",
       base_url: profile.base_url || "",
       api_key: profile.api_key || "",
       configured: Boolean(profile.configured),
@@ -163,7 +163,7 @@ export function createProviderSettingsFeature({
     ).length;
     const totalModels = items.reduce((sum, profile) => sum + (profile.models || []).length, 0);
     renderStrip(fields.providerStatusStrip, [
-      { label: "供应商", value: items.length },
+      { label: "模型服务", value: items.length },
       { label: "已配置", value: configured },
       { label: "模型", value: totalModels },
     ]);
@@ -206,15 +206,15 @@ export function createProviderSettingsFeature({
       const empty = document.createElement("div");
       empty.className = "empty-state";
       if (providerState.profiles.length) {
-        empty.textContent = "没有匹配的供应商。";
+        empty.textContent = "没有匹配的模型服务。";
       } else {
         const text = document.createElement("p");
         text.className = "empty-state-text";
-        text.textContent = "尚未添加供应商";
+        text.textContent = "尚未添加模型服务";
         const cta = document.createElement("button");
         cta.type = "button";
         cta.className = "primary-button";
-        cta.textContent = "添加供应商";
+        cta.textContent = "添加模型服务";
         cta.addEventListener("click", openAddProviderChooser);
         empty.append(text, cta);
       }
@@ -235,7 +235,7 @@ export function createProviderSettingsFeature({
       title.textContent = profile.alias || profile.id;
       const meta = document.createElement("span");
       meta.className = "card-meta";
-      meta.textContent = providerHost(profile.base_url) || "未设置 Base URL";
+      meta.textContent = providerHost(profile.base_url) || "未设置 API 地址";
       body.append(title, meta);
       const count = document.createElement("span");
       count.className = "provider-count";
@@ -252,7 +252,7 @@ export function createProviderSettingsFeature({
     if (!profile) {
       const empty = document.createElement("p");
       empty.className = "empty-state";
-      empty.textContent = "请选择供应商";
+      empty.textContent = "请选择模型服务";
       detail.append(empty);
       return;
     }
@@ -261,7 +261,7 @@ export function createProviderSettingsFeature({
     detail.append(
       title,
       providerField(profile, "alias", "名称", "text"),
-      providerField(profile, "base_url", "Base URL", "text"),
+      providerField(profile, "base_url", "API 地址", "text"),
       providerField(profile, "api_key", "API Key", "password"),
       renderProviderModels(profile),
     );
@@ -275,7 +275,7 @@ export function createProviderSettingsFeature({
     const removeButton = document.createElement("button");
     removeButton.type = "button";
     removeButton.className = "danger-button";
-    removeButton.textContent = "删除供应商";
+    removeButton.textContent = "删除模型服务";
     removeButton.addEventListener("click", () => removeProvider(profile));
     if (profile.configured) {
       const clearButton = document.createElement("button");
@@ -308,7 +308,7 @@ export function createProviderSettingsFeature({
     input.value = profile[key] || "";
     input.placeholder = PROVIDER_FIELD_PLACEHOLDERS[key] || "";
     if (key === "api_key" && profile.configured) {
-      input.placeholder = "已保存；留空保持原值";
+      input.placeholder = "留空保留原密钥";
     }
     input.addEventListener("input", () => {
       profile[key] = input.value;
@@ -347,7 +347,7 @@ export function createProviderSettingsFeature({
     const detectButton = document.createElement("button");
     detectButton.type = "button";
     detectButton.className = "secondary-button compact-button";
-    detectButton.textContent = "自动检测";
+    detectButton.textContent = "获取模型列表";
     detectButton.addEventListener("click", () => autoDetectModels(profile, detectButton));
     head.append(heading, detectButton);
     section.append(head);
@@ -368,7 +368,7 @@ export function createProviderSettingsFeature({
         const remove = document.createElement("button");
         remove.type = "button";
         remove.className = "model-chip-remove";
-        remove.setAttribute("aria-label", `删除 ${model}`);
+        remove.setAttribute("aria-label", `移除 ${model}`);
         remove.append(createIcon(document, "x"));
         remove.addEventListener("click", () => {
           profile.models = profile.models.filter((item) => item !== model);
@@ -439,13 +439,40 @@ export function createProviderSettingsFeature({
     return fields.providerDetail.querySelector(`[data-provider-field="${key}"]`);
   }
 
+  function clearProbeError() {
+    fields.providerDetail.querySelector(".provider-probe-error")?.remove();
+    setError("");
+  }
+
+  function reportProbeError(profile, error, fallback) {
+    if (disposed || providerState.selectedId !== profile.id
+        || !providerState.profiles.includes(profile)) return;
+    clearProbeError();
+    const diagnostic = String(error);
+    const code = diagnostic.match(/(?:^|Error: )([A-Z][A-Z0-9_]+)(?:\||:|$)/)?.[1];
+    setError({
+      AUTHENTICATION_FAILED: "验证失败，请检查 API Key。",
+      PROVIDER_ACCESS_FORBIDDEN: "服务拒绝访问。",
+      PROVIDER_TIMEOUT: "请求超时。",
+    }[code] || fallback);
+    const details = document.createElement("details");
+    details.className = "provider-probe-error";
+    const summary = document.createElement("summary");
+    summary.textContent = "错误详情";
+    const content = document.createElement("p");
+    content.textContent = diagnostic;
+    details.append(summary, content);
+    fields.providerDetail.append(details);
+  }
+
   async function autoDetectModels(profile, button) {
     if (disposed || !providerState.profiles.includes(profile)) return;
+    clearProbeError();
     const baseUrl = (profile.base_url || "").trim();
     const apiKey = (profile.api_key || "").trim();
     if (!baseUrl) {
       markInvalid(providerDetailInput("base_url"), true);
-      setError("请先填写 Base URL。");
+      setError("请先填写 API 地址。");
       return;
     }
     if (!apiKey && !(profile.configured && profile.credential_action === "keep")) {
@@ -453,7 +480,6 @@ export function createProviderSettingsFeature({
       setError("请先填写 API Key。");
       return;
     }
-    setError("");
     invalidateModelDiscovery(profile);
     const original = button.textContent;
     const discovery = {
@@ -467,46 +493,47 @@ export function createProviderSettingsFeature({
       && providerState.profiles.includes(profile)
       && modelDiscoveries.get(profile) === discovery;
     button.disabled = true;
-    button.textContent = "检测中…";
+    button.textContent = "正在获取…";
     try {
       const result = await controller.listModels(runtimeProbeProfile(profile, ""));
       if (!isCurrent()) return;
       const models = Array.isArray(result?.models) ? result.models : [];
       if (!models.length) {
-        notify("未检测到任何模型。", "info");
+        notify("未获取到模型列表", "info");
         return;
       }
       discovery.closePicker = openModelPicker(profile, models, isCurrent);
     } catch (error) {
-      if (isCurrent()) setError(`自动检测失败：${error}`);
+      if (isCurrent()) reportProbeError(profile, error, "获取模型列表失败。");
     } finally {
       if (isCurrent()) discovery.resetButton();
     }
   }
 
   async function testProvider(profile, button) {
+    if (disposed || !providerState.profiles.includes(profile)) return;
+    clearProbeError();
     const baseUrl = (profile.base_url || "").trim();
     const apiKey = (profile.api_key || "").trim();
     const model = (profile.models || [])[0];
     if (!baseUrl || (!apiKey && !(profile.configured && profile.credential_action === "keep"))) {
       markInvalid(providerDetailInput("base_url"), !baseUrl);
       markInvalid(providerDetailInput("api_key"), !apiKey);
-      setError("请先填写 Base URL 与 API Key。");
+      setError("请先填写 API 地址和 API Key。");
       return;
     }
     if (!model) {
       setError("请先添加至少一个模型再测试。");
       return;
     }
-    setError("");
     const original = button.textContent;
     button.disabled = true;
     button.textContent = "测试中…";
     try {
-      const result = await controller.testConnection(runtimeProbeProfile(profile, model));
-      if (!disposed) notify(`连接成功：${result?.message || "OK"}`, "success");
+      await controller.testConnection(runtimeProbeProfile(profile, model));
+      if (!disposed && providerState.profiles.includes(profile)) notify(`${model} 测试通过`, "success");
     } catch (error) {
-      if (!disposed) setError(`连接失败：${error}`);
+      reportProbeError(profile, error, "连接失败。");
     } finally {
       if (!disposed) {
         button.disabled = false;
@@ -529,7 +556,7 @@ export function createProviderSettingsFeature({
   function addProvider(preset) {
     const profile = {
       id: makeProfileId(),
-      alias: preset?.label || "新供应商",
+      alias: preset?.label || "新模型服务",
       base_url: preset?.base_url || "",
       api_key: "",
       configured: false,
@@ -563,7 +590,7 @@ export function createProviderSettingsFeature({
     const dialog = document.createElement("div");
     dialog.className = "confirm-dialog provider-add-dialog";
     const heading = document.createElement("h2");
-    heading.textContent = "添加供应商";
+    heading.textContent = "添加模型服务";
     const grid = document.createElement("div");
     grid.className = "provider-preset-grid";
     const close = () => {
@@ -627,7 +654,7 @@ export function createProviderSettingsFeature({
     const dialog = document.createElement("div");
     dialog.className = "confirm-dialog model-picker-dialog";
     const heading = document.createElement("h2");
-    heading.textContent = `检测到 ${models.length} 个模型`;
+    heading.textContent = `获取到 ${models.length} 个模型`;
     const toolbar = document.createElement("div");
     toolbar.className = "model-picker-toolbar";
     const body = document.createElement("div");
@@ -947,7 +974,7 @@ export function createProviderSettingsFeature({
   }
 
   function providerDisplayName(profile) {
-    return profile.alias || profile.id || "未命名供应商";
+    return profile.alias || profile.id || "未命名模型服务";
   }
 
   function focusProviderValidation(profile, field) {
@@ -965,13 +992,13 @@ export function createProviderSettingsFeature({
     const profiles = normalizedProviderProfiles();
     if (!profiles.length) {
       showPage("providers");
-      setError("请至少添加一个 API 供应商。");
+      setError("请至少添加一个 API 模型服务。");
       return false;
     }
     const missingBaseUrl = profiles.find((profile) => !profile.base_url);
     if (missingBaseUrl) {
       focusProviderValidation(missingBaseUrl, "base_url");
-      setError(`供应商「${providerDisplayName(missingBaseUrl)}」缺少 Base URL。`);
+      setError(`模型服务「${providerDisplayName(missingBaseUrl)}」缺少 API 地址。`);
       return false;
     }
     const selection = collectModelSelection();
@@ -986,11 +1013,11 @@ export function createProviderSettingsFeature({
     showPage("model");
     refreshModelSlots();
     if (issue.type === "incomplete") {
-      setError(`${issue.label}必须同时选择供应商和模型。`);
+      setError(`${issue.label}必须同时选择模型服务和模型。`);
     } else if (issue.type === "required") {
       setError(`请选择可用的${issue.label}。`);
     } else {
-      setError(`${issue.label}引用的供应商或模型已不可用，请重新选择。`);
+      setError(`${issue.label}引用的模型服务或模型已不可用，请重新选择。`);
     }
     return false;
   }
@@ -1106,7 +1133,7 @@ export function createProviderSettingsFeature({
   return Object.freeze({
     initialize: () => controller.refreshCurrent(),
     async save() {
-      if (!validateApiSettingsBeforeSubmit()) throw new Error("供应商或模型设置未通过校验。");
+      if (!validateApiSettingsBeforeSubmit()) throw new Error("模型服务或模型设置未通过校验。");
       return controller.save();
     },
     isDirty: () => !disposed && controller.isDirty(),

@@ -1710,11 +1710,8 @@ export function createPluginSettingsFeature({
       activity.state === "warning" ? "长期记忆功能受限" : "长期记忆暂不可用"
     );
     const message = document.createElement("p");
-    message.textContent = activity.message || pluginFailure?.message || (
-      activity.state === "warning"
-        ? "长期记忆当前受限；普通聊天仍可继续。"
-        : "长期记忆当前不可用；普通聊天仍可继续。"
-    );
+    message.textContent = activity.message || pluginFailure?.message || "";
+    message.hidden = !message.textContent || message.textContent === heading.textContent;
     const actions = document.createElement("div");
     const link = document.createElement("button");
     link.type = "button";
@@ -1892,13 +1889,8 @@ export function createPluginSettingsFeature({
       mark.className = "memory-empty-mark";
       mark.append(createIcon(document, "brain"));
       const heading = document.createElement("strong");
-      heading.textContent = state.search || Object.keys(state.filters).length ? "没有匹配的记忆" : "还没有长期记忆";
-      const hint = document.createElement("p");
-      hint.textContent = state.search || Object.keys(state.filters).length
-        ? "换一个关键词或清除筛选后再试。"
-        : "";
+      heading.textContent = state.search || Object.keys(state.filters).length ? "无匹配记忆" : "暂无记忆";
       empty.append(mark, heading);
-      if (hint.textContent) empty.append(hint);
       body.append(empty);
     } else if (!initializing && !activityUnavailable) {
       state.items.forEach((item) => {

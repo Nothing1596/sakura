@@ -28,7 +28,7 @@
             <p class="nav-group-label" id="navgrp-ai">智能</p>
             <button class="nav-item" type="button" data-page="providers">
               <span class="nav-item-icon" aria-hidden="true"><span class="sakura-icon icon-cloud" aria-hidden="true"></span></span>
-              <span class="nav-item-label">供应商</span>
+              <span class="nav-item-label">模型服务</span>
             </button>
             <button class="nav-item" type="button" data-page="model">
               <span class="nav-item-icon" aria-hidden="true"><span class="sakura-icon icon-cpu" aria-hidden="true"></span></span>
@@ -81,8 +81,7 @@
         <div class="page-scroll" data-submission-lock>
         <section id="capabilityShell" class="capability-shell" role="status" hidden>
           <span class="capability-shell-mark" aria-hidden="true">❀</span>
-          <h2>设置窗口已连接</h2>
-          <p>暂无可用设置。</p>
+          <h2>暂无可用设置</h2>
         </section>
         <section id="page-character" class="settings-page is-active">
           <fieldset class="settings-group">
@@ -117,7 +116,7 @@
             <div class="setting-row">
               <label class="setting-row-text" for="bubbleHeight">
                 <span class="setting-title">气泡高度</span>
-                <span class="setting-desc">启用动态气泡时作为最低高度。</span>
+                <span class="setting-desc">随内容展开时的最低高度。</span>
               </label>
               <div class="slider-control">
                 <input id="bubbleHeight" class="layout-slider" type="range" step="1" />
@@ -144,8 +143,7 @@
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="bubbleAutoExpand">
-                <span class="setting-title">动态气泡</span>
-                <span class="setting-desc">气泡随回复内容向上展开。</span>
+                <span class="setting-title">随内容展开</span>
               </label>
               <span class="setting-toggle"><input id="bubbleAutoExpand" type="checkbox" /></span>
             </div>
@@ -189,7 +187,7 @@
                 <span id="characterArchiveHint" class="setting-desc"></span>
               </div>
               <div class="archive-controls">
-                <button id="characterImportButton" type="button" class="secondary-button">导入 .char</button>
+                <button id="characterImportButton" type="button" class="secondary-button">导入角色包…</button>
                 <button id="ttsVoiceImportButton" type="button" class="secondary-button">导入 .voice</button>
                 <button id="characterExportButton" type="button" class="secondary-button">导出</button>
               </div>
@@ -199,7 +197,7 @@
 
         <section id="page-tools" class="settings-page">
           <fieldset class="settings-group">
-            <legend>工具循环上限</legend>
+            <legend>工具调用限制</legend>
             <div class="setting-row">
               <label class="setting-row-text" for="agentSteps">
                 <span class="setting-title">每轮最多步数</span>
@@ -208,13 +206,13 @@
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="toolCallsPerStep">
-                <span class="setting-title">每步最多工具数</span>
+                <span class="setting-title">每步最多调用次数</span>
               </label>
               <span class="field-unit"><input id="toolCallsPerStep" type="number" step="1" data-settings-feature="tools.runtime_limits" /><span class="unit">次</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="toolCallsPerTurn">
-                <span class="setting-title">每轮最多工具数</span>
+                <span class="setting-title">每轮最多调用次数</span>
               </label>
               <span class="field-unit"><input id="toolCallsPerTurn" type="number" step="1" data-settings-feature="tools.runtime_limits" /><span class="unit">次</span></span>
             </div>
@@ -247,8 +245,8 @@
         <section id="page-providers" class="settings-page admin-page">
           <div id="providerStatusStrip" class="admin-strip"></div>
           <div class="admin-toolbar">
-            <input id="providerSearch" class="admin-search" type="text" placeholder="搜索供应商、Base URL" />
-            <button id="addProviderButton" class="secondary-button" type="button">添加供应商</button>
+            <input id="providerSearch" class="admin-search" type="text" placeholder="搜索模型服务、API 地址" />
+            <button id="addProviderButton" class="secondary-button" type="button">添加模型服务</button>
           </div>
           <div class="admin-workbench">
             <div id="providerList" class="admin-list"></div>
@@ -266,8 +264,8 @@
             <summary>高级参数</summary>
             <div class="setting-row">
               <label class="setting-row-text" for="contextWindowTokens">
-                <span class="setting-title">上下文预算</span>
-                <span class="setting-desc">对话可使用的上下文长度；留空为 32K。</span>
+                <span class="setting-title">上下文上限</span>
+                <span class="setting-desc">默认 32K tokens</span>
               </label>
               <span class="field-unit"><input id="contextWindowTokens" type="number" min="4096" max="2000000" step="1" inputmode="numeric" placeholder="例如 1000000" /><span class="unit">tokens</span></span>
             </div>
@@ -388,12 +386,8 @@
               <select id="visualEffectMode" data-settings-feature="appearance.input_visual_effect"></select>
             </div>
             <div class="setting-row">
-              <div class="setting-row-text">
-                <span class="setting-title">主题操作</span>
-                <span class="setting-desc">AI 配色参考角色默认立绘。</span>
-              </div>
               <div class="inline-actions">
-                <button id="themeAiButton" class="secondary-button" type="button">AI 生成配色</button>
+                <button id="themeAiButton" class="secondary-button" type="button" title="参考角色默认立绘生成配色">AI 生成配色</button>
                 <button id="resetThemeButton" class="secondary-button" type="button">恢复默认配色</button>
               </div>
             </div>
@@ -405,7 +399,7 @@
             <legend>字幕与回复</legend>
             <div class="setting-row">
               <label class="setting-row-text" for="subtitleTypingInterval">
-                <span class="setting-title">字幕逐字间隔</span>
+                <span class="setting-title">逐字间隔</span>
               </label>
               <span class="field-unit"><input id="subtitleTypingInterval" type="number" step="1" data-settings-feature="chat.presentation_timing" /><span class="unit">ms</span></span>
             </div>
@@ -427,7 +421,7 @@
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="bubbleAutoHideDelay">
-                <span class="setting-title">无操作时长</span>
+                <span class="setting-title">无操作后隐藏</span>
               </label>
               <span class="field-unit"><input id="bubbleAutoHideDelay" type="number" step="1" data-settings-feature="chat.bubble_auto_hide" /><span class="unit">秒</span></span>
             </div>
@@ -450,8 +444,7 @@
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="cooldown">
-                <span class="setting-title">主动发言冷却</span>
-                <span class="setting-desc">两次主动搭话的最短间隔。</span>
+                <span class="setting-title">最短搭话间隔</span>
               </label>
               <span class="field-unit"><input id="cooldown" type="number" step="1" /><span class="unit">分钟</span></span>
             </div>
@@ -464,9 +457,8 @@
             <div class="setting-row">
               <label class="setting-row-text" for="screenResolution">
                 <span class="setting-title">截图分辨率</span>
-                <span class="setting-desc">发送前按比例缩小，不放大截图。</span>
               </label>
-              <select id="screenResolution">
+              <select id="screenResolution" title="发送前按比例缩小，不放大截图">
                 <option value="fullscreen">全屏分辨率</option>
                 <option value="720p">720p</option>
                 <option value="1080p">1080p</option>
@@ -515,7 +507,7 @@
             <div class="setting-row">
               <div class="setting-row-text">
                 <label class="setting-title" for="updateAutoCheck">自动检测更新</label>
-                <span class="setting-desc">启动时检查，同一版本每天最多提醒一次。</span>
+                <span class="setting-desc">启动时检查</span>
               </div>
               <input id="updateAutoCheck" type="checkbox" role="switch" checked />
             </div>
@@ -536,14 +528,13 @@
             <div class="setting-row">
               <div class="setting-row-text">
                 <span class="setting-title">数据目录</span>
-                <span class="setting-desc">保存配置、聊天记录、角色和插件。</span>
                 <code id="storageUserRoot" class="path-value"></code>
               </div>
-              <button id="storageOpenUserRoot" type="button" class="secondary-button">打开数据目录</button>
+              <button id="storageOpenUserRoot" type="button" class="secondary-button" title="包含配置、聊天记录、角色和插件">打开数据目录</button>
             </div>
             <div class="setting-row">
               <div class="setting-row-text">
-                <span class="setting-title">导入角色历史记录和记忆</span>
+                <span class="setting-title">导入角色聊天记录和记忆</span>
                 <span class="setting-desc">重复记录会跳过，冲突时询问。</span>
                 <span id="legacyRoleDataImportStatus" class="setting-desc" role="status"></span>
               </div>
@@ -633,7 +624,7 @@
             <span class="dirty-flag">● 有未保存的改动</span>
             <p id="errorText" class="error" role="alert"></p>
           </div>
-          <button id="cancelButton" class="secondary-button" type="button">取消</button>
+          <button id="cancelButton" class="secondary-button" type="button">关闭</button>
           <button id="applyButton" class="secondary-button" type="button">应用</button>
           <button id="saveButton" type="button">保存并关闭</button>
         </footer>

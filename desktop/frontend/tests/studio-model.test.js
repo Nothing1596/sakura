@@ -22,8 +22,8 @@ test("normalizes valid colors and preserves the requested fallback", () => {
 test("separates published characters from workspace drafts", () => {
   assert.deepEqual(characterOptionGroup({ is_installed: true }), {
     id: "published",
-    label: "已发布角色",
-    sourceLabel: "已发布",
+    label: "角色列表",
+    sourceLabel: "已添加",
   });
   assert.equal(characterOptionGroup({ is_installed: false }).id, "workspace");
   assert.equal(characterOptionLabel({ id: "sakura", display_name: "Sakura" }), "Sakura");

@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-09-06
+updated: 2026-09-09
 ---
 
 # 编写 Sakura 插件
@@ -412,6 +412,9 @@ Timeline cursor，并在下一次事件或插件启动时调用 `sakura.host.tim
 不需要新增 HTML、按钮路由或保存接口。`presentation` 控制列表展示，`surface` 控制设置区块的位置，两者独立。
 
 ### 设置区块
+
+贡献的 `label`、`description`、状态和动作提示遵循[界面文案规范](UI_COPY_GUIDELINES.md)。标签已说清楚时，
+省略描述，不补使用教程或内部机制。只保留会影响选择的信息、实际后果和具体错误原因；区分编辑完成与应用生效。
 
 `sakura.host.settings` 注册一个由宿主渲染的设置区块。没有指定 surface 时，它显示在详情右侧按钮打开的插件设置窗口中。
 

@@ -318,7 +318,7 @@ async function requestCancelClose() {
     setError("");
     await executeSettingsClose({
       dirty: computeDirty(),
-      choose: chooseUnsavedClose,
+      choose: () => chooseUnsavedClose("关闭"),
       save: async () => {
         setSubmissionBusy(true);
         await saveRuntimeSettings();
@@ -363,7 +363,7 @@ async function requestAppExitClose() {
     setError("");
     await executeSettingsClose({
       dirty: computeDirty(),
-      choose: chooseUnsavedClose,
+      choose: () => chooseUnsavedClose("退出"),
       save: async () => {
         setSubmissionBusy(true);
         await saveRuntimeSettings();
@@ -517,34 +517,32 @@ function confirmAction(
   });
 }
 
-async function chooseUnsavedClose() {
+async function chooseUnsavedClose(action) {
   const { CloseDecision } = await settingsCloseFlowPromise;
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "confirm-overlay";
     const dialog = document.createElement("section");
-    dialog.className = "confirm-dialog";
+    dialog.className = "confirm-dialog settings-close-dialog";
     dialog.setAttribute("role", "dialog");
     dialog.setAttribute("aria-modal", "true");
     const heading = document.createElement("h2");
-    heading.textContent = "保存改动";
-    const body = document.createElement("p");
-    body.textContent = "设置有未保存的改动，是否保存后关闭？";
+    heading.textContent = `${action}前保存设置？`;
     const actions = document.createElement("div");
     actions.className = "confirm-actions";
     const stay = document.createElement("button");
     stay.type = "button";
     stay.className = "secondary-button";
-    stay.textContent = "返回";
+    stay.textContent = "继续编辑";
     const discard = document.createElement("button");
     discard.type = "button";
     discard.className = "danger-button";
-    discard.textContent = "不保存";
+    discard.textContent = `不保存并${action}`;
     const save = document.createElement("button");
     save.type = "button";
-    save.textContent = "保存";
+    save.textContent = `保存并${action}`;
     actions.append(stay, discard, save);
-    dialog.append(heading, body, actions);
+    dialog.append(heading, actions);
     overlay.append(dialog);
 
     function close(decision) {
@@ -700,7 +698,7 @@ function hsvToRgb({ h, s, v }) {
 const pageMeta = {
   character: { title: "角色与布局" },
   appearance: { title: "外观" },
-  providers: { title: "供应商" },
+  providers: { title: "模型服务" },
   model: { title: "模型" },
   voice: { title: "语音" },
   interaction: { title: "交互" },

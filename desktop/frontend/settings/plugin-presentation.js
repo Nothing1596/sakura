@@ -1,7 +1,7 @@
 import { hasIcon } from "../core/icons.js";
 
 const NORMAL_REASONS = new Set(["ACTIVE", "READY"]);
-export const pluginKinds = Object.freeze({ extension: "功能扩展", provider: "能力提供方", infrastructure: "系统组件" });
+export const pluginKinds = Object.freeze({ extension: "功能扩展", provider: "功能引擎", infrastructure: "系统组件" });
 export const pluginCategories = Object.freeze({ model: "模型", voice: "语音", memory: "记忆", tools: "工具", connectivity: "连接", other: "其他" });
 
 export function pluginIconName(plugin) {
@@ -245,6 +245,15 @@ export function projectPluginActivity(plugin = {}) {
       isTransient: false,
     });
   }
+  if (["starting", "waiting", "stopping"].includes(outerState)) {
+    return Object.freeze({
+      state: "working",
+      label: { starting: "正在启动", waiting: "等待启动", stopping: "正在停止" }[outerState],
+      message: "",
+      hasRunningResource: false,
+      isTransient: true,
+    });
+  }
   if (outerReason === "PLUGIN_APPLICATION_NOT_READY") {
     return Object.freeze({
       state: "working",
@@ -261,15 +270,6 @@ export function projectPluginActivity(plugin = {}) {
       message: "",
       hasRunningResource: false,
       isTransient: false,
-    });
-  }
-  if (["starting", "waiting", "stopping"].includes(outerState)) {
-    return Object.freeze({
-      state: "working",
-      label: "正在启动",
-      message: "",
-      hasRunningResource: false,
-      isTransient: true,
     });
   }
 

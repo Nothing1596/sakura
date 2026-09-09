@@ -54,6 +54,8 @@ test("unified snapshots filter plugins by trusted identity and preserve file fai
   assert.deepEqual(filterViewerRecords(state.records, "plugins", "all", "fixture.one"), [one, debug]);
   assert.equal(viewerProblemCount(state.records, "plugins", "fixture.one"), 0);
   assert.equal(viewerProblemCount(state.records, "plugins", "fixture.two"), 1);
+  assert.deepEqual(filterViewerRecords(state.records, "plugins", "problems", "fixture.one"), []);
+  assert.deepEqual(filterViewerRecords(state.records, "plugins", "problems"), [two]);
   assert.equal(collapseViewerRecords([one, { ...one, sequence: 2, pluginId: "fixture.two" }], "plugins").length, 2);
   const copied = viewerCopyText({ record: one });
   assert.match(copied, /插件：长期记忆/);
