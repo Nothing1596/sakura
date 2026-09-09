@@ -68,7 +68,6 @@ export function createPluginSettingsFeature({
   let aboutComponentsReadError = "";
 
   let pluginView = { items: [] };
-  const reduceMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)") || null;
   const timers = new Set();
   const listeners = [];
 
@@ -1503,7 +1502,7 @@ export function createPluginSettingsFeature({
 
   async function animateMemoryRecordRemoval(itemId) {
     const card = memoryRecordCardById(itemId);
-    if (!card || reduceMotionQuery?.matches) return;
+    if (!card) return;
     card.style.setProperty("--memory-record-height", `${card.getBoundingClientRect().height}px`);
     card.classList.add("is-removing");
     await new Promise((resolve) => {
@@ -2117,8 +2116,8 @@ export function createPluginSettingsFeature({
       configure.type = 'button'; configure.setAttribute('aria-haspopup', 'dialog');
       configure.addEventListener('click', () => openPluginSettingsDialog(plugin)); aside.append(configure);
     }
-    const live = renderSemanticStatus(status); live.setAttribute('aria-label', `运行状态：${status.label}`); aside.append(live);
-    heading.append(identity, aside);
+    heading.append(identity);
+    if (aside.childElementCount) heading.append(aside);
     fields.pluginDetail.append(heading);
     if (plugin.description) fields.pluginDetail.append(pluginNode('p', 'detail-desc', plugin.description));
     if (status.message || status.diagnostic) {

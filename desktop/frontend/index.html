@@ -77,26 +77,16 @@
           aria-label="待发送的截图"
           hidden
         ></div>
-        <span id="voice-status" role="status" hidden></span>
-        <div id="voice-recording" class="voice-recording" hidden>
+        <span id="voice-status" role="status" aria-hidden="true"></span>
+        <div id="voice-recording" class="voice-recording" aria-hidden="true">
           <span class="visually-hidden" role="status">正在录音，再次点击麦克风结束，按 Esc 取消</span>
           <canvas id="voice-waveform" aria-hidden="true"></canvas>
         </div>
         <button type="button" id="voice-mic" aria-label="开始语音输入" title="开始语音输入" hidden>
-          <span class="sakura-icon icon-mic" aria-hidden="true"></span>
-          <span class="voice-stop" aria-hidden="true" hidden></span>
-          <span class="voice-spinner" aria-hidden="true" hidden></span>
+          <span class="sakura-morph-icon" aria-hidden="true"><span class="sakura-icon icon-mic"></span></span>
         </button>
         <button type="submit" id="composer-send" tabindex="-1" data-action="send" aria-label="发送消息">
-          <span class="composer-action-icon composer-action-icon--send" aria-hidden="true">
-            <span class="sakura-icon icon-send-horizontal" aria-hidden="true"></span>
-          </span>
-          <span class="composer-action-icon composer-action-icon--cancel" aria-hidden="true">
-            <span class="sakura-icon icon-loader-circle" aria-hidden="true"></span>
-          </span>
-          <span class="composer-action-icon composer-action-icon--stop" aria-hidden="true">
-            <span class="sakura-icon icon-x" aria-hidden="true"></span>
-          </span>
+          <span class="sakura-morph-icon" aria-hidden="true"><span class="sakura-icon icon-send-horizontal"></span></span>
         </button>
       </form>
 

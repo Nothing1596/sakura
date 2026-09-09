@@ -144,7 +144,6 @@ let themeChanged = false;
 let bypassCloseGuard = false;
 let settingsWindowClosing = false;
 
-const reduceMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)") || null;
 
 let activeThemeField = "";
 let themeEditor = {};
@@ -423,10 +422,6 @@ function setControlDisabled(control, disabled, { row = true } = {}) {
 
 function removeOverlayAfterExit(overlay) {
   if (!overlay?.isConnected) return Promise.resolve();
-  if (reduceMotionQuery?.matches) {
-    overlay.remove();
-    return Promise.resolve();
-  }
   overlay.classList.add("is-closing");
   return new Promise((resolve) => {
     let settled = false;
@@ -572,7 +567,7 @@ async function chooseUnsavedClose(action) {
 }
 
 function runThemeTransition(update) {
-  if (reduceMotionQuery?.matches || typeof document.startViewTransition !== "function") {
+  if (typeof document.startViewTransition !== "function") {
     update();
     return;
   }
@@ -584,7 +579,7 @@ function runThemeTransition(update) {
 }
 
 function replayMotion(element, className) {
-  if (!element || reduceMotionQuery?.matches) {
+  if (!element) {
     return;
   }
   element.classList.remove(className);

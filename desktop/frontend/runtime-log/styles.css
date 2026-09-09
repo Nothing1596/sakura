@@ -458,11 +458,3 @@ h1 {
   .record-details { grid-template-columns: 1fr; }
   .detail-row { grid-template-columns: 82px minmax(0, 1fr); }
 }
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    scroll-behavior: auto !important;
-    animation: none !important;
-    transition: none !important;
-  }
-}

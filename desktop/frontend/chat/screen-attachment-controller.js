@@ -16,9 +16,6 @@ export function createScreenAttachmentController({
   surfaceAnchor = () => (composer.dataset.inputExpanded === "true" ? "above" : "below"),
   requestFrame = (callback) => globalThis.requestAnimationFrame?.(callback) ?? callback(),
   waitForMotion = (element) => {
-    if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
-      return Promise.resolve();
-    }
     return new Promise((resolve) => {
       let settled = false;
       const finish = (event) => {

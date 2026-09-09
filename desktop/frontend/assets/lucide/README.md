@@ -18,11 +18,17 @@ HTML 使用 `sakura-icon icon-brain` 等类；动态节点使用 `core/icons.js`
 记忆准备提示采用 [Lucide Animated](https://github.com/pqoqubbw/icons) 的 BrainIcon 描边与呼吸动画。
 发送图标的短促位移、设置图标的旋转等也参考该项目；其 [MIT 许可证](ANIMATED-LICENSE) 随包保留。
 采用的是原生 CSS / Web Animations 适配，未引入 React/Motion。对应实现为 `core/animated-icons.js`、
-`core/icon-motion.css` 和 `chat/composer-action-indicator.js`。
+`core/icon-motion.css`。语音与发送的状态形变使用固定版本 Morphicons，见 `vendor/morphicons/README.md`；
+`core/morph-icon.js` 管理持久 SVG，`chat/composer-action-indicator.js` 将真实动作状态映射为图标。
 
-- 发送使用垂直重心居中的 `send-horizontal`。进入既有忙碌状态时，纸飞机向右飞出，接续旋转指示；悬停或键盘聚焦显示停止图标。动画不延迟发送或停止。
+- 发送使用垂直重心居中的 `send-horizontal`。进入既有忙碌状态时，纸飞机短促位移并形变为旋转指示；指针移开再进入或键盘重新聚焦时形变为停止图标。动画不延迟发送或停止。
 - 导航、设置、下载、刷新等图标在悬停或键盘聚焦时反馈一次，离开后复位。展开箭头继续跟随控件真实状态。
 - 记忆动画只在现有准备状态播放，就绪或失败时随原有状态提示替换，不虚构处理步骤或百分比。
-- 系统选择减少动态效果时，保留图标与状态文字，关闭图标动画。
+- 动效不受操作系统减少动态效果偏好影响；相同状态不重播，新的状态或销毁会取消旧动画。
+- 语音的准备、录音、识别分别显示加载环、实心停止方块和加载环，成功回填后短暂显示完成勾。取消和失败直接恢复麦克风。附件加号保留 225° / 160ms 旋转。
 
 这些动效只表达交互和已有状态，不改变插件设置、保存、下载任务或记忆业务逻辑。
+
+浏览器回归入口为 `desktop/frontend/tests/composer-motion.journey.py`，使用正式 HTML、CSS 和动作控制器，
+仅模拟原生与 ASR 服务边界。以 bundled Python 运行，`--browser chromium` 或 `--browser webkit` 选择已安装的
+Playwright 浏览器；用系统减少动态效果的模拟环境检查形变、旋转、字幕、草稿安全及销毁后的清理。

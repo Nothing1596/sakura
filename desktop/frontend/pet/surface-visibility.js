@@ -122,7 +122,6 @@ export function createSurfaceHoverTracker({
 }
 
 export async function waitForSurfaceFadeCompletion(element, {
-  reducedMotion = false,
   fadeMs = SURFACE_VISIBILITY_FADE_MS,
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = (handle) => globalThis.clearTimeout(handle),
@@ -131,26 +130,24 @@ export async function waitForSurfaceFadeCompletion(element, {
   if (!element?.addEventListener || !element?.removeEventListener) {
     throw new Error("surface fade requires an event target");
   }
-  if (!reducedMotion) {
-    await new Promise((resolve) => {
-      let settled = false;
-      let timeout = null;
-      const handleTransitionEnd = (event) => {
-        if (event.target === element && event.propertyName === "opacity") finish();
-      };
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        element.removeEventListener("transitionend", handleTransitionEnd);
-        element.removeEventListener("transitioncancel", handleTransitionEnd);
-        if (timeout !== null) clearTimer(timeout);
-        resolve();
-      };
-      element.addEventListener("transitionend", handleTransitionEnd);
-      element.addEventListener("transitioncancel", handleTransitionEnd);
-      timeout = setTimer(finish, fadeMs + 100);
-    });
-  }
+  await new Promise((resolve) => {
+    let settled = false;
+    let timeout = null;
+    const handleTransitionEnd = (event) => {
+      if (event.target === element && event.propertyName === "opacity") finish();
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      element.removeEventListener("transitionend", handleTransitionEnd);
+      element.removeEventListener("transitioncancel", handleTransitionEnd);
+      if (timeout !== null) clearTimer(timeout);
+      resolve();
+    };
+    element.addEventListener("transitionend", handleTransitionEnd);
+    element.addEventListener("transitioncancel", handleTransitionEnd);
+    timeout = setTimer(finish, fadeMs + 100);
+  });
   await new Promise((resolve) => requestFrame(() => requestFrame(resolve)));
 }
 
