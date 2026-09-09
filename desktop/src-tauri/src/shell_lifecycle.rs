@@ -1,3 +1,4 @@
+use crate::core_supervisor::StopReason;
 use std::{
     collections::VecDeque,
     sync::{
@@ -598,13 +599,16 @@ fn run_worker(
                         publish(&state, &publication);
                     }
                 }
-                LifecycleAction::StopGeneration { generation_id, .. } => {
+                LifecycleAction::StopGeneration {
+                    generation_id,
+                    reason,
+                } => {
                     log_lifecycle(
                         &state,
                         Severity::Info,
                         "core.stop.started",
                         "Core generation stop started",
-                        json!({"outcome": "started"}),
+                        json!({"outcome": "started", "stage":"stop_generation", "reason_code":match reason { StopReason::User=>"CORE_STOP_USER", StopReason::Restart=>"CORE_STOP_RESTART", StopReason::Failure=>"CORE_STOP_FAILURE", StopReason::AppShutdown=>"CORE_STOP_SHUTDOWN" }}),
                     );
                     publish(&state, &publication);
                     let cleaned = stop_generation(&mut state);
@@ -916,13 +920,24 @@ fn spawn_and_initialize(
     }
 }
 
+#[track_caller]
 fn log_lifecycle(
     state: &WorkerState,
     severity: Severity,
     event: &'static str,
     message: &'static str,
-    attributes: Value,
+    mut attributes: Value,
 ) {
+    if let Some(fields) = attributes.as_object_mut() {
+        fields.insert(
+            "source_file".into(),
+            json!("desktop/src-tauri/src/shell_lifecycle.rs"),
+        );
+        fields.insert(
+            "source_line".into(),
+            json!(std::panic::Location::caller().line()),
+        );
+    }
     let Some(runtime_log) = state.runtime_log.as_ref() else {
         return;
     };

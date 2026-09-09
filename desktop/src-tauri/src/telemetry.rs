@@ -1,5 +1,8 @@
+mod contract;
+pub(crate) use contract::DiagnosticDetail;
+use contract::{DiagnosticContext, RequestDiagnostic};
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -56,10 +59,13 @@ struct TelemetryInner {
     enabled: AtomicBool,
     epoch: AtomicU64,
     stopping: AtomicBool,
+    drain_until: AtomicU64,
     runtime: Mutex<TelemetryRuntimeState>,
     breadcrumbs: Mutex<VecDeque<BreadcrumbState>>,
     features: Mutex<BTreeSet<String>>,
-    warning_reports: Mutex<BTreeSet<(String, String, String)>>,
+    reports: Mutex<BTreeMap<String, ReportCount>>,
+    summary_at: AtomicU64,
+    summary_sent: Mutex<(u64, u64, u64)>,
     sender: mpsc::Sender<QueuedRecord>,
     control: watch::Sender<u64>,
     diagnostics: Mutex<SenderDiagnostics>,
@@ -92,6 +98,14 @@ struct BreadcrumbState {
     duration_ms: Option<u64>,
 }
 
+#[derive(Clone, Debug)]
+struct ReportCount {
+    fingerprint: String,
+    generation: Option<String>,
+    count: u64,
+    dirty: bool,
+}
+
 #[derive(Debug)]
 struct QueuedRecord {
     epoch: u64,
@@ -108,6 +122,9 @@ enum TelemetryRecord {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorReport {
+    fingerprint_version: u8,
+    details: DiagnosticDetail,
+    diagnostics: DiagnosticContext,
     schema: u8,
     report_id: String,
     installation_id: String,
@@ -190,6 +207,9 @@ struct Breadcrumb {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeEventItem {
+    operation_id: Option<String>,
+    details: DiagnosticDetail,
+    diagnostics: DiagnosticContext,
     installation_id: String,
     run_id: String,
     app_version: String,
@@ -217,6 +237,8 @@ struct CoreTelemetryEnvelope {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TelemetryErrorCandidateV1 {
+    #[serde(default)]
+    details: DiagnosticDetail,
     schema: u8,
     component: String,
     event: String,
@@ -232,6 +254,8 @@ struct TelemetryErrorCandidateV1 {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TelemetryModelCallMetricV1 {
+    #[serde(default)]
+    request: RequestDiagnostic,
     schema: u8,
     operation_id: Option<String>,
     model_call: u64,
@@ -274,6 +298,8 @@ struct ContextEstimate {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelCallItem {
+    request: RequestDiagnostic,
+    diagnostics: DiagnosticContext,
     installation_id: String,
     run_id: String,
     operation_id: Option<String>,
@@ -335,6 +361,7 @@ impl TelemetryService {
             enabled: AtomicBool::new(enabled),
             epoch: AtomicU64::new(1),
             stopping: AtomicBool::new(false),
+            drain_until: AtomicU64::new(0),
             runtime: Mutex::new(TelemetryRuntimeState {
                 installation_id,
                 settings_error,
@@ -342,7 +369,9 @@ impl TelemetryService {
             }),
             breadcrumbs: Mutex::new(VecDeque::with_capacity(40)),
             features: Mutex::new(BTreeSet::new()),
-            warning_reports: Mutex::new(BTreeSet::new()),
+            reports: Mutex::new(BTreeMap::new()),
+            summary_at: AtomicU64::new(0),
+            summary_sent: Mutex::new((0, 0, 0)),
             sender,
             control,
             diagnostics: Mutex::new(SenderDiagnostics::default()),
@@ -427,8 +456,32 @@ impl TelemetryService {
     }
 
     pub fn shutdown(&self) {
+        self.flush_summaries(true);
+        self.inner.drain_until.store(
+            self.inner.started_at.elapsed().as_millis() as u64 + 2500,
+            Ordering::Release,
+        );
         self.inner.stopping.store(true, Ordering::Release);
-        self.pause();
+        let _ = self
+            .inner
+            .control
+            .send(self.inner.epoch.load(Ordering::Acquire));
+    }
+
+    pub(crate) fn accepts_event_generation(&self, generation: Option<&str>) -> bool {
+        let accepted = generation.is_none_or(|generation| {
+            self.inner
+                .runtime
+                .lock()
+                .ok()
+                .is_some_and(|r| r.active_generation.as_deref() == Some(generation))
+        });
+        if !accepted {
+            if let Ok(mut d) = self.inner.diagnostics.lock() {
+                d.dropped = d.dropped.saturating_add(1);
+            }
+        }
+        accepted
     }
 
     pub fn activate_generation(&self, generation_id: &str) {
@@ -438,6 +491,21 @@ impl TelemetryService {
     }
 
     pub fn submit_core_bridge(
+        &self,
+        payload: &str,
+        context: &CoreLogContext,
+        forbidden_secret: Option<&str>,
+    ) -> Result<bool, ()> {
+        let result = self.submit_core_bridge_inner(payload, context, forbidden_secret);
+        if result.is_err() {
+            if let Ok(mut d) = self.inner.diagnostics.lock() {
+                d.rejected = d.rejected.saturating_add(1);
+            }
+        }
+        result
+    }
+
+    fn submit_core_bridge_inner(
         &self,
         payload: &str,
         context: &CoreLogContext,
@@ -482,6 +550,46 @@ impl TelemetryService {
             return;
         }
         self.push_breadcrumb(source, severity, channel, event, attributes);
+        let runtime_event = match event {
+            "core.initialize.completed" => Some("core.ready"),
+            "core.readiness.reached"
+                if attributes
+                    .and_then(|a| a.get("host_state"))
+                    .and_then(Value::as_str)
+                    == Some("ready") =>
+            {
+                Some("chat.ready")
+            }
+            "chat.request.completed" | "chat.request.failed" | "chat.request.cancelled" => {
+                Some("chat.finished")
+            }
+            "tts.synthesis.finished"
+            | "tts.synthesis.ready"
+            | "tts.synthesis.failed"
+            | "tts.synthesis.cancelled" => Some("tts.finished"),
+            "reply.repair.finished" => Some("reply.repair.finished"),
+            "legacy_import.failed"
+            | "legacy_import.core_validation_failed"
+            | "legacy_import.recovery.failed" => Some("migration.recovery"),
+            _ => None,
+        };
+        if let Some(name) = runtime_event {
+            let mut details = details_from_attributes(severity, attributes);
+            details.outcome = outcome_attribute(attributes).or_else(|| {
+                Some(
+                    if event.ends_with("failed") {
+                        "failed"
+                    } else if event.ends_with("cancelled") {
+                        "cancelled"
+                    } else {
+                        "success"
+                    }
+                    .into(),
+                )
+            });
+            self.submit_detailed_event(name, operation_id, details);
+        }
+
         if let Some(feature) = feature_for_event(event) {
             self.submit_feature_once(feature);
         }
@@ -506,11 +614,9 @@ impl TelemetryService {
         let report = allowlisted_runtime_error(source, event, attributes)
             .or_else(|| allowlisted_runtime_warning(source, severity, event, attributes));
         if let Some((component, code)) = report {
-            if severity == "warning" && !self.reserve_warning_report(component, event, &code) {
-                return;
-            }
             let candidate = TelemetryErrorCandidateV1 {
-                schema: 1,
+                details: details_from_attributes(severity, attributes),
+                schema: 2,
                 component: component.to_string(),
                 event: event.to_string(),
                 code,
@@ -523,13 +629,69 @@ impl TelemetryService {
         }
     }
 
+    fn submit_detailed_event(
+        &self,
+        name: &str,
+        operation_id: Option<&str>,
+        details: DiagnosticDetail,
+    ) {
+        let generation = self.diagnostic_context().generation;
+        self.submit_detailed_event_generation(name, operation_id, details, generation);
+    }
+
+    fn submit_detailed_event_generation(
+        &self,
+        name: &str,
+        operation_id: Option<&str>,
+        details: DiagnosticDetail,
+        generation: Option<String>,
+    ) -> bool {
+        let Some((installation_id, epoch)) = self.installation_context() else {
+            return false;
+        };
+        let mut diagnostics = self.diagnostic_context();
+        diagnostics.generation = generation;
+        let item = RuntimeEventItem {
+            installation_id,
+            run_id: self.inner.run_id.clone(),
+            app_version: env!("CARGO_PKG_VERSION").into(),
+            platform: platform_name().into(),
+            os_version: os_version(),
+            arch: std::env::consts::ARCH.into(),
+            event: name.into(),
+            feature: None,
+            duration_ms: Some(diagnostics.occurred_ms),
+            from_version: None,
+            to_version: None,
+            error_code: None,
+            operation_id: operation_id.and_then(|id| valid_token(id, 128).map(str::to_string)),
+            details,
+            diagnostics,
+        };
+        self.enqueue_at_epoch(TelemetryRecord::Event(item), epoch)
+    }
+
+    fn diagnostic_context(&self) -> DiagnosticContext {
+        DiagnosticContext {
+            build_id: env!("SAKURA_BUILD_ID").to_string(),
+            environment: env!("SAKURA_TELEMETRY_ENV").to_string(),
+            generation: self
+                .inner
+                .runtime
+                .lock()
+                .ok()
+                .and_then(|r| r.active_generation.clone()),
+            occurred_ms: self.inner.started_at.elapsed().as_millis() as u64,
+        }
+    }
+
     pub fn submit_app_started(&self) {
         self.submit_runtime_event("app.started", None, None, None, None, None);
     }
 
     pub fn submit_app_ready(&self) {
         self.submit_runtime_event(
-            "app.ready",
+            "shell.ready",
             None,
             Some(self.inner.started_at.elapsed().as_millis() as u64),
             None,
@@ -544,6 +706,15 @@ impl TelemetryService {
     }
 
     fn bump_epoch(&self) {
+        if let Ok(mut reports) = self.inner.reports.lock() {
+            reports.clear();
+        }
+        if let Ok(mut d) = self.inner.diagnostics.lock() {
+            *d = SenderDiagnostics::default();
+        }
+        if let Ok(mut last) = self.inner.summary_sent.lock() {
+            *last = (0, 0, 0);
+        }
         let epoch = self.inner.epoch.fetch_add(1, Ordering::AcqRel) + 1;
         let _ = self.inner.control.send(epoch);
     }
@@ -583,11 +754,87 @@ impl TelemetryService {
         self.submit_runtime_event("feature.used", Some(feature), None, None, None, None);
     }
 
-    fn reserve_warning_report(&self, component: &str, event: &str, code: &str) -> bool {
-        let Ok(mut reports) = self.inner.warning_reports.lock() else {
-            return false;
-        };
-        reports.insert((component.to_string(), event.to_string(), code.to_string()))
+    fn flush_summaries(&self, force: bool) {
+        let now = self.inner.started_at.elapsed().as_millis() as u64;
+        let previous = self.inner.summary_at.load(Ordering::Acquire);
+        if !force && now.saturating_sub(previous) < 60_000 {
+            return;
+        }
+        if self
+            .inner
+            .summary_at
+            .compare_exchange(previous, now, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let reports = self
+            .inner
+            .reports
+            .lock()
+            .map(|mut reports| {
+                reports
+                    .values_mut()
+                    .filter_map(|r| {
+                        if !r.dirty {
+                            return None;
+                        }
+                        r.dirty = false;
+                        Some(r.clone())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for report in reports {
+            let accepted = self.submit_detailed_event_generation(
+                "error.repeated",
+                None,
+                DiagnosticDetail {
+                    fingerprint: Some(report.fingerprint.clone()),
+                    occurrence_count: Some(report.count),
+                    ..Default::default()
+                },
+                report.generation.clone(),
+            );
+            if !accepted {
+                if let Ok(mut reports) = self.inner.reports.lock() {
+                    if let Some(item) = reports.get_mut(&format!(
+                        "{}:{}",
+                        report.generation.as_deref().unwrap_or(""),
+                        report.fingerprint
+                    )) {
+                        item.dirty = true;
+                    }
+                }
+            }
+        }
+        let details = self.inner.diagnostics.lock().ok().and_then(|d| {
+            (d.dropped + d.failed + d.rejected > 0).then(|| DiagnosticDetail {
+                dropped: Some(d.dropped),
+                failed: Some(d.failed),
+                rejected: Some(d.rejected),
+                ..Default::default()
+            })
+        });
+        if let Some(details) = details {
+            let current = (
+                details.dropped.unwrap_or(0),
+                details.failed.unwrap_or(0),
+                details.rejected.unwrap_or(0),
+            );
+            if let Ok(mut last) = self.inner.summary_sent.lock() {
+                if *last != current
+                    && self.submit_detailed_event_generation(
+                        "diagnostics.summary",
+                        None,
+                        details,
+                        self.diagnostic_context().generation,
+                    )
+                {
+                    *last = current;
+                }
+            }
+        }
     }
 
     fn submit_runtime_event(
@@ -603,6 +850,9 @@ impl TelemetryService {
             return;
         };
         let item = RuntimeEventItem {
+            operation_id: None,
+            details: DiagnosticDetail::default(),
+            diagnostics: self.diagnostic_context(),
             installation_id,
             run_id: self.inner.run_id.clone(),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -619,7 +869,15 @@ impl TelemetryService {
         self.enqueue_at_epoch(TelemetryRecord::Event(item), epoch);
     }
 
-    fn submit_error_candidate(&self, candidate: TelemetryErrorCandidateV1) -> Result<bool, ()> {
+    fn submit_error_candidate(&self, mut candidate: TelemetryErrorCandidateV1) -> Result<bool, ()> {
+        candidate
+            .details
+            .severity
+            .get_or_insert_with(|| "error".into());
+        candidate
+            .details
+            .impact
+            .get_or_insert_with(|| "unavailable".into());
         validate_error_candidate(&candidate)?;
         let Some((installation_id, epoch)) = self.installation_context() else {
             return Ok(false);
@@ -631,11 +889,40 @@ impl TelemetryService {
         let fingerprint = stable_fingerprint(
             &candidate.component,
             &candidate.event,
-            &candidate.code,
+            &format!(
+                "{}:{}:{}:{}",
+                candidate.code,
+                candidate.details.reason_code.as_deref().unwrap_or(""),
+                candidate.details.stage.as_deref().unwrap_or(""),
+                candidate.details.file.as_deref().unwrap_or("")
+            ),
             &candidate.stack,
         );
+        let generation = self.diagnostic_context().generation;
+        let key = format!("{}:{}", generation.as_deref().unwrap_or(""), fingerprint);
+        if let Ok(mut reports) = self.inner.reports.lock() {
+            if let Some(report) = reports.get_mut(&key) {
+                report.count = report.count.saturating_add(1);
+                report.dirty = true;
+                return Ok(false);
+            }
+            if reports.len() < 128 {
+                reports.insert(
+                    key.clone(),
+                    ReportCount {
+                        fingerprint: fingerprint.clone(),
+                        generation,
+                        count: 1,
+                        dirty: false,
+                    },
+                );
+            }
+        }
         let report = ErrorReport {
-            schema: 1,
+            fingerprint_version: 2,
+            details: candidate.details.clone(),
+            diagnostics: self.diagnostic_context(),
+            schema: 2,
             report_id: Uuid::new_v4().hyphenated().to_string(),
             installation_id,
             run_id: self.inner.run_id.clone(),
@@ -669,7 +956,13 @@ impl TelemetryService {
         if encoded.len() > ERROR_BODY_LIMIT {
             return Err(());
         }
-        Ok(self.enqueue_at_epoch(TelemetryRecord::Error(report), epoch))
+        let accepted = self.enqueue_at_epoch(TelemetryRecord::Error(report), epoch);
+        if !accepted {
+            if let Ok(mut reports) = self.inner.reports.lock() {
+                reports.remove(&key);
+            }
+        }
+        Ok(accepted)
     }
 
     fn submit_model_call(&self, candidate: TelemetryModelCallMetricV1) -> Result<bool, ()> {
@@ -678,6 +971,8 @@ impl TelemetryService {
             return Ok(false);
         };
         let item = ModelCallItem {
+            request: candidate.request,
+            diagnostics: self.diagnostic_context(),
             installation_id,
             run_id: self.inner.run_id.clone(),
             operation_id: candidate.operation_id,
@@ -715,8 +1010,15 @@ impl TelemetryService {
             Ok(ring) => ring,
             Err(_) => return,
         };
+        if event == "ipc.request.completed" && ring.back().is_some_and(|b| b.event == event) {
+            ring.pop_back();
+        }
         if ring.len() == 40 {
-            ring.pop_front();
+            if let Some(index) = ring.iter().position(|b| b.event == "ipc.request.completed") {
+                ring.remove(index);
+            } else {
+                ring.pop_front();
+            }
         }
         ring.push_back(BreadcrumbState {
             elapsed_ms: self.inner.started_at.elapsed().as_millis() as u64,
@@ -747,6 +1049,26 @@ impl TelemetryService {
             || self.inner.stopping.load(Ordering::Acquire)
             || self.inner.epoch.load(Ordering::Acquire) != epoch
         {
+            return false;
+        }
+        let ordinary = match &record {
+            TelemetryRecord::ModelCall(item) => item.outcome == "success",
+            TelemetryRecord::Event(item) => !matches!(
+                item.event.as_str(),
+                "chat.finished"
+                    | "tts.finished"
+                    | "migration.failed"
+                    | "migration.recovery"
+                    | "diagnostics.summary"
+                    | "error.repeated"
+            ),
+            TelemetryRecord::Error(_) => false,
+        };
+        if ordinary && self.inner.sender.max_capacity() >= 128 && self.inner.sender.capacity() <= 32
+        {
+            if let Ok(mut d) = self.inner.diagnostics.lock() {
+                d.dropped += 1;
+            }
             return false;
         }
         let queued = QueuedRecord { epoch, record };
@@ -792,12 +1114,19 @@ async fn sender_loop(
         Err(_) => return,
     };
     let mut deferred = VecDeque::new();
-    while !inner.stopping.load(Ordering::Acquire) {
+    while !inner.stopping.load(Ordering::Acquire)
+        || (inner.started_at.elapsed().as_millis() as u64)
+            < inner.drain_until.load(Ordering::Acquire)
+    {
+        TelemetryService {
+            inner: Arc::clone(&inner),
+        }
+        .flush_summaries(false);
         let first = if let Some(item) = deferred.pop_front() {
             item
         } else {
             loop {
-                if inner.stopping.load(Ordering::Acquire) {
+                if inner.stopping.load(Ordering::Acquire) && receiver.is_empty() {
                     return;
                 }
                 if control.has_changed().unwrap_or(false) {
@@ -811,7 +1140,13 @@ async fn sender_loop(
                 match tokio::time::timeout(Duration::from_millis(25), receiver.recv()).await {
                     Ok(Some(item)) => break item,
                     Ok(None) => return,
-                    Err(_) => continue,
+                    Err(_) => {
+                        TelemetryService {
+                            inner: Arc::clone(&inner),
+                        }
+                        .flush_summaries(false);
+                        continue;
+                    }
                 }
             }
         };
@@ -821,13 +1156,18 @@ async fn sender_loop(
         }
         let endpoint = record_endpoint(&first.record);
         let mut records = vec![first.record];
-        if endpoint != "/v1/errors" {
+        if endpoint != "/v2/errors" {
             while records.len() < 10 {
                 match receiver.try_recv() {
                     Ok(next)
                         if next.epoch == epoch && record_endpoint(&next.record) == endpoint =>
                     {
-                        records.push(next.record)
+                        records.push(next.record);
+                        if encode_records(endpoint, &records).is_none() {
+                            let record = records.pop().expect("just added");
+                            deferred.push_back(QueuedRecord { epoch, record });
+                            break;
+                        }
                     }
                     Ok(next) => {
                         deferred.push_back(next);
@@ -858,6 +1198,13 @@ async fn sender_loop(
                 .await
         });
         let result = loop {
+            if inner.stopping.load(Ordering::Acquire)
+                && (inner.started_at.elapsed().as_millis() as u64)
+                    >= inner.drain_until.load(Ordering::Acquire)
+            {
+                request.abort();
+                return;
+            }
             if control.has_changed().unwrap_or(false) {
                 let control_epoch = *control.borrow_and_update();
                 if control_epoch != epoch
@@ -906,15 +1253,15 @@ fn retain_current_epoch(
 
 fn record_endpoint(record: &TelemetryRecord) -> &'static str {
     match record {
-        TelemetryRecord::Error(_) => "/v1/errors",
-        TelemetryRecord::Event(_) => "/v1/events",
-        TelemetryRecord::ModelCall(_) => "/v1/model-calls",
+        TelemetryRecord::Error(_) => "/v2/errors",
+        TelemetryRecord::Event(_) => "/v2/events",
+        TelemetryRecord::ModelCall(_) => "/v2/model-calls",
     }
 }
 
 fn encode_records(endpoint: &str, records: &[TelemetryRecord]) -> Option<Vec<u8>> {
     let (value, limit) = match endpoint {
-        "/v1/errors" => {
+        "/v2/errors" => {
             if records.len() != 1 {
                 return None;
             }
@@ -923,7 +1270,7 @@ fn encode_records(endpoint: &str, records: &[TelemetryRecord]) -> Option<Vec<u8>
             };
             (serde_json::to_value(report).ok()?, ERROR_BODY_LIMIT)
         }
-        "/v1/events" => {
+        "/v2/events" => {
             if records.is_empty() || records.len() > 10 {
                 return None;
             }
@@ -934,9 +1281,9 @@ fn encode_records(endpoint: &str, records: &[TelemetryRecord]) -> Option<Vec<u8>
                     _ => None,
                 })
                 .collect::<Option<Vec<_>>>()?;
-            (json!({"schema": 1, "items": items}), EVENT_BODY_LIMIT)
+            (json!({"schema": 2, "items": items}), EVENT_BODY_LIMIT)
         }
-        "/v1/model-calls" => {
+        "/v2/model-calls" => {
             if records.is_empty() || records.len() > 10 {
                 return None;
             }
@@ -947,7 +1294,7 @@ fn encode_records(endpoint: &str, records: &[TelemetryRecord]) -> Option<Vec<u8>
                     _ => None,
                 })
                 .collect::<Option<Vec<_>>>()?;
-            (json!({"schema": 1, "items": items}), MODEL_CALL_BODY_LIMIT)
+            (json!({"schema": 2, "items": items}), MODEL_CALL_BODY_LIMIT)
         }
         _ => return None,
     };
@@ -1127,7 +1474,8 @@ fn validate_error_candidate(candidate: &TelemetryErrorCandidateV1) -> Result<(),
         ) => valid_code(&candidate.code),
         _ => false,
     };
-    if candidate.schema != 1
+    if !matches!(candidate.schema, 1 | 2)
+        || !validate_detail(&candidate.details)
         || !allowlisted
         || candidate
             .operation_id
@@ -1138,7 +1486,6 @@ fn validate_error_candidate(candidate: &TelemetryErrorCandidateV1) -> Result<(),
             .as_deref()
             .is_some_and(|value| valid_token(value, 128).is_none())
         || candidate.stack.len() > 16
-        || (!candidate.stack.is_empty() && candidate.component != "core")
         || candidate
             .stack
             .iter()
@@ -1168,7 +1515,8 @@ fn validate_model_call(candidate: &TelemetryModelCallMetricV1) -> Result<(), ()>
         "custom",
         "unknown",
     ];
-    if candidate.schema != 1
+    if !matches!(candidate.schema, 1 | 2)
+        || !validate_request(&candidate.request)
         || candidate.model_call == 0
         || !PURPOSES.contains(&candidate.purpose.as_str())
         || !FAMILIES.contains(&candidate.model_family.as_str())
@@ -1201,9 +1549,12 @@ fn valid_stack_frame(frame: &SafeStackFrame) -> bool {
         || frame.file.is_some()
         || frame.line.is_some();
     any && frame
-        .module
-        .as_deref()
-        .is_none_or(|value| valid_token(value, 128).is_some())
+        .line
+        .is_none_or(|line| line > 0 && line <= 10_000_000 && frame.file.is_some())
+        && frame
+            .module
+            .as_deref()
+            .is_none_or(|value| valid_token(value, 128).is_some())
         && frame
             .function
             .as_deref()
@@ -1257,6 +1608,175 @@ fn valid_code(value: &str) -> bool {
                 byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
             }
         })
+}
+
+pub(crate) fn validate_detail(detail: &DiagnosticDetail) -> bool {
+    let Ok(Value::Object(fields)) = serde_json::to_value(detail) else {
+        return false;
+    };
+    for (key, value) in fields {
+        if let Some(value) = value.as_str() {
+            if key == "file" {
+                if !valid_stack_frame(&SafeStackFrame {
+                    module: None,
+                    function: None,
+                    file: Some(value.into()),
+                    line: None,
+                }) {
+                    return false;
+                }
+            } else if valid_token(value, 128).is_none() {
+                return false;
+            }
+            let choices: &[&str] = match key.as_str() {
+                "severity" => &["warning", "error", "critical"],
+                "impact" => &["unavailable", "degraded", "diagnostic"],
+                "probeOutcome" => &[
+                    "ready",
+                    "timeout",
+                    "spawn_failed",
+                    "exited",
+                    "invalid_output",
+                    "unavailable",
+                ],
+                "recoveryOutcome" => &["success", "failed", "skipped", "unknown"],
+                "outcome" => &["success", "failed", "cancelled", "degraded", "skipped"],
+                "repairOutcome" => &["valid", "invalid", "request_failed", "cancelled"],
+                _ => &[],
+            };
+            if !choices.is_empty() && !choices.contains(&value) {
+                return false;
+            }
+            if key.ends_with("Code") && !valid_code(value) {
+                return false;
+            }
+        } else if let Some(value) = value.as_u64() {
+            if value > 9_007_199_254_740_991 {
+                return false;
+            }
+        }
+    }
+    if detail.file.is_none() && (detail.line.is_some() || detail.column.is_some()) {
+        return false;
+    }
+    if detail.line.is_some_and(|v| v == 0 || v > 10_000_000)
+        || detail.column.is_some_and(|v| v == 0 || v > 10_000_000)
+    {
+        return false;
+    }
+    detail
+        .exit_code
+        .is_none_or(|v| (-2_147_483_648..=4_294_967_295).contains(&v))
+}
+
+fn validate_request(request: &RequestDiagnostic) -> bool {
+    request.fault_domain.as_deref().is_none_or(|s| {
+        [
+            "authentication",
+            "rate_limit",
+            "provider",
+            "transport",
+            "protocol",
+            "context",
+            "compatibility",
+            "cancelled",
+            "unknown",
+        ]
+        .contains(&s)
+    }) && request.reason_code.as_deref().is_none_or(valid_code)
+        && request.http_status.is_none_or(|s| (100..=599).contains(&s))
+        && request.stage.as_deref().is_none_or(|s| {
+            [
+                "connect", "read", "decode", "request", "response", "unknown",
+            ]
+            .contains(&s)
+        })
+        && request.attempt_count.is_none_or(|s| s <= 1_000_000)
+        && request
+            .compatibility_fallback
+            .as_deref()
+            .is_none_or(|s| ["response_format", "temperature", "runtime_context_role"].contains(&s))
+}
+
+fn details_from_attributes(severity: &str, attributes: Option<&Value>) -> DiagnosticDetail {
+    let mut detail = attributes
+        .and_then(|a| a.get("diagnostic_detail"))
+        .and_then(|d| serde_json::from_value::<DiagnosticDetail>(d.clone()).ok())
+        .filter(validate_detail)
+        .unwrap_or_default();
+    detail.severity = Some(
+        if severity == "warning" {
+            "warning"
+        } else {
+            "error"
+        }
+        .into(),
+    );
+    detail.impact = Some(
+        if severity == "warning" {
+            "degraded"
+        } else {
+            "unavailable"
+        }
+        .into(),
+    );
+    macro_rules! token {
+        ($field:ident, $key:expr) => {
+            if detail.$field.is_none() {
+                detail.$field = stable_token_attribute(attributes, $key, 128);
+            }
+        };
+    }
+    token!(stage, "stage");
+    token!(cause_type, "cause_type");
+    token!(primary_code, "primary_code");
+    token!(recovery_code, "recovery_code");
+    token!(recovery_outcome, "recovery_outcome");
+    token!(probe_outcome, "probe_outcome");
+    token!(repair_reason, "repair_reason");
+    token!(repair_outcome, "repair_outcome");
+    detail.reason_code = detail
+        .reason_code
+        .or_else(|| stable_attribute(attributes, "reason_code"))
+        .or_else(|| stable_attribute(attributes, "provider_error_code"));
+    detail.timeout_ms = integer_attribute(attributes, "timeout_ms")
+        .or_else(|| integer_attribute(attributes, "deadline_ms"));
+    detail.elapsed_ms = integer_attribute(attributes, "elapsed_ms");
+    detail.exit_code = attributes
+        .and_then(|a| a.get("exit_code").or_else(|| a.get("return_code")))
+        .and_then(Value::as_i64);
+    detail.child_exited = attributes
+        .and_then(|a| a.get("child_exited"))
+        .and_then(Value::as_bool);
+    detail.source_exists = attributes
+        .and_then(|a| a.get("source_exists"))
+        .and_then(Value::as_bool);
+    detail.staged_exists = attributes
+        .and_then(|a| a.get("staged_exists"))
+        .and_then(Value::as_bool);
+    detail.backup_exists = attributes
+        .and_then(|a| a.get("backup_exists"))
+        .and_then(Value::as_bool);
+    if detail.file.is_none() {
+        detail.file = attributes
+            .and_then(|a| a.get("source_file"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        detail.line =
+            integer_attribute(attributes, "source_line").and_then(|v| u32::try_from(v).ok());
+    }
+    detail.surface = detail
+        .surface
+        .or_else(|| stable_token_attribute(attributes, "window_label", 64));
+    if validate_detail(&detail) {
+        detail
+    } else {
+        DiagnosticDetail {
+            severity: Some("error".into()),
+            impact: Some("diagnostic".into()),
+            ..Default::default()
+        }
+    }
 }
 
 fn stable_attribute(attributes: Option<&Value>, key: &str) -> Option<String> {
@@ -1406,10 +1926,21 @@ fn allowlisted_runtime_error(
 }
 
 fn selected_tts_error_code(event: &str, attributes: Option<&Value>) -> Option<String> {
-    let code = ["provider_error_code", "reason_code", "code"]
+    let codes = ["provider_error_code", "reason_code", "code"]
         .into_iter()
-        .find_map(|key| stable_attribute(attributes, key))?;
-    selected_tts_code(event, &code).then_some(code)
+        .filter_map(|key| stable_attribute(attributes, key))
+        .collect::<Vec<_>>();
+    if codes.iter().any(|code| {
+        matches!(
+            code.as_str(),
+            "TTS_DISABLED" | "TTS_PROVIDER_NOT_SELECTED" | "REQUEST_CANCELLED" | "TTS_PORT_IN_USE"
+        )
+    }) {
+        return None;
+    }
+    codes
+        .into_iter()
+        .find(|code| selected_tts_code(event, code))
 }
 
 fn selected_tts_code(event: &str, code: &str) -> bool {
@@ -1444,6 +1975,8 @@ fn selected_tts_code(event: &str, code: &str) -> bool {
             code,
             "TTS_ARTIFACT_INVALID"
                 | "TTS_CONNECTION_FAILED"
+                | "TTS_RUNTIME_UNAVAILABLE"
+                | "TTS_AUDIO_INVALID"
                 | "TTS_JOB_RESULT_INVALID"
                 | "TTS_PROVIDER_UNAVAILABLE"
                 | "TTS_REQUEST_TIMEOUT"
@@ -1546,7 +2079,6 @@ fn stable_fingerprint(
         add(frame.module.as_deref().unwrap_or(""));
         add(frame.function.as_deref().unwrap_or(""));
         add(frame.file.as_deref().unwrap_or(""));
-        add(&frame.line.map(|line| line.to_string()).unwrap_or_default());
     }
     format!("f-{hash:016x}")
 }
@@ -1823,7 +2355,6 @@ mod tests {
     #[test]
     fn loopback_reader_waits_for_headers_and_body_on_an_accepted_nonblocking_socket() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (stream, _) = listener.accept().unwrap();
         // Windows accepts inherit the listener's nonblocking mode. Set it
@@ -1838,7 +2369,7 @@ mod tests {
             Err(std_mpsc::RecvTimeoutError::Timeout)
         ));
         client
-            .write_all(b"POST /v1/events HTTP/1.1\r\nContent-Length: 2\r\n\r\n")
+            .write_all(b"POST /v2/events HTTP/1.1\r\nContent-Length: 2\r\n\r\n")
             .unwrap();
         assert!(matches!(
             received.recv_timeout(Duration::from_millis(100)),
@@ -1847,7 +2378,7 @@ mod tests {
         client.write_all(b"{}").unwrap();
         assert_eq!(
             received.recv_timeout(TEST_WAIT).unwrap(),
-            Some(("/v1/events".to_string(), b"{}".to_vec()))
+            Some(("/v2/events".to_string(), b"{}".to_vec()))
         );
         reader.join().unwrap();
     }
@@ -1882,6 +2413,9 @@ mod tests {
 
     fn event_item(service: &TelemetryService, event: &str) -> RuntimeEventItem {
         RuntimeEventItem {
+            operation_id: None,
+            details: DiagnosticDetail::default(),
+            diagnostics: service.diagnostic_context(),
             installation_id: service.installation_id().unwrap(),
             run_id: "r-test".to_string(),
             app_version: "1.0.3".to_string(),
@@ -2126,13 +2660,14 @@ mod tests {
             Some(&json!({"code": "WEBVIEW_UNHANDLED_ERROR"})),
         );
         let request = server.next_request(&service);
-        assert_eq!(request.0, "/v1/errors");
+        assert_eq!(request.0, "/v2/errors");
         let body: Value = serde_json::from_slice(&request.1).unwrap();
         assert_eq!(body["error"]["component"], "webview");
         assert_eq!(body["error"]["event"], "webview.error.unhandled");
         assert_eq!(body["error"]["code"], "WEBVIEW_UNHANDLED_ERROR");
 
         let spoofed = TelemetryErrorCandidateV1 {
+            details: DiagnosticDetail::default(),
             schema: 1,
             component: "webview".to_string(),
             event: "webview.error.unhandled".to_string(),
@@ -2175,6 +2710,7 @@ mod tests {
         );
 
         let candidate = TelemetryErrorCandidateV1 {
+            details: DiagnosticDetail::default(),
             schema: 1,
             component: "rust".to_string(),
             event: "core.spawn.failed".to_string(),
@@ -2243,8 +2779,10 @@ mod tests {
             })),
         );
 
+        let terminal = server.next_request(&service);
+        assert_eq!(terminal.0, "/v2/events");
         let request = server.next_request(&service);
-        assert_eq!(request.0, "/v1/errors");
+        assert_eq!(request.0, "/v2/errors");
         let body: Value = serde_json::from_slice(&request.1).unwrap();
         assert_eq!(body["operationId"], "operation-tts-7");
         assert_eq!(body["error"]["component"], "tts");
@@ -2296,6 +2834,7 @@ mod tests {
         }
 
         let rejected = TelemetryErrorCandidateV1 {
+            details: DiagnosticDetail::default(),
             schema: 1,
             component: "tts".to_string(),
             event: "tts.synthesis.failed".to_string(),
@@ -2404,9 +2943,9 @@ mod tests {
         }
 
         let first = server.next_request(&service);
-        assert_eq!(first.0, "/v1/events");
+        assert_eq!(first.0, "/v2/events");
         let request = server.next_request(&service);
-        assert_eq!(request.0, "/v1/errors");
+        assert_eq!(request.0, "/v2/errors");
         let body: Value = serde_json::from_slice(&request.1).unwrap();
         assert_eq!(body["error"]["component"], "memory");
         assert_eq!(body["error"]["event"], "memory.recall.unavailable");
@@ -2427,6 +2966,14 @@ mod tests {
     #[test]
     fn envelopes_keep_batches_bounded_and_body_free() {
         let event = RuntimeEventItem {
+            operation_id: None,
+            details: DiagnosticDetail::default(),
+            diagnostics: DiagnosticContext {
+                build_id: "test".into(),
+                environment: "acceptance".into(),
+                generation: None,
+                occurred_ms: 0,
+            },
             installation_id: Uuid::new_v4().to_string(),
             run_id: "r-test".to_string(),
             app_version: "1.0.3".to_string(),
@@ -2440,7 +2987,7 @@ mod tests {
             to_version: None,
             error_code: None,
         };
-        let body = encode_records("/v1/events", &[TelemetryRecord::Event(event)]).unwrap();
+        let body = encode_records("/v2/events", &[TelemetryRecord::Event(event)]).unwrap();
         let text = String::from_utf8(body).unwrap();
         assert!(text.contains("\"items\""));
         for forbidden in [
@@ -2454,22 +3001,30 @@ mod tests {
         ] {
             assert!(!text.contains(forbidden));
         }
-        assert!(encode_records("/v1/events", &[]).is_none());
+        assert!(encode_records("/v2/events", &[]).is_none());
         let ten = (0..10)
             .map(|_| TelemetryRecord::Event(event_item_for_encoding()))
             .collect::<Vec<_>>();
-        assert!(encode_records("/v1/events", &ten).is_some());
+        assert!(encode_records("/v2/events", &ten).is_some());
         let eleven = (0..11)
             .map(|_| TelemetryRecord::Event(event_item_for_encoding()))
             .collect::<Vec<_>>();
-        assert!(encode_records("/v1/events", &eleven).is_none());
+        assert!(encode_records("/v2/events", &eleven).is_none());
         let mut oversized = event_item_for_encoding();
         oversized.app_version = "x".repeat(EVENT_BODY_LIMIT);
-        assert!(encode_records("/v1/events", &[TelemetryRecord::Event(oversized)]).is_none());
+        assert!(encode_records("/v2/events", &[TelemetryRecord::Event(oversized)]).is_none());
     }
 
     fn event_item_for_encoding() -> RuntimeEventItem {
         RuntimeEventItem {
+            operation_id: None,
+            details: DiagnosticDetail::default(),
+            diagnostics: DiagnosticContext {
+                build_id: "test".into(),
+                environment: "acceptance".into(),
+                generation: None,
+                occurred_ms: 0,
+            },
             installation_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             run_id: "r-test".to_string(),
             app_version: "1.0.3".to_string(),
@@ -2491,18 +3046,18 @@ mod tests {
         let (root, service) = service_for(&server, "disable", 8, BLOCKED_HTTP_TIMEOUT);
         assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started"))));
         let first = server.next_request(&service);
-        assert_eq!(first.0, "/v1/events");
+        assert_eq!(first.0, "/v2/events");
         for _ in 0..5 {
             assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started"))));
         }
         service.set_enabled(false).unwrap();
         assert!(!service.enqueue(TelemetryRecord::Event(event_item_for_encoding())));
         service.set_enabled(true).unwrap();
-        assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.ready"))));
+        assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "shell.ready"))));
         let second = server.next_request(&service);
         let body: Value = serde_json::from_slice(&second.1).unwrap();
         assert_eq!(body["items"].as_array().unwrap().len(), 1);
-        assert_eq!(body["items"][0]["event"], "app.ready");
+        assert_eq!(body["items"][0]["event"], "shell.ready");
         server.cancellations.recv_timeout(TEST_WAIT).unwrap();
         assert!(server
             .requests
@@ -2531,12 +3086,12 @@ mod tests {
         let mut stale = event_item_for_encoding();
         stale.installation_id = old_id;
         assert!(!service.enqueue_at_epoch(TelemetryRecord::Event(stale), stale_epoch));
-        assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.ready"))));
+        assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "shell.ready"))));
         let second = server.next_request(&service);
         let second_body: Value = serde_json::from_slice(&second.1).unwrap();
         assert_eq!(second_body["items"][0]["installationId"], new_id);
         assert_eq!(second_body["items"].as_array().unwrap().len(), 1);
-        assert_eq!(second_body["items"][0]["event"], "app.ready");
+        assert_eq!(second_body["items"][0]["event"], "shell.ready");
         server.cancellations.recv_timeout(TEST_WAIT).unwrap();
         service.shutdown();
         let _ = fs::remove_dir_all(root);
@@ -2553,7 +3108,7 @@ mod tests {
         service.submit_app_ready();
         let second = server.next_request(&service);
         let body: Value = serde_json::from_slice(&second.1).unwrap();
-        assert_eq!(body["items"][0]["event"], "app.ready");
+        assert_eq!(body["items"][0]["event"], "shell.ready");
         // The sender processes responses serially: receiving the second request
         // proves it finished handling the first response.
         assert_eq!(service.inner.diagnostics.lock().unwrap().failed, 0);
@@ -2650,7 +3205,7 @@ mod tests {
         }]);
         assert!(project_breadcrumbs(&old, 86_400_002).is_empty());
         drop(ring);
-        let frames = (0..16)
+        let frames = (1..17)
             .map(|line| SafeStackFrame {
                 module: Some("app.core".to_string()),
                 function: Some("run".to_string()),
@@ -2659,6 +3214,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let candidate = TelemetryErrorCandidateV1 {
+            details: DiagnosticDetail::default(),
             schema: 1,
             component: "core".to_string(),
             event: "core.error.unhandled".to_string(),
@@ -2678,9 +3234,134 @@ mod tests {
                 "CORE_UNHANDLED_ERROR",
                 &frames
             ),
-            "f-6475ba08b0cd1bf7"
+            "f-9f8616d808bc8759"
         );
         service.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn acceptance_wire_capture_preserves_core_location_and_terminal() {
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "acceptance-wire", 128, TEST_WAIT);
+        service.activate_generation("acceptance-generation");
+        let context = CoreLogContext {
+            generation_id: "acceptance-generation".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        let payloads=std::env::var("SAKURA_ACCEPTANCE_CORE_WIRE").ok().map(|p|fs::read_to_string(p).unwrap())
+            .unwrap_or_else(|| r#"{"kind":"error","error":{"schema":2,"component":"core","event":"core.error.unhandled","code":"CORE_HOST_TRANSPORT_ERROR","operationId":"op-acceptance","exceptionType":"WriterError","stack":[{"file":"app/core_host/server.py","function":"send","line":737}],"details":{"severity":"error","impact":"unavailable","stage":"process_boundary","reasonCode":"TRANSPORT_WRITE_FAILED"}}}"#.into());
+        let mut captured = Vec::new();
+        let mut operation = "op-acceptance".to_string();
+        for payload in payloads.lines().filter(|p| !p.trim().is_empty()) {
+            let parsed: Value = serde_json::from_str(payload).unwrap();
+            if let Some(id) = parsed
+                .pointer("/modelCall/operationId")
+                .and_then(Value::as_str)
+            {
+                operation = id.into();
+            }
+            assert!(service.submit_core_bridge(payload, &context, None).unwrap());
+            let (endpoint, body) = server.next_request(&service);
+            captured.push(
+                json!({"endpoint":endpoint,"body":serde_json::from_slice::<Value>(&body).unwrap()}),
+            );
+        }
+        service.observe_runtime_event(
+            "core",
+            "info",
+            "chat",
+            "chat.request.failed",
+            Some(&operation),
+            Some(&json!({"outcome":"failed","stage":"final_reply"})),
+        );
+        let (endpoint, body) = server.next_request(&service);
+        captured.push(
+            json!({"endpoint":endpoint,"body":serde_json::from_slice::<Value>(&body).unwrap()}),
+        );
+        if let Ok(path) = std::env::var("SAKURA_ACCEPTANCE_WIRE_OUTPUT") {
+            fs::write(path, serde_json::to_vec_pretty(&captured).unwrap()).unwrap();
+        }
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repeat_summary_is_cumulative_and_not_regrouped_by_line() {
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "repeat-v2", 128, TEST_WAIT);
+        service.activate_generation("generation-repeat");
+        for line in [10, 11, 12] {
+            service.observe_runtime_event("core","warning","tts","tts.service.failed",Some("op-repeat"),Some(&json!({"reason_code":"TTS_RUNTIME_TIMEOUT","source_file":"app/voice/tts.py","source_line":line})));
+        }
+        let (_, first) = server.next_request(&service);
+        let first: Value = serde_json::from_slice(&first).unwrap();
+        service.flush_summaries(true);
+        let (_, summary) = server.next_request(&service);
+        let summary: Value = serde_json::from_slice(&summary).unwrap();
+        assert_eq!(summary["items"][0]["details"]["occurrenceCount"], 3);
+        assert_eq!(
+            summary["items"][0]["details"]["fingerprint"],
+            first["error"]["fingerprint"]
+        );
+        assert_eq!(
+            summary["items"][0]["diagnostics"]["generation"],
+            "generation-repeat"
+        );
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn event_batches_split_by_serialized_bytes_and_reserve_failure_capacity() {
+        let server = TestServer::start(202, Duration::from_millis(150));
+        let (root, service) = service_for(&server, "byte-split", 128, TEST_WAIT);
+        service.submit_app_started();
+        server.next_request(&service);
+        for _ in 0..10 {
+            let mut item = event_item(&service, "chat.finished");
+            item.details = DiagnosticDetail {
+                stage: Some("s".repeat(128)),
+                cause_type: Some("C".repeat(128)),
+                surface: Some("p".repeat(128)),
+                repair_reason: Some("r".repeat(128)),
+                file: Some(format!("app/{}.py", "x".repeat(200))),
+                ..Default::default()
+            };
+            assert!(service.enqueue(TelemetryRecord::Event(item)));
+        }
+        let mut received = 0;
+        let mut batches = 0;
+        while received < 10 {
+            let (_, body) = server.next_request(&service);
+            assert!(body.len() <= EVENT_BODY_LIMIT);
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            let count = body["items"].as_array().unwrap().len();
+            assert!(count <= 10);
+            received += count;
+            batches += 1;
+        }
+        assert!(batches > 1);
+        service.shutdown();
+        let _ = fs::remove_dir_all(root);
+        let blocked = TestServer::blocked();
+        let (root, service) = service_for(&blocked, "reserved-capacity", 128, BLOCKED_HTTP_TIMEOUT);
+        service.submit_app_started();
+        blocked.next_request(&service);
+        for _ in 0..96 {
+            assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started"))));
+        }
+        assert!(!service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started"))));
+        for _ in 0..32 {
+            assert!(service.enqueue(TelemetryRecord::Event(event_item(
+                &service,
+                "chat.finished"
+            ))));
+        }
+        service.set_enabled(false).unwrap();
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
         let _ = fs::remove_dir_all(root);
     }
 }

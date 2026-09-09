@@ -127,6 +127,37 @@ function logFields(input) {
   return new TextEncoder().encode(JSON.stringify(result)).length <= 1800 ? result : { record_truncated: true };
 }
 
+const ERROR_TYPES = new Set(["Error", "TypeError", "ReferenceError", "SyntaxError", "RangeError", "URIError", "EvalError", "AggregateError", "DOMException"]);
+function applicationFile(value) {
+  if (typeof value !== "string") return undefined;
+  try {
+    const url = new URL(value, "tauri://localhost/");
+    if (!["tauri:", "http:", "https:"].includes(url.protocol) || !["localhost", "tauri.localhost"].includes(url.hostname)) return undefined;
+    const path = url.pathname.replace(/^\//, "");
+    if (!/^(?:(?:core|chat|settings|history|studio|onboarding|runtime-log|pet|shared|styles)\/)*[A-Za-z0-9_.-]+\.(?:js|css|html)$/.test(path) || path.includes("..")) return undefined;
+    return `desktop/frontend/${path}`;
+  } catch { return undefined; }
+}
+function exceptionDetails(event, rejection = false) {
+  const error = rejection ? event?.reason : event?.error;
+  const detail = { stage: rejection ? "promise" : event?.target && !event?.error && !event?.filename ? "resource" : "javascript" };
+  if (ERROR_TYPES.has(error?.name)) detail.causeType = error.name;
+  let file = applicationFile(event?.filename || event?.target?.src || event?.target?.href);
+  let line = event?.lineno, column = event?.colno;
+  if (!file && typeof error?.stack === "string") {
+    for (const frame of error.stack.split("\n").slice(0, 17)) {
+      const match = frame.match(/((?:https?:\/\/tauri\.localhost|tauri:\/\/localhost|https?:\/\/localhost(?::\d+)?)[^\s)]+):(\d+):(\d+)/);
+      if (match && (file = applicationFile(match[1]))) { line = Number(match[2]); column = Number(match[3]); break; }
+    }
+  }
+  if (file) {
+    detail.file = file;
+    if (Number.isSafeInteger(line) && line > 0 && line <= 10000000) detail.line = line;
+    if (Number.isSafeInteger(column) && column > 0 && column <= 10000000) detail.column = column;
+  }
+  return detail;
+}
+
 function controlledEntry(input) {
   if (input?.event === "runtime.message") {
     if (!LEVELS.has(input.level) || typeof input.message !== "string" || !input.message.trim()) return null;
@@ -156,6 +187,16 @@ function controlledEntry(input) {
   ) return null;
 
   const entry = { level: input.level, event: input.event };
+  if (input.details !== undefined && input.event === "webview.error.unhandled") {
+    const d = input.details;
+    if (!d || typeof d !== "object" || !["javascript","promise","resource"].includes(d.stage)) return null;
+    entry.details = { stage: d.stage };
+    if (ERROR_TYPES.has(d.causeType)) entry.details.causeType = d.causeType;
+    if (typeof d.file === "string" && d.file.startsWith("desktop/frontend/") && applicationFile(d.file.slice(17)) === d.file) {
+      entry.details.file = d.file;
+      for (const key of ["line","column"]) if (Number.isSafeInteger(d[key]) && d[key] > 0 && d[key] <= 10000000) entry.details[key] = d[key];
+    }
+  }
   if (input.command !== undefined) entry.command = input.command;
   if (input.outcome !== undefined) entry.outcome = input.outcome;
   if (input.code !== undefined) entry.code = input.code;
@@ -278,19 +319,21 @@ export function createRuntimeDiagnostics({
     }
   }
 
-  const onError = () => record({
+  const onError = (event) => record({
+    details: exceptionDetails(event),
     level: "error",
     event: "webview.error.unhandled",
     outcome: "failed",
     code: "WEBVIEW_UNHANDLED_ERROR",
   });
-  const onUnhandledRejection = () => record({
+  const onUnhandledRejection = (event) => record({
+    details: exceptionDetails(event, true),
     level: "error",
     event: "webview.error.unhandled",
     outcome: "failed",
     code: "WEBVIEW_UNHANDLED_REJECTION",
   });
-  windowObject?.addEventListener?.("error", onError);
+  windowObject?.addEventListener?.("error", onError, true);
   windowObject?.addEventListener?.("unhandledrejection", onUnhandledRejection);
 
   function dispose({ settings = false } = {}) {
@@ -301,7 +344,7 @@ export function createRuntimeDiagnostics({
       outcome: "completed",
     });
     disposed = true;
-    windowObject?.removeEventListener?.("error", onError);
+    windowObject?.removeEventListener?.("error", onError, true);
     windowObject?.removeEventListener?.("unhandledrejection", onUnhandledRejection);
     if (timer !== null) {
       clearTimer(timer);

@@ -226,3 +226,92 @@ def test_safe_stack_keeps_sixteen_frames_within_local_bridge_limit() -> None:
     assert line is not None
     assert len(line) > runtime_logging.CORE_BRIDGE_MAX_LINE_BYTES
     assert len(line) <= runtime_logging.TELEMETRY_BRIDGE_MAX_LINE_BYTES
+
+
+def test_plugin_source_and_deadline_survive_host_and_core_bridge(monkeypatch):
+    from app.core_host import plugin_host_services
+
+    captured = []
+    monkeypatch.setattr(
+        plugin_host_services, "log_event", lambda *a, **k: captured.append(a[2])
+    )
+    service = plugin_host_services._DiagnosticsHostService()
+    service.call(
+        "emit",
+        [
+            "sakura.tts.gpt-sovits",
+            {
+                "event": "tts.synthesis.failed",
+                "severity": "warning",
+                "attributes": {
+                    "reason_code": "TTS_HTTP_TIMEOUT",
+                    "source_file": "plugins/builtin/sakura_gpt_sovits/_support.py",
+                    "source_line": 690,
+                    "timeout_ms": 60000,
+                    "elapsed_ms": 60200,
+                    "stage": "synthesis_http",
+                    "child_exited": False,
+                },
+            },
+        ],
+    )
+    safe = runtime_logging._safe_attributes(captured[0])
+    assert safe["source_file"] == "plugins/builtin/sakura_gpt_sovits/_support.py"
+    assert safe["timeout_ms"] == 60000 and safe["child_exited"] is False
+
+
+def test_model_failures_classify_http_timeout_and_wrapped_causes():
+    import urllib.error
+
+    for status, domain in [
+        (401, "authentication"),
+        (429, "rate_limit"),
+        (503, "provider"),
+    ]:
+        error = ApiRequestError("PRIVATE_EXCEPTION_MESSAGE")
+        error.__cause__ = urllib.error.HTTPError(
+            "https://PRIVATE_URL", status, "PRIVATE_BODY", {}, None
+        )
+        result = api_client._request_failure(error)
+        assert result["faultDomain"] == domain and result["httpStatus"] == status
+        assert "PRIVATE" not in json.dumps(result)
+    timeout = TimeoutError("PRIVATE_EXCEPTION_MESSAGE")
+    assert api_client._request_failure(timeout)["stage"] == "unknown"
+    timeout.sakura_request_stage = "read"
+    assert api_client._request_failure(timeout)["reasonCode"] == "MODEL_READ_TIMEOUT"
+
+
+def test_real_mem0_logging_boundary_projects_only_controlled_recall_event(monkeypatch):
+    from app.core_host import plugin_host_services
+    from app.plugins.host_services import HOST_CALLER
+
+    records = []
+    monkeypatch.setattr(
+        plugin_host_services, "log_event", lambda *a, **k: records.append((a, k))
+    )
+    monkeypatch.setattr(plugin_host_services, "log_message", lambda *a, **k: None)
+    token = HOST_CALLER.set("sakura.memory.mem0")
+    try:
+        plugin_host_services._LoggingHostService().call(
+            "emit",
+            [
+                [
+                    {
+                        "severity": "info",
+                        "message": "PRIVATE_MEMORY_BODY",
+                        "fields": {
+                            "event": "memory.recall.finished",
+                            "elapsed_ms": 31,
+                            "selected": 2,
+                            "content": "PRIVATE_CHAT_BODY",
+                        },
+                    }
+                ],
+                0,
+            ],
+        )
+    finally:
+        HOST_CALLER.reset(token)
+    assert records[0][1]["event"] == "memory.recall.finished"
+    assert records[0][0][2]["selected"] == 2
+    assert "PRIVATE" not in json.dumps(records)

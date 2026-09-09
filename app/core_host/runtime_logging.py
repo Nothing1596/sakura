@@ -62,6 +62,20 @@ _FORBIDDEN_KEY_MARKERS = (
 )
 _SAFE_ATTRIBUTE_KEYS = frozenset(
     {
+        "source_file",
+        "source_line",
+        "timeout_ms",
+        "exit_code",
+        "child_exited",
+        "probe_outcome",
+        "primary_code",
+        "recovery_code",
+        "recovery_outcome",
+        "source_exists",
+        "staged_exists",
+        "backup_exists",
+        "repair_reason",
+        "repair_outcome",
         "action",
         "attempt",
         "bytes",
@@ -250,6 +264,7 @@ _CORE_CHANNELS = frozenset(
     }
 )
 _FIXED_MESSAGES = {
+    "reply.repair.finished": "Reply repair finished",
     "agent.turn.started": "Assistant turn started",
     "agent.turn.finished": "Assistant turn finished",
     "chat.request.received": "Chat request received",
@@ -513,7 +528,18 @@ class RuntimeLoggingBridge:
         self._enqueue_telemetry(
             "error",
             {
-                "schema": 1,
+                "schema": 2,
+                "details": {
+                    "severity": "error",
+                    "impact": "unavailable",
+                    "stage": "process_boundary",
+                    **({"reasonCode": declared} if declared else {}),
+                    **(
+                        {"causeType": _safe_token(type(error.__cause__).__name__, 128)}
+                        if error.__cause__
+                        else {}
+                    ),
+                },
                 "component": "core",
                 "event": "core.error.unhandled",
                 "code": telemetry_code,
@@ -837,7 +863,20 @@ def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, objec
                 continue
             safe[key] = value
         elif isinstance(value, str):
-            if key == "diagnostic":
+            if key == "source_file":
+                if (
+                    value.startswith(
+                        ("app/", "plugins/builtin/", "desktop/src-tauri/src/")
+                    )
+                    and all(
+                        re.fullmatch(r"[A-Za-z0-9_.-]+", part)
+                        and part not in {".", ".."}
+                        for part in value.split("/")
+                    )
+                    and len(value) <= 240
+                ):
+                    safe[key] = value
+            elif key == "diagnostic":
                 diagnostic = _safe_diagnostic(value)
                 if diagnostic is not None:
                     safe[key] = diagnostic
@@ -898,7 +937,7 @@ def _safe_stack(error: BaseException) -> list[dict[str, object]]:
             item["function"] = function
         if relative and ".." not in relative and len(relative) <= 240:
             item["file"] = relative
-        if isinstance(frame.lineno, int) and frame.lineno > 0:
+        if relative and isinstance(frame.lineno, int) and frame.lineno > 0:
             item["line"] = frame.lineno
         if item:
             frames.append(item)
@@ -911,10 +950,56 @@ def _valid_model_call_candidate(candidate: Mapping[str, object]) -> bool:
         "errorCode", "latencyMs", "contextWindowTokens", "contextWindowSource",
         "usage", "estimate",
     }
-    if not isinstance(candidate, Mapping) or set(candidate) != required:
+    if not isinstance(candidate, Mapping) or set(candidate) not in (
+        required,
+        required | {"request"},
+    ):
         return False
-    if candidate.get("schema") != 1:
+    if candidate.get("schema") not in {1, 2}:
         return False
+    request = candidate.get("request", {})
+    if not isinstance(request, Mapping) or set(request) - {
+        "faultDomain",
+        "reasonCode",
+        "httpStatus",
+        "stage",
+        "attemptCount",
+        "compatibilityFallback",
+    }:
+        return False
+    if request.get("reasonCode") is not None and not _CODE_RE.fullmatch(
+        str(request["reasonCode"])
+    ):
+        return False
+    for key, choices in {
+        "faultDomain": {
+            "authentication",
+            "rate_limit",
+            "provider",
+            "transport",
+            "protocol",
+            "context",
+            "compatibility",
+            "cancelled",
+            "unknown",
+        },
+        "stage": {"connect", "read", "decode", "request", "response", "unknown"},
+        "compatibilityFallback": {
+            "response_format",
+            "temperature",
+            "runtime_context_role",
+        },
+    }.items():
+        if request.get(key) is not None and request[key] not in choices:
+            return False
+    for key, low, high in (("httpStatus", 100, 599), ("attemptCount", 0, 1000000)):
+        value = request.get(key)
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not low <= value <= high
+        ):
+            return False
     operation_id = candidate.get("operationId")
     if operation_id is not None and _safe_id(operation_id) is None:
         return False

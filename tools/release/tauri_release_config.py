@@ -28,6 +28,8 @@ def build_config(
         raise ValueError("UPDATER_ARTIFACTS_REQUIRE_UPDATER")
     resources = {
         "release-staging/VERSION": "VERSION",
+        "release-staging/diagnostic-build.json": "diagnostic-build.json",
+        "release-staging/diagnostic-build-id.txt": "diagnostic-build-id.txt",
         "release-staging/runtime-manifest.json": "runtime-manifest.json",
         "release-staging/python": "python",
         "release-staging/core": "core",

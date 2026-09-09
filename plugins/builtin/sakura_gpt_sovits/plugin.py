@@ -243,12 +243,19 @@ class _JobSupervisor:
 
 
 class _EngineQueue:
-    def __init__(self, supervisor: _JobSupervisor, settings: GPTSoVITSTTSSettings, job: _Job) -> None:
+    def __init__(
+        self,
+        supervisor: _JobSupervisor,
+        settings: GPTSoVITSTTSSettings,
+        job: _Job,
+        diagnostic=None,
+    ) -> None:
         self._supervisor = supervisor
         self.settings = settings
         self._cache_dir = job.output_path.parent
         self._job = job
         self._tone_indices: dict[str, int] = {}
+        self._report = diagnostic
 
     def _select_reference(self, tone: str | None) -> ToneReference:
         tone_key = (tone or DEFAULT_TONE).strip() or DEFAULT_TONE
@@ -395,7 +402,12 @@ class _Coordinator:
                 errors.append("TTS_SYNTHESIS_CANCELLED" if job.cancelled else message)
 
             source = GPTSoVITSSynthesisEngine().synthesize(
-                _EngineQueue(_JobSupervisor(supervisor, job), settings, job),
+                _EngineQueue(
+                    _JobSupervisor(supervisor, job),
+                    settings,
+                    job,
+                    self._report_runtime_lifecycle,
+                ),
                 request,
                 fail=fail,
                 skip=skip,

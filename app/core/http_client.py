@@ -80,8 +80,14 @@ def read_url_cancellable(
 ) -> tuple[bytes, int | None]:
     """在 daemon I/O 线程读取响应，允许调用方取消并关闭活动响应。"""
     if cancel_checker is None:
-        with opener(request, timeout=timeout) as response:
-            return response.read(), getattr(response, "status", None)
+        phase = "request"
+        try:
+            with opener(request, timeout=timeout) as response:
+                phase = "read"
+                return response.read(), getattr(response, "status", None)
+        except Exception as error:
+            error.sakura_request_stage = phase
+            raise
 
     done = threading.Event()
     abort = threading.Event()
@@ -90,11 +96,13 @@ def read_url_cancellable(
 
     def run() -> None:
         chunks: list[bytes] = []
+        phase = "request"
         try:
             with opener(request, timeout=timeout) as response:
                 with state_lock:
                     state["response"] = response
                 state["status"] = getattr(response, "status", None)
+                phase = "read"
                 while not abort.is_set():
                     chunk = response.read(_READ_CHUNK_SIZE)
                     if not chunk:
@@ -104,6 +112,7 @@ def read_url_cancellable(
                     state["body"] = b"".join(chunks)
         except BaseException as exc:  # noqa: BLE001 - 原样回传 urllib/socket 异常
             if not abort.is_set():
+                exc.sakura_request_stage = phase
                 state["error"] = exc
         finally:
             done.set()

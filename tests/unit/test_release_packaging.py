@@ -259,6 +259,8 @@ def test_release_overlay_contains_only_the_program_domain() -> None:
     config = build_config(target="windows-x64", updater=False, endpoint="", public_key="")
     assert config["bundle"]["resources"] == {
         "release-staging/VERSION": "VERSION",
+        "release-staging/diagnostic-build.json": "diagnostic-build.json",
+        "release-staging/diagnostic-build-id.txt": "diagnostic-build-id.txt",
         "release-staging/runtime-manifest.json": "runtime-manifest.json",
         "release-staging/python": "python",
         "release-staging/core": "core",

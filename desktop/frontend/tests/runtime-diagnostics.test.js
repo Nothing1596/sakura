@@ -136,3 +136,22 @@ test("custom messages are bounded and cleaned before IPC without changing plain 
   assert.equal(entry.fields.html, "<b>纯文本</b>");
   assert.ok(!JSON.stringify(payload).includes("private-"));
 });
+
+test("real error and rejection fields locate app code without exception bodies", async () => {
+  const env=harness();
+  const error=new TypeError("PRIVATE_CHAT_BODY");
+  env.listeners.get("error")({error,filename:"http://tauri.localhost/settings/index.js",lineno:42,colno:7});
+  const rejection=new Error("PRIVATE_KEY_VALUE");
+  rejection.stack="Error: PRIVATE_KEY_VALUE\n at send (tauri://localhost/chat/main.js:19:5)";
+  env.listeners.get("unhandledrejection")({reason:rejection});
+  env.listeners.get("error")({target:{src:"https://private.example/PRIVATE_PATH.js"}});
+  await env.diagnostics.flush();
+  const entries=env.calls.find(([c])=>c===RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
+  assert.equal(entries[0].details.file,"desktop/frontend/settings/index.js");
+  assert.equal(entries[0].details.line,42);
+  assert.equal(entries[0].details.causeType,"TypeError");
+  assert.equal(entries[1].details.line,19);
+  assert.equal(entries[2].details.stage,"resource");
+  assert.equal(entries[2].details.file,undefined);
+  assert.equal(JSON.stringify(entries).includes("PRIVATE"),false);
+});

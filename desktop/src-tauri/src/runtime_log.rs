@@ -390,6 +390,8 @@ struct CoreBridgeRecord {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WebviewDiagnosticEntry {
+    #[serde(default)]
+    details: Option<crate::telemetry::DiagnosticDetail>,
     level: String,
     event: String,
     #[serde(default)]
@@ -466,12 +468,13 @@ impl RuntimeLogService {
     }
 
     pub fn submit(&self, event: RuntimeLogEvent) -> bool {
-        if !self.inner.config.level.permits(event.severity) {
-            return true;
-        }
+        let permitted = self.inner.config.level.permits(event.severity);
         let normalized = self.normalize_event(event);
         if let Ok(telemetry) = self.inner.telemetry.lock() {
-            if let Some(telemetry) = telemetry.as_ref() {
+            if let Some(telemetry) = telemetry
+                .as_ref()
+                .filter(|t| t.accepts_event_generation(normalized.record.generation_id.as_deref()))
+            {
                 telemetry.observe_runtime_event(
                     &normalized.record.source,
                     &normalized.record.severity,
@@ -481,6 +484,9 @@ impl RuntimeLogService {
                     normalized.record.attributes.as_ref(),
                 );
             }
+        }
+        if !permitted {
+            return true;
         }
         let Ok(mut state) = self.inner.state.lock() else {
             return false;
@@ -781,6 +787,15 @@ impl RuntimeLogService {
             return Err("RUNTIME_DIAGNOSTIC_FIELDS_INVALID");
         }
         let mut attributes = Map::new();
+        if let Some(details) = entry.details {
+            if !crate::telemetry::validate_detail(&details) {
+                return Err("RUNTIME_DIAGNOSTIC_FIELDS_INVALID");
+            }
+            attributes.insert(
+                "diagnostic_detail".into(),
+                serde_json::to_value(details).map_err(|_| "RUNTIME_DIAGNOSTIC_FIELDS_INVALID")?,
+            );
+        }
         attributes.insert(
             "window_label".to_string(),
             Value::String(window_label.to_string()),
@@ -2776,6 +2791,21 @@ fn sanitize_attributes(value: &Value, secrets: &[String]) -> Option<Value> {
                 .map(Value::String)
                 .unwrap_or_else(|| json!({"type": "text", "chars": text.chars().count()})),
             Value::Array(values) => json!({"type": "list", "items": values.len()}),
+            Value::Object(_) if normalized == "diagnostic_detail" => {
+                let Ok(detail) =
+                    serde_json::from_value::<crate::telemetry::DiagnosticDetail>(value.clone())
+                else {
+                    continue;
+                };
+                if !crate::telemetry::validate_detail(&detail)
+                    || secrets
+                        .iter()
+                        .any(|s| !s.is_empty() && value.to_string().contains(s))
+                {
+                    continue;
+                }
+                value.clone()
+            }
             Value::Object(values) if normalized == "counts" => {
                 let mut counts = Map::new();
                 for (name, count) in values.iter().take(16) {
@@ -2884,7 +2914,22 @@ fn forbidden_key(key: &str) -> bool {
 fn allowed_attribute_key(key: &str) -> bool {
     matches!(
         key,
-        "action"
+        "source_file"
+            | "source_line"
+            | "diagnostic_detail"
+            | "timeout_ms"
+            | "exit_code"
+            | "child_exited"
+            | "probe_outcome"
+            | "primary_code"
+            | "recovery_code"
+            | "recovery_outcome"
+            | "source_exists"
+            | "staged_exists"
+            | "backup_exists"
+            | "repair_reason"
+            | "repair_outcome"
+            | "action"
             | "actual_bytes"
             | "actual_files"
             | "attempt"
@@ -3454,7 +3499,7 @@ mod tests {
         log.submit(log.prepare_webview("settings", entry).unwrap());
         let snapshot = log.viewer_snapshot(None).unwrap();
         assert_eq!(snapshot.schema_version, 3);
-        assert_eq!(snapshot.records.len(), 7);
+        assert_eq!(snapshot.records.len(), 9);
         assert!(snapshot
             .records
             .windows(2)
