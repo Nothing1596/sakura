@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-02
+updated: 2026-09-09
 ---
 
 # 远程诊断与匿名统计合同
@@ -125,13 +125,13 @@ Rust Shell 是唯一远程 HTTP 出站 owner。WebView、Python Core 和插件�
 
 客户端只实现一个小型发送器：
 
-- 一个后台任务和容量 128 的内存队列；
+- 一个后台任务和容量 128 的内存队列；普通事件与成功指标最多使用 96 个位置，保留 32 个位置给错误、失败和终态；
 - Error 每次只发送一条；Event 和 ModelCall 使用 1 至 10 条的 batch envelope，单条也必须放在 `items` 中；
 - sender 可以合并队列中已经就绪、端点相同的记录，但不得为了凑满 batch 延迟发送；
-- HTTP 总超时 2 至 3 秒，每条记录最多进入一次请求，不自动重试，也不补传历史数据；
+- HTTP 总超时 2.5 秒，每条记录最多进入一次请求，不自动重试，也不补传历史数据；
 - 队列满、网络失败、超时、服务端拒绝或退出期限到达时允许丢弃；
 - 不写磁盘队列，不读取磁盘日志，不等待队列排空后才启动、聊天或退出；
-- 发送失败只记有界的本地 debug 诊断，不弹窗，也不再生成远程错误报告。
+- 发送失败不生成新的错误报告；累计丢弃、拒绝与失败计数可以进入下一份 `diagnostics.summary`。退出时后台尽力提交摘要，最多使用 2.5 秒，不阻塞退出调用。
 
 发送器只接受三个内部枚举 DTO：Error、Event 和 ModelCall。不得提供可携带任意 JSON 的通用上报接口。
 
@@ -147,7 +147,69 @@ Core 只通过 generation 绑定、schema 固定的本地 `TelemetryErrorCandida
 Rust、Core 和 WebView 的错误边界各自负责生成安全候选。遥测关闭时可以跳过候选构造；即使候选仍到达 Rust，也必须在入队前
 丢弃。
 
-## Error Report
+## schema 2 诊断契约
+
+以下为下一版本实现，生产部署和客户端发布独立验收。v1 历史记录不重写严重程度、位置、原因或指纹。
+实现入口为 `tools/telemetry_server/`，其后台源码也随仓库管理；部署基线来自核对后的线上文件，不使用旧 Phase 2 副本。
+
+三条 v2 API 与 v1 使用相同体积上限。错误使用单条 schema 2；事件、模型调用使用 schema 2 的 `items` 数组。
+每条记录的 `diagnostics` 固定包含 `buildId/environment/generation/occurredMs`；generation 不适用时为空。
+安装 ID、run ID 和适用的 operation ID 保留。按 installation + run + generation + operation 关联；只有 operation 的链接必须选择运行。
+`occurredMs` 相对 Rust 运行起点；只有同一 run 可比较，不以客户端墙钟推断跨运行顺序。
+
+错误增加 `fingerprintVersion=2` 和固定 `details`。字段定义由服务器 `v2_models.py` 和 Rust `telemetry/contract.rs` 共同约束：
+
+| 字段组 | 允许的信息 |
+| --- | --- |
+| 分类 | severity、impact、stage、reasonCode、causeType、surface |
+| 定位 | 应用相对 file、line、column；最多 16 个安全栈帧 |
+| TTS | timeoutMs、elapsedMs、exitCode、childExited、probeOutcome |
+| 迁移 | primaryCode、recoveryCode、recoveryOutcome、sourceExists、stagedExists、backupExists |
+| 结果 | outcome、repairReason、repairOutcome |
+| 覆盖 | fingerprint、occurrenceCount、dropped、failed、rejected |
+
+severity 和 impact 在 v2 错误中必填；其余没有证据时省略。位置不含 URL、绝对路径、源码正文和用户插件路径。
+WebView 分别投影 JavaScript、Promise 和资源错误；读取 ErrorEvent 的行列号及应用 URL 帧，资源错误使用捕获监听。
+Python 保留已有稳定 code 和 cause 类型；Rust panic 不保存 panic 消息。插件诊断宿主接受明确数值类型，并只允许内置 Provider 的已知源码文件。
+
+指纹依据组件、事件、顶层错误码、原因、阶段和应用文件/函数生成；行列号用于定位，不用于跨构建分组。
+同 generation、同指纹只发首份完整错误；重复时增加累计数，最多每 60 秒提交一次变化摘要。
+服务端按安装、run、generation、指纹取累计最大值，不能把摘要相加。队列和去重状态有界；缺少摘要不能当作零次丢失。
+连续普通 IPC breadcrumb 合并，最多保留 40 条。关闭遥测或重置 ID 会取消在途请求、清空旧队列和累计状态。
+
+模型的 `request` 只接受 faultDomain、reasonCode、httpStatus、stage、attemptCount、compatibilityFallback。
+鉴权、限流、服务端、传输、协议、上下文、参数兼容与取消分开记录。无法判定连接或读取阶段的超时保留 unknown/request。
+每次 HTTP 传输尝试累计计数；兼容回退记录固定类型。模型请求成功不代表回复解析通过，也不代表聊天成功。
+
+v2 事件增加 `shell.ready/core.ready/chat.ready/chat.finished/tts.finished/migration.recovery/reply.repair.finished/diagnostics.summary/error.repeated`。
+旧 `app.ready` 的语义是 Shell 初始化完成。Core 初始化请求成功产生 core.ready；只有 readiness=ready 产生 chat.ready。
+聊天、语音和修复分别记录终态。Memory 的生产埋点位于内置 mem0 的 recall；插件功能覆盖在 Plugin Runtime v4 真正激活成功后产生。
+
+发布准备生成 `diagnostic-build.json` 和 `diagnostic-build-id.txt`。ID 包含 commit、目标平台和资源摘要；保留应用源码与发行资源的 SHA-256。
+正式构建必须读取该映射，编译前逐文件检查哈希，资源变化后须重新准备。带工作区修改的打包明确标为 development。
+CI 随发行产物保留映射；服务器 `builds/<buildId>.json` 安装对应文件。没有映射时导出明确标为缺失，不能借用其他构建源码。
+
+## 管理查询与分析包
+
+后台仍位于独立 Admin Host，Basic Auth 由现有 Nginx 提供。FastAPI 只监听 loopback；Host 检查不是密码认证的替代。
+SQLite 查询、迁移、写入和压缩均在工作线程执行，连接由所属线程创建和关闭。
+
+v2 列表在 SQL 中执行时间、构建、版本、平台、组件、原因、严重程度、安装、运行和问题组筛选；返回 total、nextCursor 和 hasMore。
+记录分页采用 ID 高水位和游标，问题组及操作时间线使用有界分页。三表建立运行/操作及接收时间索引；错误另有问题组、构建索引。
+默认排除显式 development/acceptance。v1 只按 run ID 的 acceptance 标记启发式排除，不能保证识别所有旧测试数据。
+
+后台 `POST /admin/api/v2/exports` 创建单个短期导出任务，随后查询状态并从受保护接口下载。命令行 `export_bundle.py` 使用同一实现和跨进程互斥锁。
+筛选范围、单报告同运行上下文与全部保留数据均可导出。只读事务固定快照，分批读取；同报告关联数据可超出时间筛选，manifest 记录扩展数。
+
+ZIP 包含三张规范化 JSONL、问题组、时间线、质量统计、数据库 schema、协议 JSON Schema、字段说明、构建映射、脱敏记录、manifest 和离线校验器。
+stack/breadcrumbs 为数组，保留数据库行 ID 和 reportId。接收时间保留现有北京时间原值，并添加带 `+08:00` 的 ISO 时间；迁移不移动旧时间。
+manifest 包含筛选、快照时间、各表源/匹配/导出/扩展/排除数量、各文件哈希、导出器版本和缺失/脱敏/截断状态。
+
+导出最多 5 分钟、1 GiB 未压缩内容，超限明确失败并删除临时内容，不能返回部分成功 ZIP。任务文件在站点目录外，目录 0700、ZIP 0600。
+完成一小时后清理；启动清理遗留任务。下载不经过公开静态路径或遥测公网域名。数据库原始数据仍按 90 天保留。
+具体启动、验收和回退步骤见 [服务器说明](../../../tools/telemetry_server/README.md)。
+
+## v1 Error Report（兼容保留）
 
 `POST /v1/errors` 的 request body 上限为 32 KiB。只报告可能代表 Sakura 缺陷的错误：Rust panic、Core 未处理异常、
 WebView `error`/`unhandledrejection`、Core 异常退出、启动或迁移硬失败、TTS 内部链路故障，以及维护者加入 allowlist 的
@@ -238,7 +300,7 @@ Breadcrumb 的 `severity` 只使用 `debug/info/warning/error/critical`，Runtim
 `success/failed/cancelled/degraded/skipped`，Runtime Log 的 `completed` 投影为 `success`；`started`、`ready` 等中间状态不发送
 `outcome`。相对时间与单步耗时都限制在 24 小时以内，超出范围的值直接省略。
 
-## 基础运行事件
+## v1 基础运行事件（兼容保留）
 
 `POST /v1/events` 接受 1 至 10 条记录，整个 request body 上限为 8 KiB。允许的事件只有：
 
@@ -286,7 +348,7 @@ Payload schema 1 固定为：
 
 首版不发送心跳、使用时长、细粒度点击、行为路径、角色名、插件 ID、工具名列表或 TTS 文本。
 
-## 模型运行指标
+## v1 模型运行指标（兼容保留）
 
 `POST /v1/model-calls` 接受 1 至 10 条记录，整个 request body 上限为 16 KiB。每次进入现有 Provider 调用边界最多形成一条记录。
 兼容性回退会重新进入该边界，因此使用新的 `model_call`；同一次调用内部的 HTTP 传输重试继续沿用原编号。Payload schema 1 固定为：
@@ -352,13 +414,16 @@ Prompt、messages 或工具 schema 正文。
 
 ## 服务端数据面
 
-生产 FastAPI 只提供：
+生产数据面保留 v1；下一次部署增加同等体积限制的 v2：
 
 ```text
 GET  /health
 POST /v1/errors
 POST /v1/events
 POST /v1/model-calls
+POST /v2/errors
+POST /v2/events
+POST /v2/model-calls
 ```
 
 三个写端点使用独立 schema，拒绝未知字段、错误 Content-Type、非法类型、未知 enum、超长 token、非有限数值和超大 body。SQL 只使用

@@ -47,7 +47,14 @@ _REQUIRED_IMPORT_PATHS = (Path("tools"), Path("GPT_SoVITS"))
 
 
 class RuntimeProfileError(RuntimeError):
-    """Stable managed-runtime configuration failure."""
+    """Stable managed-runtime failure with body-free diagnostic context."""
+
+    def __init__(
+        self, code: str, *, reason_code: str | None = None, exit_code: int | None = None
+    ):
+        super().__init__(code)
+        self.reason_code = reason_code or code
+        self.exit_code = exit_code
 
 
 @dataclass(frozen=True)
@@ -310,8 +317,14 @@ def prepare_managed_profile(
             env=env,
             creationflags=creationflags,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise RuntimeProfileError("TTS_DEVICE_PROBE_FAILED") from error
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeProfileError(
+            "TTS_DEVICE_PROBE_FAILED", reason_code="TTS_DEVICE_PROBE_TIMEOUT"
+        ) from error
+    except OSError as error:
+        raise RuntimeProfileError(
+            "TTS_DEVICE_PROBE_FAILED", reason_code="TTS_DEVICE_PROBE_START_FAILED"
+        ) from error
     payload: Optional[Mapping[str, Any]] = None
     for line in reversed(completed.stdout.splitlines()):
         if line.startswith(_RESULT_PREFIX):
@@ -323,7 +336,11 @@ def prepare_managed_profile(
                 payload = value
             break
     if payload is None:
-        raise RuntimeProfileError("TTS_DEVICE_PROBE_FAILED")
+        raise RuntimeProfileError(
+            "TTS_DEVICE_PROBE_FAILED",
+            reason_code="TTS_DEVICE_PROBE_OUTPUT_INVALID",
+            exit_code=completed.returncode,
+        )
     if not payload.get("ok"):
         code = str(payload.get("code") or "TTS_DEVICE_PROBE_FAILED")
         raise RuntimeProfileError(code if code in _ERROR_CODES else "TTS_DEVICE_PROBE_FAILED")

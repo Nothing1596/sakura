@@ -336,7 +336,25 @@ fn install_runtime_panic_hook(runtime_log: RuntimeLogService) {
                 "shell.error.unhandled",
                 "Unhandled Rust error",
             )
-            .attributes(json!({"code": "RUST_PANIC", "category": "panic"})),
+            .attributes({
+                let mut value =
+                    json!({"code": "RUST_PANIC", "category": "panic", "stage": "panic"});
+                if let Some(location) = panic_info.location() {
+                    let file = location.file().replace('\\', "/");
+                    let relative = file
+                        .strip_prefix("src/")
+                        .map(|s| format!("desktop/src-tauri/src/{s}"))
+                        .or_else(|| {
+                            file.split_once("/desktop/src-tauri/")
+                                .map(|(_, s)| format!("desktop/src-tauri/{s}"))
+                        });
+                    if let Some(file) = relative {
+                        value["source_file"] = json!(file);
+                        value["source_line"] = json!(location.line());
+                    }
+                }
+                value
+            }),
         );
         previous(panic_info);
     }));

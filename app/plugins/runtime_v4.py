@@ -1102,6 +1102,16 @@ class PluginRuntimeManager:
         if should_close:
             process.close()
             return False
+        from app.core.runtime_log import log_event
+
+        log_event(
+            "PluginManager",
+            "插件已加载",
+            {},
+            event="plugin.loaded",
+            severity="info",
+            verbosity=1,
+        )
         return True
 
     def _handle_plugin_request(

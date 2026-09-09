@@ -405,8 +405,23 @@ class _ManagedRuntime:
             "warning",
             {
                 "stage": "runtime_start",
+                "source_file": "plugins/builtin/sakura_gpt_sovits/_support.py",
+                "source_line": sys._getframe(1).f_lineno,
                 "status": "failed",
+                "code": reason_code,
                 "reason_code": reason_code,
+                "timeout_ms": round(self.settings.timeout_seconds * 1000),
+                **(
+                    {"probe_outcome": "timeout"}
+                    if reason_code == "TTS_RUNTIME_TIMEOUT"
+                    else {}
+                ),
+                **(
+                    {"child_exited": True, "exit_code": self._server_process.poll()}
+                    if reason_code == "TTS_RUNTIME_EXITED" and self._server_process
+                    else {}
+                ),
+                **getattr(self, "_start_diagnostic", {}),
                 "error_type": error_type,
                 "elapsed_ms": _elapsed_ms(started_at),
             },
@@ -434,6 +449,7 @@ class _ManagedRuntime:
         return True
 
     def _start(self, fail: Callable[[str], None]) -> bool:
+        self._start_diagnostic = {}
         work_dir = self.settings.work_dir
         if work_dir is None or not work_dir.is_dir():
             fail("TTS_RUNTIME_INVALID")
@@ -451,6 +467,26 @@ class _ManagedRuntime:
                 require_cuda=work_dir.name.casefold() == "g50",
             )
         except RuntimeProfileError as error:
+            self._start_diagnostic = {
+                "stage": "device_probe",
+                "reason_code": error.reason_code,
+                "timeout_ms": 90000,
+                "source_file": "plugins/builtin/sakura_gpt_sovits/_runtime_profile.py",
+                "probe_outcome": "timeout"
+                if error.reason_code == "TTS_DEVICE_PROBE_TIMEOUT"
+                else "spawn_failed"
+                if error.reason_code == "TTS_DEVICE_PROBE_START_FAILED"
+                else "invalid_output"
+                if error.reason_code == "TTS_DEVICE_PROBE_OUTPUT_INVALID"
+                else "unavailable",
+            }
+            if error.exit_code is not None:
+                self._start_diagnostic["exit_code"] = error.exit_code
+            tb = error.__traceback__
+            while tb is not None:
+                if tb.tb_frame.f_code.co_filename.endswith("_runtime_profile.py"):
+                    self._start_diagnostic["source_line"] = tb.tb_lineno
+                tb = tb.tb_next
             fail(str(error))
             return False
         command = [_subprocess_path(python), _subprocess_path(script)]
@@ -616,6 +652,27 @@ class GPTSoVITSSynthesisEngine:
             if request.cancelled:
                 raise OperationCancelled("TTS job cancelled")
 
+        started_at = time.monotonic()
+
+        def diagnose(code: str, reason: str, stage: str, error_type: str) -> None:
+            reporter = getattr(queue, "_report", None)
+            if reporter is not None:
+                reporter(
+                    "tts.synthesis.failed",
+                    "warning",
+                    {
+                        "code": code,
+                        "reason_code": reason,
+                        "stage": stage,
+                        "error_type": error_type,
+                        "elapsed_ms": round((time.monotonic() - started_at) * 1000),
+                        "timeout_ms": round(settings.timeout_seconds * 1000),
+                        "source_file": "plugins/builtin/sakura_gpt_sovits/_support.py",
+                        "source_line": sys._getframe(1).f_lineno,
+                    },
+                )
+            fail(code)
+
         restart_attempted = False
         while True:
             check_cancelled()
@@ -662,16 +719,39 @@ class GPTSoVITSSynthesisEngine:
                 break
             except urllib.error.HTTPError as error:
                 body = error.read().decode("utf-8", errors="replace")
-                if not restart_attempted and supervisor._restart_local_service_after_http_failure(error.code, body):
+                if (
+                    not restart_attempted
+                    and supervisor._restart_local_service_after_http_failure(
+                        error.code, body
+                    )
+                ):
                     restart_attempted = True
                     continue
-                fail("TTS_SYNTHESIS_FAILED")
+                diagnose(
+                    "TTS_SYNTHESIS_FAILED",
+                    "TTS_HTTP_FAILED",
+                    "synthesis_http",
+                    type(error).__name__,
+                )
                 return None
-            except (urllib.error.URLError, TimeoutError, OSError):
-                fail("TTS_RUNTIME_UNAVAILABLE")
+            except (urllib.error.URLError, TimeoutError, OSError) as error:
+                cause = getattr(error, "reason", error)
+                diagnose(
+                    "TTS_RUNTIME_UNAVAILABLE",
+                    "TTS_HTTP_TIMEOUT"
+                    if isinstance(cause, TimeoutError)
+                    else "TTS_HTTP_CONNECTION_FAILED",
+                    "synthesis_http",
+                    type(error).__name__,
+                )
                 return None
         if not audio:
-            fail("TTS_AUDIO_INVALID")
+            diagnose(
+                "TTS_AUDIO_INVALID",
+                "TTS_AUDIO_EMPTY",
+                "audio_validation",
+                "AudioValidationError",
+            )
             return None
         cache_dir = Path(getattr(queue, "_cache_dir"))
         with tempfile.NamedTemporaryFile(
@@ -684,7 +764,12 @@ class GPTSoVITSSynthesisEngine:
             path = Path(handle.name)
         if not _verify_wav(path):
             path.unlink(missing_ok=True)
-            fail("TTS_AUDIO_INVALID")
+            diagnose(
+                "TTS_AUDIO_INVALID",
+                "TTS_AUDIO_FORMAT_INVALID",
+                "audio_validation",
+                "AudioValidationError",
+            )
             return None
         return path
 

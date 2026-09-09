@@ -926,19 +926,33 @@ fn run_import_worker(
                     "diagnostic": "迁移子进程结果与持久事务状态不一致",
                     "error_type": "LegacyImportProtocolError",
                     "reason_code": code,
-                    "stage": "result_validation"
+                    "stage": "result_validation",
+                    "primary_code":"LEGACY_IMPORT_RESULT_INVALID",
+                    "recovery_code":recovery.as_ref().err(),
+                    "recovery_outcome":if recovery.is_ok() {"success"} else {"failed"},
+                    "source_exists":source.exists(),
+                    "staged_exists":request.user_root.join(format!(".legacy-import-staging-{import_id}")).exists(),
+                    "backup_exists":request.user_root.join(format!(".legacy-import-backup-{import_id}")).exists()
                 }),
             );
             fail_publication(&app, &state, json!({"code":code,"stage":"staging"}));
         }
         Err(mut error) => {
             let original_code = error.get("code").and_then(Value::as_str).map(str::to_owned);
+            let original_stage = error
+                .get("stage")
+                .and_then(Value::as_str)
+                .unwrap_or("staging")
+                .to_string();
+            let mut recovery_code: Option<String> = None;
+            let mut recovery_outcome = "skipped";
             let process_state_unknown = original_code
                 .as_deref()
                 .is_some_and(process_tree_state_is_unknown);
             if !process_state_unknown {
                 match recover_transaction(&request, &import_id) {
                     Ok(()) => {
+                        recovery_outcome = "success";
                         if original_code.as_deref() == Some(LEGACY_IMPORT_OPERATION_TIMEOUT) {
                             let restart = app
                                 .state::<ShellLifecycleState>()
@@ -952,6 +966,8 @@ fn run_import_worker(
                         }
                     }
                     Err(code) => {
+                        recovery_code = Some(code.clone());
+                        recovery_outcome = "failed";
                         let code = if process_tree_state_is_unknown(&code) {
                             LEGACY_IMPORT_PROCESS_TERMINATION_FAILED
                         } else {
@@ -961,6 +977,9 @@ fn run_import_worker(
                     }
                 }
             }
+            error["primaryCode"] = json!(original_code);
+            error["recoveryCode"] = json!(recovery_code);
+            error["recoveryOutcome"] = json!(recovery_outcome);
             let cancelled =
                 error.get("code").and_then(Value::as_str) == Some("LEGACY_IMPORT_CANCELLED");
             if !cancelled {
@@ -978,6 +997,13 @@ fn run_import_worker(
                         "code": code,
                         "reason_code": code,
                         "error_type": "LegacyImportError",
+                        "source_exists": source.exists(),
+                        "backup_exists": request.user_root.join(format!(".legacy-import-backup-{import_id}")).exists(),
+                        "primary_code": original_code,
+                        "recovery_code": recovery_code,
+                        "recovery_outcome": recovery_outcome,
+                        "stage": original_stage,
+                        "staged_exists": request.user_root.join(format!(".legacy-import-staging-{import_id}")).exists(),
                     }),
                 );
             }
@@ -1273,13 +1299,18 @@ fn rollback_after_core_failure(
                 "LegacyImportRecoveryError"
             },
             "reason_code": public_code,
-            "stage": "core_validating"
+            "primary_code": code,
+            "recovery_code": recovery.as_ref().err(),
+            "recovery_outcome": if recovery.is_ok() { "success" } else { "failed" },
+            "stage": "core_validating",
+            "staged_exists": request.user_root.join(format!(".legacy-import-staging-{import_id}")).exists(),
+            "backup_exists": request.user_root.join(format!(".legacy-import-backup-{import_id}")).exists()
         }),
     );
     fail_publication(
         app,
         state,
-        json!({"code":public_code,"stage":"core_validating"}),
+        json!({"code":public_code,"stage":"core_validating","primaryCode":code,"recoveryCode":recovery.as_ref().err(),"recoveryOutcome":if recovery.is_ok(){"success"}else{"failed"}}),
     );
 }
 
@@ -1514,14 +1545,25 @@ fn read_journal_state(journal: &Path) -> JournalState {
     }
 }
 
+#[track_caller]
 fn log_import_step(
     app: &AppHandle,
     severity: Severity,
     event: &'static str,
     message: &'static str,
     import_id: &str,
-    attributes: Value,
+    mut attributes: Value,
 ) {
+    if let Some(fields) = attributes.as_object_mut() {
+        fields.insert(
+            "source_file".into(),
+            json!("desktop/src-tauri/src/legacy_import.rs"),
+        );
+        fields.insert(
+            "source_line".into(),
+            json!(std::panic::Location::caller().line()),
+        );
+    }
     let runtime_log = app.state::<RuntimeLogService>();
     let _ = runtime_log.submit(
         RuntimeLogEvent::rust(severity, "legacy_import", event, message)

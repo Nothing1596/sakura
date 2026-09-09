@@ -452,7 +452,30 @@ class AgentRuntime:
                 ),
                 cancel_checker=cancel_checker,
             )
+        except OperationCancelled:
+            log_event(
+                "AgentRuntime",
+                "回复修复已取消",
+                {
+                    "repair_reason": retry_reason,
+                    "repair_outcome": "cancelled",
+                    "outcome": "cancelled",
+                },
+                event="reply.repair.finished",
+            )
+            raise
         except ApiRequestError as exc:
+            log_event(
+                "AgentRuntime",
+                "回复修复请求失败",
+                {
+                    "repair_reason": retry_reason,
+                    "repair_outcome": "request_failed",
+                    "outcome": "failed",
+                },
+                event="reply.repair.finished",
+                severity="warning",
+            )
             if self.strict_provider_errors:
                 raise
             log_event(
@@ -472,6 +495,17 @@ class AgentRuntime:
 
         check_cancelled(cancel_checker)
         repaired = parse_chat_reply_result(repaired_turn.content)
+        log_event(
+            "AgentRuntime",
+            "回复修复结果",
+            {
+                "repair_reason": retry_reason,
+                "repair_outcome": "invalid" if repaired.needs_retry else "valid",
+                "outcome": "failed" if repaired.needs_retry else "completed",
+            },
+            event="reply.repair.finished",
+            severity="warning" if repaired.needs_retry else "info",
+        )
         if repaired.needs_retry:
             if self.strict_provider_errors:
                 raise ApiRequestError("Provider reply remained invalid after repair")

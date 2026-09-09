@@ -464,6 +464,11 @@ def assemble(repo: Path, python_source: Path, output: Path, target: str, *, port
     if portable:
         (output / "portable.flag").write_bytes(b"")
     validate_layout(output, target, portable=portable)
+    try:
+        from .diagnostic_build import write_mapping
+    except ImportError:
+        from diagnostic_build import write_mapping
+    write_mapping(repo, output, target, inventory(output, target))
     (output / "release-inventory.json").write_text(
         json.dumps(inventory(output, target), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",

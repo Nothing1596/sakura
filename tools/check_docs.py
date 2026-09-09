@@ -200,7 +200,7 @@ def check_docs(repo_root: Path = REPO_ROOT) -> list[str]:
     docs_root = repo_root / "docs"
 
     for entry in sorted(docs_root.iterdir()) if docs_root.is_dir() else []:
-        if entry.name in {".gitkeep", "__pycache__"}:
+        if entry.name in {".gitkeep", ".DS_Store", "__pycache__"}:
             continue
         if entry.name not in ALLOWED_TOP_LEVEL and not (
             entry.is_dir() and not any(child.suffix == ".md" for child in entry.rglob("*"))

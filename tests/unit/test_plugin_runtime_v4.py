@@ -151,7 +151,7 @@ def test_plugin_diagnostics_host_service_accepts_only_bounded_fixed_events(monke
         "stage": "runtime_start",
         "status": "failed",
         "error_type": "ChildProcessExit",
-        "elapsed_ms": "12034.5",
+        "elapsed_ms": 12034,
     }
 
     with pytest.raises(

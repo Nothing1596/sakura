@@ -55,6 +55,7 @@ _PLUGIN_DIAGNOSTIC_EVENTS = frozenset(
         "tts.service.waiting_ready",
         "tts.service.ready",
         "tts.service.failed",
+        "tts.synthesis.failed",
         "tts.service.warmup_failed",
         "tts.weights.loading",
         "tts.weights.ready",
@@ -71,7 +72,21 @@ _PLUGIN_DIAGNOSTIC_EVENTS = frozenset(
 )
 _PLUGIN_DIAGNOSTIC_SEVERITIES = frozenset({"debug", "info", "warning", "error"})
 _PLUGIN_DIAGNOSTIC_ATTRIBUTES = frozenset(
-    {"provider", "reason_code", "stage", "status", "error_type", "elapsed_ms"}
+    {
+        "provider",
+        "reason_code",
+        "stage",
+        "status",
+        "error_type",
+        "elapsed_ms",
+        "code",
+        "timeout_ms",
+        "exit_code",
+        "child_exited",
+        "probe_outcome",
+        "source_file",
+        "source_line",
+    }
 )
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
 _ELAPSED_MS = re.compile(r"^[0-9]{1,9}(?:\.[0-9]{1,2})?$")
@@ -105,13 +120,35 @@ class _DiagnosticsHostService:
             raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
         attributes: dict[str, object] = {"component": plugin_id}
         for key, value in raw_attributes.items():
-            if not isinstance(value, str) or not value or len(value) > 200:
-                raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            if key == "reason_code":
-                if _ERROR_CODE.fullmatch(value) is None:
+            if key in {"elapsed_ms", "timeout_ms", "exit_code", "source_line"}:
+                if isinstance(value, str) and _ELAPSED_MS.fullmatch(value):
+                    value = round(float(value))
+                low = (
+                    -(2**31) if key == "exit_code" else 1 if key == "source_line" else 0
+                )
+                high = (
+                    10_000_000
+                    if key == "source_line"
+                    else 2**32 - 1
+                    if key == "exit_code"
+                    else 2**53 - 1
+                )
+                if type(value) is not int or not low <= value <= high:
                     raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
-            elif key == "elapsed_ms":
-                if _ELAPSED_MS.fullmatch(value) is None:
+            elif key == "child_exited":
+                if type(value) is not bool:
+                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
+            elif key == "source_file":
+                # Source identifiers are supplied only by the bundled provider, never arbitrary plugin paths.
+                if plugin_id != "sakura.tts.gpt-sovits" or value not in {
+                    "plugins/builtin/sakura_gpt_sovits/_support.py",
+                    "plugins/builtin/sakura_gpt_sovits/_runtime_profile.py",
+                }:
+                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
+            elif not isinstance(value, str) or not value or len(value) > 128:
+                raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
+            elif key in {"reason_code", "code"}:
+                if _ERROR_CODE.fullmatch(value) is None:
                     raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
             elif _IDENTIFIER.fullmatch(value) is None:
                 raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
@@ -154,6 +191,49 @@ class _LoggingHostService:
             log_message("warning", "插件日志发送拥塞或中断，部分记录已丢弃",
                 fields={"dropped_count": dropped}, component=channel, plugin_id=plugin_id, plugin_name=plugin_name or None)
         for item in batch:
+            fields = item["fields"]
+            event = fields.get("event")
+            if plugin_id == "sakura.memory.mem0" and event in {
+                "memory.recall.started",
+                "memory.recall.finished",
+                "memory.recall.failed",
+                "memory.recall.unavailable",
+                "memory.curation.started",
+                "memory.curation.finished",
+                "memory.curation.failed",
+            }:
+                from app.core_host.runtime_logging import _safe_attributes
+
+                safe = _safe_attributes(
+                    {
+                        k: v
+                        for k, v in fields.items()
+                        if k
+                        in {
+                            "elapsed_ms",
+                            "status",
+                            "reason_code",
+                            "error_type",
+                            "candidates",
+                            "selected",
+                            "code",
+                        }
+                    }
+                )
+                safe["stage"] = (
+                    "memory_recall"
+                    if event.startswith("memory.recall.")
+                    else "memory_curation"
+                )
+                # Core-owned projection carries no custom plugin name, content, or tool data.
+                log_event(
+                    "Memory",
+                    "Memory diagnostic",
+                    safe,
+                    event=event,
+                    severity=item["severity"],
+                    verbosity=1,
+                )
             log_message(item["severity"], item["message"], fields=item["fields"],
                 component=channel, plugin_id=plugin_id, plugin_name=plugin_name or None)
         # Core owns downstream loss accounting; the SDK counts transport loss only.

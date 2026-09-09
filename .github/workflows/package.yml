@@ -168,6 +168,12 @@ jobs:
             --source plugins/optional/playwright_browser \
             --output "artifacts/Sakura-Playwright-${VERSION}.sakplugin.zip"
 
+      - name: Retain diagnostic build mapping
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp desktop/src-tauri/release-staging/diagnostic-build.json "artifacts/diagnostic-build-${{ matrix.target }}.json"
+
       - name: Upload platform artifacts
         uses: actions/upload-artifact@v7
         with:
