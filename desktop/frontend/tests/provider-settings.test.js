@@ -329,7 +329,7 @@ test("adding and removing a model updates the draft marker without another page 
   await input.fire("keydown", { key: "Enter" });
   assert.equal(ui.dirtyStates.at(-1), true);
   const remove = ui.control("providerDetail").querySelectorAll("button")
-    .find((button) => button.getAttribute("aria-label") === "删除 temporary-model");
+    .find((button) => button.getAttribute("aria-label") === "移除 temporary-model");
   await remove.fire("click");
   assert.equal(ui.feature.isDirty(), false);
   assert.equal(ui.dirtyStates.at(-1), false);
@@ -371,7 +371,7 @@ test("provider chooser, search and manual model events edit the same draft consu
   const draft = ui.calls.find(([command]) => command === "settings_provider_model_save")[1].draft;
   assert.equal(draft.providers.length, 2);
   assert.deepEqual(draft.providers[1], {
-    id: "new-provider", alias: "新供应商", base_url: "https://new.invalid/v1",
+    id: "new-provider", alias: "新模型服务", base_url: "https://new.invalid/v1",
     models: ["new-model"], credential: { action: "clear", value: "" },
   });
 });
@@ -386,7 +386,7 @@ test("model discovery adds only selected new models and connection testing repor
       : { message: "fixture accepted" };
   });
   await ui.feature.initialize();
-  await ui.button("自动检测").fire("click");
+  await ui.button("获取模型列表").fire("click");
   const picker = ui.document.querySelector(".model-picker-dialog");
   assert.deepEqual(picker.querySelectorAll("input").map((input) => input.checked), [false, true]);
   await ui.button("添加", picker).fire("click");
@@ -399,12 +399,39 @@ test("model discovery adds only selected new models and connection testing repor
   const connection = ui.calls.filter(([command]) => command === "settings_provider_model_probe").at(-1)[1];
   assert.equal(connection.kind, "test_connection");
   assert.equal(connection.profile.model, "fixture-model");
-  assert.match(ui.notifications.at(-1)[0], /fixture accepted/);
+  assert.match(ui.notifications.at(-1)[0], new RegExp(connection.profile.model));
   assert.equal(button.disabled, false);
   failure = true;
   await button.fire("click");
-  assert.match(ui.errors.at(-1), /PROVIDER_HTTP_ERROR: HTTP 429/);
+  assert.match(ui.document.querySelector(".provider-probe-error p").textContent, /PROVIDER_HTTP_ERROR: HTTP 429/);
+  assert.doesNotMatch(ui.errors.at(-1), /HTTP 429/);
   assert.equal(button.disabled, false);
+});
+
+test("provider probe failures separate known causes from safe diagnostic details and clear details on retry", async () => {
+  let error = "";
+  const ui = featureFixture(snapshot(), (command) => {
+    if (command !== "settings_provider_model_probe") return undefined;
+    return error ? Promise.reject(new Error(error)) : {};
+  });
+  await ui.feature.initialize();
+  for (const [code, message] of [
+    ["AUTHENTICATION_FAILED", "验证失败，请检查 API Key。"],
+    ["PROVIDER_ACCESS_FORBIDDEN", "服务拒绝访问。"],
+    ["PROVIDER_TIMEOUT", "请求超时。"],
+  ]) {
+    error = `${code}|providers.test_connection||HTTP 403; code=access_denied; <img src=x>`;
+    await ui.button("测试连接").fire("click");
+    assert.equal(ui.errors.at(-1), message);
+    const details = ui.document.querySelector(".provider-probe-error");
+    assert.match(details.textContent, /HTTP 403; code=access_denied; <img src=x>/);
+    assert.equal(details.querySelector("img"), null);
+    assert.equal(Boolean(details.open), false);
+    error = "";
+    await ui.button("测试连接").fire("click");
+    assert.equal(ui.document.querySelector(".provider-probe-error"), null);
+    assert.equal(ui.errors.at(-1), "");
+  }
 });
 
 test("probe and cancellation use rebound identity; disposal removes owned overlays and ignores late results", async () => {
@@ -419,7 +446,7 @@ test("probe and cancellation use rebound identity; disposal removes owned overla
   ui.feature.rebindIdentity("generation-b");
   assert.equal(ui.feature.isDirty(), true);
   ui.control("apiTimeout").value = "300";
-  const probing = ui.button("自动检测").fire("click");
+  const probing = ui.button("获取模型列表").fire("click");
   await settle();
   const probe = ui.calls.find(([command]) => command === "settings_provider_model_probe")[1];
   assert.equal(probe.coreGenerationId, "generation-b");
@@ -458,9 +485,9 @@ for (const change of ["remove", "refresh", "rebind"]) {
         return undefined;
       });
       await ui.feature.initialize();
-      const probing = ui.button("自动检测").fire("click");
+      const probing = ui.button("获取模型列表").fire("click");
       await settle();
-      if (change === "remove") await ui.button("删除供应商").fire("click");
+      if (change === "remove") await ui.button("删除模型服务").fire("click");
       if (change === "refresh") await ui.feature.refreshCurrent();
       if (change === "rebind") ui.feature.rebindIdentity("generation-b");
       const dirtyNotifications = ui.dirtyNotifications;
@@ -478,9 +505,9 @@ for (const change of ["remove", "refresh", "rebind"]) {
     const ui = featureFixture(snapshot(), (command) => command === "settings_provider_model_probe"
       ? { models: ["stale-model"] } : undefined);
     await ui.feature.initialize();
-    await ui.button("自动检测").fire("click");
+    await ui.button("获取模型列表").fire("click");
     const submit = ui.button("添加", ui.document.querySelector(".model-picker-dialog"));
-    if (change === "remove") await ui.button("删除供应商").fire("click");
+    if (change === "remove") await ui.button("删除模型服务").fire("click");
     if (change === "refresh") await ui.feature.refreshCurrent();
     if (change === "rebind") ui.feature.rebindIdentity("generation-b");
     assert.equal(ui.document.querySelector(".model-picker-dialog"), null);
@@ -502,11 +529,11 @@ test("a newer discovery supersedes an older request for the same provider", asyn
   const ui = featureFixture(snapshot(), (command) => command === "settings_provider_model_probe"
     ? new Promise((resolve) => finish.push(resolve)) : undefined);
   await ui.feature.initialize();
-  const first = ui.button("自动检测").fire("click");
+  const first = ui.button("获取模型列表").fire("click");
   await settle();
   // Reselecting the provider renders a new detect button while its first request is pending.
   await ui.control("providerList").querySelector(".provider-card").fire("click");
-  const second = ui.button("自动检测").fire("click");
+  const second = ui.button("获取模型列表").fire("click");
   await settle();
   finish[1]({ models: ["current-model"] });
   await second;

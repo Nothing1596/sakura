@@ -1575,9 +1575,9 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
         )
         if response_invalid:
             message = (
-                "供应商响应格式无效：返回内容不是有效 JSON。"
+                "模型服务响应格式无效：返回内容不是有效 JSON。"
                 if "格式无法解析" in text or "invalid json" in text
-                else "供应商响应格式无效：回复结构不符合协议。"
+                else "模型服务响应格式无效：回复结构不符合协议。"
             )
             return "PROVIDER_RESPONSE_INVALID", message, False
         return "PROVIDER_REQUEST_FAILED", "Provider request failed", True

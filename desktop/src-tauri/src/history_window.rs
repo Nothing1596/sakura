@@ -132,7 +132,7 @@ pub fn show_or_focus(app: &AppHandle) -> Result<(), String> {
         HISTORY_WINDOW_LABEL,
         WebviewUrl::App("history/index.html".into()),
     )
-    .title("Sakura 历史记录")
+    .title("Sakura 聊天记录")
     .background_color(Color(248, 252, 254, 255))
     .visible(false)
     .inner_size(620.0, 680.0)

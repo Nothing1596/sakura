@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-06
+updated: 2026-09-09
 ---
 
 # WP-5-06 Runtime v2 运行日志查看器
@@ -68,6 +68,8 @@ updated: 2026-09-06
 
 ## 4. 主题、动效与失败语义
 
+- “只看问题”筛选为空时使用“当前筛选下没有问题记录”，结论只覆盖当前 scope 与插件筛选，
+  不推断整次运行正常。加载错误继续单独呈现。手动开启自动滚动不重复通知，滚动导致的自动暂停仍需提示。
 - 页面使用当前角色的 11 个公开主题 token；Core/角色尚未就绪时使用同形默认 token。外观预览、保存、取消
   和重新发布通过现有 `sakura://character-appearance-changed` 事件热更新。
 - 新建窗口在主题 token 与运行时字体状态应用完成前保持原生隐藏；成功或失败状态都只在对应主题成为 WebView

@@ -255,7 +255,7 @@ function render(newAfterSequence = Number.MAX_SAFE_INTEGER) {
   }
   for (const card of existingCards.values()) card.remove();
   empty.hidden = visible.length !== 0;
-  emptyTitle.textContent = viewMode === "problems" ? "本次运行暂无问题" : "暂无记录";
+  emptyTitle.textContent = viewMode === "problems" ? "当前筛选下没有问题记录" : "暂无记录";
   if (!selectedItem) {
     selectedItemKey = null;
     copy.disabled = true;
@@ -365,7 +365,7 @@ scroll.addEventListener("scroll", (event) => {
 
 autoScroll.addEventListener("change", () => {
   if (autoScroll.checked) {
-    status.textContent = "已开启自动滚动。";
+    status.textContent = "";
     scrollToLatest();
   }
 });

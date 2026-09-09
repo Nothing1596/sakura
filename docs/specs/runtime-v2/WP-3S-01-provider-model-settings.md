@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-05
+updated: 2026-09-09
 ---
 
 # WP-3S-01：供应商与模型设置纵向链
@@ -33,6 +33,10 @@ Runtime v2 canonical 设置页完成 Provider 公开读取、
 
 ## 契约
 
+- 用户界面统一使用“模型服务”“API 地址”“获取模型列表”；协议字段和命令名称不变。
+- 连接测试请求列表中的第一个模型，成功反馈包含该模型名称，不以获取目录或端点可达代替模型测试。
+  已知验证失败、拒绝访问和超时使用简短提示，清洗后的 HTTP 信息和稳定错误码放在可展开的“错误详情”中。
+  新一次探测清除旧详情，失效请求不能向已切换的模型服务填入错误详情。
 - capability schema v1 以 section + feature 表达 `available/read_only/unavailable`；其他 schema 直接拒绝。
 - Provider DTO 包含 `id/alias/baseUrl/configured/models`；credential action 仅为 `keep/replace/clear`。
 - `save` 对整个 Provider/模型域先纯校验，再合并原 YAML，一次原子替换；任一错误不修改文件或运行态。

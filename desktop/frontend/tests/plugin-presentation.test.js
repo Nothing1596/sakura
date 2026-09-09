@@ -14,6 +14,19 @@ import {
   filterPluginCatalog,
 } from "../settings/plugin-presentation.js";
 
+test("plugin transitions distinguish waiting and stopping even with a stale readiness reason", () => {
+  for (const [state, label] of [
+    ["starting", "正在启动"], ["waiting", "等待启动"], ["stopping", "正在停止"],
+  ]) {
+    for (const reason_code of ["", "PLUGIN_APPLICATION_NOT_READY"]) {
+      const activity = projectPluginActivity({ plugin_id: "fixture.worker", state, reason_code });
+      assert.equal(activity.label, label);
+      assert.equal(activity.state, "working");
+      assert.equal(activity.isTransient, true);
+    }
+  }
+});
+
 test("component overview combines enabled plugin resources across surfaces and keeps published installation state", () => {
   const section = (surface, value) => ({
     sectionId: "bundle", surface, values: { bundle: value },

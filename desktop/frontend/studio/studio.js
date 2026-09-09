@@ -1511,11 +1511,11 @@ async function discardCurrentDraft() {
   if (published && !entry?.has_draft && !entry?.is_dirty && !isDirty()) {
     return;
   }
-  const action = published ? "放弃修改" : "删除草稿角色";
+  const action = published ? "放弃草稿修改" : "删除草稿角色";
   const detail = published
-    ? "已发布版本不受影响。"
-    : "该角色尚未发布，删除后无法恢复。";
-  if (!window.confirm(`${action}「${currentDoc.display_name || currentDoc.id}」？\n${detail}`)) {
+    ? ""
+    : "删除后无法恢复。";
+  if (!window.confirm(`${action}「${currentDoc.display_name || currentDoc.id}」？${detail ? `\n${detail}` : ""}`)) {
     return;
   }
   await runBusy(async () => {
@@ -1838,7 +1838,7 @@ async function saveWorkspaceDraft() {
     return;
   }
   if (isPublishedCharacter()) {
-    setError("已发布角色请使用“保存”。");
+    setError("请使用“保存”。");
     return;
   }
   await runBusy(async () => {
@@ -1854,11 +1854,11 @@ async function commitCharacter({ publish = false } = {}) {
   }
   const published = isPublishedCharacter();
   if (publish && published) {
-    setError("该角色已经发布。");
+    setError("角色已在列表中。");
     return;
   }
   if (!publish && !published) {
-    setError("请点击“发布角色”。");
+    setError("请先添加到角色列表。");
     return;
   }
   if (!validateThemeInputs() || !validateExpressionInputs() || !validateVoiceInputs()) {
@@ -1881,7 +1881,7 @@ async function commitCharacter({ publish = false } = {}) {
     renderCharacterOptions();
     renderEditor();
     markBaseline();
-    notify(payload.message || (publish ? "角色已发布。" : "角色已保存。"), "success");
+    notify(payload.message || (publish ? "角色已添加到列表。" : "角色已保存。"), "success");
     if (payload.runtime_reload === "failed") {
       setError(payload.reload_error || "修改已保存但未生效，请重启 Sakura。");
     } else if (payload.runtime_reload === "requested") {

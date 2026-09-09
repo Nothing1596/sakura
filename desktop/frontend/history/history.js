@@ -122,7 +122,7 @@ function errorMessage(error) {
   if (["HISTORY_NOT_READY", "SETTINGS_CORE_UNAVAILABLE"].includes(code)) {
     return "聊天记录仍在准备，请稍后刷新。";
   }
-  return "历史记录读取失败，请稍后刷新。";
+  return "聊天记录读取失败，请稍后刷新。";
 }
 
 function applyPage(page) {
@@ -149,11 +149,11 @@ async function loadInitial() {
   }
   if (!invoke) {
     count.textContent = "读取失败";
-    status.textContent = "无法连接 Sakura，请重新打开历史记录。";
+    status.textContent = "无法连接 Sakura，请重新打开聊天记录。";
     return;
   }
   const revision = loadGuard.begin();
-  setLoading(true, "正在读取历史记录…");
+  setLoading(true, "正在读取聊天记录…");
   try {
     const bootstrap = await invoke("history_bootstrap");
     if (!loadGuard.isCurrent(revision)) return;
@@ -180,7 +180,7 @@ async function loadInitial() {
     entries = page.entries.slice();
     applyPage(page);
     render({ animateRecent: firstPaint });
-    status.textContent = entries.length ? `已显示最近 ${entries.length} 条记录` : "这里还没有对话记录。";
+    status.textContent = entries.length ? `已显示最近 ${entries.length} 条记录` : "暂无聊天记录";
     requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
   } catch (error) {
     status.textContent = errorMessage(error);

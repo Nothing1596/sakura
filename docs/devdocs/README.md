@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-09-06
+updated: 2026-09-09
 ---
 
 # 开发者文档
@@ -19,5 +19,6 @@ updated: 2026-09-06
 - [GitCode Release 镜像](GITCODE_RELEASE_MIRROR.md)
 - [Product Harness](../../harness/README.md)
 - [文档维护规范](DOCUMENTATION_STANDARD.md)
+- [界面文案规范](UI_COPY_GUIDELINES.md)：新增和修改界面时，先删冗余，保留必要后果，统一名称并核对状态范围。
 
 准备提交代码前请读[贡献指南](../../.github/CONTRIBUTING.md)。产品契约和架构记录位于 `docs/specs/` 与 `docs/adr/`，普通开发不需要按编号顺序阅读。

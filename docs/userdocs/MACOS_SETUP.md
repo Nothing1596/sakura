@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-28
+updated: 2026-09-09
 ---
 
 # 在 macOS 上使用 Sakura
@@ -70,7 +70,7 @@ Apple Silicon 上的本地语音服务应尽量使用 arm64 Python 和原生依�
 ## 常见问题
 
 - `Bad CPU type` 或原生库架构错误：检查应用、Runtime 和依赖是否同为 arm64 或 x86_64。
-- 桌宠启动但不显示：完成角色与供应商设置，并在日志中检查 `CORE_CONFIG_SETUP_REQUIRED`。
+- 桌宠启动但不显示：完成角色与模型服务设置，并在日志中检查 `CORE_CONFIG_SETUP_REQUIRED`。
 - 截图返回权限错误：重新授予屏幕录制权限并重启。
 - 透明区域挡住点击：确认系统合成效果正常，重启后再测试。
 - TTS 连接失败：用浏览器或命令行先验证服务地址，再检查防火墙和代理。

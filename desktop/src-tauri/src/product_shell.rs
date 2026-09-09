@@ -480,7 +480,7 @@ pub fn install_product_tray(app: &App, pet_visible: bool) -> Result<(), String> 
     .map_err(|error| error.to_string())?;
     let settings = MenuItem::with_id(app, MENU_OPEN_SETTINGS, "设置…", true, None::<&str>)
         .map_err(|error| error.to_string())?;
-    let history = MenuItem::with_id(app, MENU_OPEN_HISTORY, "历史记录…", true, None::<&str>)
+    let history = MenuItem::with_id(app, MENU_OPEN_HISTORY, "聊天记录…", true, None::<&str>)
         .map_err(|error| error.to_string())?;
     let runtime_log =
         MenuItem::with_id(app, MENU_OPEN_RUNTIME_LOG, "运行日志…", true, None::<&str>)

@@ -178,7 +178,7 @@ def run_legacy_import(
         )
 
         _log_stage(import_id, "memory", "started")
-        progress("staging", 20, "正在迁移角色长期记忆")
+        progress("staging", 20, "正在导入长期记忆")
         memory_files, memory_bytes = _copy_memory(
             source,
             converted,
@@ -307,7 +307,7 @@ def run_legacy_import(
             quarantined=int(memory_quarantine.is_dir()),
         )
         _log_stage(import_id, "configuration", "started")
-        progress("staging", 55, "正在迁移配置")
+        progress("staging", 55, "正在导入配置")
         try:
             configuration_counts = migrate_configuration(
                 source, payload, new_tts_root=target / "tts"
@@ -391,7 +391,7 @@ def run_legacy_import(
         _check_cancelled(is_cancelled)
 
         _log_stage(import_id, "auxiliary", "started")
-        progress("staging", 60, "正在迁移其他用户数据")
+        progress("staging", 60, "正在导入其他用户数据")
         _copy_other_user_data(source, payload, is_cancelled, report)
         _quarantine_invalid_auxiliary_data(payload, report, import_id=import_id)
         _log_stage(
@@ -409,13 +409,13 @@ def run_legacy_import(
         # replaceable resource domains.  A character/TTS failure below becomes
         # a report warning and must not roll this payload back.
         _log_stage(import_id, "core_payload_validation", "started")
-        progress("validating", 65, "正在校验核心迁移数据")
+        progress("validating", 65, "正在校验导入数据")
         _validate_staged(payload, import_id=import_id)
         _check_cancelled(is_cancelled, stage="validating")
         _log_stage(import_id, "core_payload_validation", "completed")
 
         _log_stage(import_id, "characters", "started")
-        progress("staging", 68, "正在尝试迁移角色包")
+        progress("staging", 68, "正在导入角色包")
         character_ids = _copy_characters_optional(
             source,
             target,
@@ -466,7 +466,7 @@ def run_legacy_import(
         )
 
         _log_stage(import_id, "manifest", "started")
-        progress("validating", 90, "正在生成迁移校验清单")
+        progress("validating", 90, "正在生成校验清单")
         last_manifest_percent = -1
 
         def manifest_progress(completed_bytes: int, expected_bytes: int) -> None:
@@ -484,7 +484,7 @@ def run_legacy_import(
             progress(
                 "validating",
                 overall_percent,
-                f"正在校验迁移文件（{manifest_percent}%）",
+                f"正在校验导入文件（{manifest_percent}%）",
             )
 
         report.artifacts = _build_artifact_manifest(
@@ -505,7 +505,7 @@ def run_legacy_import(
         _check_cancelled(is_cancelled, stage="validating")
 
         _log_stage(import_id, "commit", "started", artifacts=len(report.artifacts))
-        progress("committing", 95, "正在提交迁移数据")
+        progress("committing", 95, "正在保存导入数据")
         pending = commit_payload(target, import_id, payload)
         if finalize:
             finalize_commit(pending)
@@ -1094,7 +1094,7 @@ def _prepare_memory_model(
                 continue
             source_model = source_snapshot.parents[1]
             staged_model = staged_cache / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
-            progress("staging", 46, "正在迁移记忆模型")
+            progress("staging", 46, "正在导入记忆模型")
             copy_tree_checked(source_model, staged_model, cancelled=cancelled)
             staged_snapshot = verified_snapshot(staged_cache)
             if staged_snapshot is None:

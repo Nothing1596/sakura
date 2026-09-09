@@ -6,7 +6,7 @@ export function characterOptionLabel(character) {
 
 export function characterOptionGroup(character) {
   return character?.is_installed
-    ? { id: "published", label: "已发布角色", sourceLabel: "已发布" }
+    ? { id: "published", label: "角色列表", sourceLabel: "已添加" }
     : { id: "workspace", label: "草稿", sourceLabel: "草稿" };
 }
 

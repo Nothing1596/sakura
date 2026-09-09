@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-09-06
+updated: 2026-09-09
 ---
 
 # 运行日志与故障排查
@@ -62,7 +62,7 @@ Trace 按完整 operation 写入。程序在写入途中退出时，下次启动
 
 常见情况：
 
-- `CORE_CONFIG_SETUP_REQUIRED`：角色或供应商配置尚未完成，打开设置完成首次配置。
+- `CORE_CONFIG_SETUP_REQUIRED`：角色或模型服务配置尚未完成，打开设置完成首次配置。
 - `Prompt 依赖未就绪`：Memory 或 MCP 没有及时就绪，本轮聊天会在缺少该能力的情况下继续。
 - `UNKNOWN_REQUEST_ID`：请求所属的 Core 已失效，等待界面连接当前 Core 后重试。
 - `MEMORY_NOT_READY`：本地 Memory 仍在初始化或资源不可用，普通聊天可以继续。
